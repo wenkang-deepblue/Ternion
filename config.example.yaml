@@ -1,0 +1,42 @@
+# Example Ternion Configuration
+# Copy this to config.yaml and customize as needed
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+  log_level: "info"
+
+providers:
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "https://api.openai.com/v1"
+    default_model: "gpt-4-turbo"
+  
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    default_model: "claude-3-5-sonnet-latest"
+  
+  google:
+    api_key: "${GOOGLE_API_KEY}"
+    default_model: "gemini-2.0-flash"
+
+discussion:
+  timeout_seconds: 120
+  max_revision_rounds: 2
+  
+  # Role assignments with fallback order
+  roles:
+    arbiter:
+      primary: "google"
+      fallback: ["openai", "anthropic"]
+    writer:
+      primary: "anthropic"
+      fallback: ["openai", "google"]
+    reviewer:
+      primary: "openai"
+      fallback: ["anthropic", "google"]
+
+logging:
+  # Enable to log full discussion process (may include sensitive data)
+  log_discussion_details: false
+  log_file: "ternion.log"
