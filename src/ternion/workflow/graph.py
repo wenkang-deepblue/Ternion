@@ -149,6 +149,7 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         "review_feedback": "",
         "revision_count": 0,
         "errors": [],
+        "thinking_logs": [],
         "final_output": "",
     }
 

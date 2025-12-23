@@ -17,6 +17,7 @@ from ternion.core.models import (
     ModelInfo,
     ModelsListResponse,
 )
+from ternion.core.budget import budget_manager
 from ternion.providers.manager import provider_manager
 from ternion.router.message_router import MessageRouter
 from ternion.utils.streaming import create_sse_stream, stream_sse_chunks
@@ -109,18 +110,77 @@ async def chat_completions(
             },
         )
 
+    # Check role configuration completeness
+    from ternion.core.config_store import config_store
+    
+    user_config = config_store.load()
+    missing_roles = []
+    role_names = {"arbiter": "Arbiter", "writer": "Writer", "reviewer": "Reviewer"}
+    
+    for role, display_name in role_names.items():
+        role_config = user_config.roles.get(role)
+        if not role_config:
+            missing_roles.append(display_name)
+            continue
+        # Check if the provider for this role is enabled
+        provider_config = user_config.providers.get(role_config.provider)
+        if not provider_config or not provider_config.api_keys or not provider_config.selected_key_id:
+            missing_roles.append(f"{display_name} ({role_config.provider} not configured)")
+    
+    if missing_roles:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "message": f"Role configuration incomplete. Please configure: {', '.join(missing_roles)}. "
+                               f"Visit http://localhost:7990 to complete setup.",
+                    "type": "configuration_error",
+                }
+            },
+        )
+
+    # Check budget before proceeding
+    budget_ok, budget_warning = budget_manager.check_budget(estimated_cost=0.15)
+    if not budget_ok:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": {
+                    "message": budget_warning or "Budget exceeded",
+                    "type": "budget_exceeded",
+                }
+            },
+        )
+
     # Run the Ternion discussion workflow
     try:
         from ternion.workflow.graph import run_discussion
 
         final_state = await run_discussion(context)
 
-        # Get the final output
-        output = final_state.get("final_output", "")
-        if not output:
-            output = final_state.get("generated_code", "")
-        if not output:
-            output = "[Ternion] Discussion completed but no output was generated."
+        # Build output with thinking logs + final code
+        thinking_logs = final_state.get("thinking_logs", [])
+        final_code = final_state.get("final_output", "") or final_state.get("generated_code", "")
+        
+        # Combine thinking stream with final output
+        output_parts = []
+        
+        # Add budget warning if approaching limit
+        if budget_warning:
+            output_parts.append(budget_manager.format_budget_warning(budget_warning))
+        
+        # Add thinking logs (Cursor-compatible markdown)
+        if thinking_logs:
+            output_parts.append("".join(thinking_logs))
+            output_parts.append("\n---\n\n")  # Separator
+        
+        # Add final output
+        if final_code:
+            output_parts.append(final_code)
+        else:
+            output_parts.append("[Ternion] Discussion completed but no output was generated.")
+        
+        output = "".join(output_parts)
 
         # Return response
         if request.stream:

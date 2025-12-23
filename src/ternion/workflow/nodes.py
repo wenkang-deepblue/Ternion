@@ -17,6 +17,7 @@ from ternion.router.prompts import (
     EXECUTION_PROMPT,
     FINAL_CHECK_PROMPT,
 )
+from ternion.utils.i18n import t, ThinkingLogKey
 from ternion.workflow.state import TernionState, WorkflowPhase, ReviewResult
 
 logger = structlog.get_logger(__name__)
@@ -36,6 +37,9 @@ async def divergence_node(state: TernionState) -> TernionState:
         Updated state with council analyses
     """
     logger.info("workflow_divergence_start")
+    
+    thinking_logs = list(state.get("thinking_logs", []))
+    thinking_logs.append(t(ThinkingLogKey.DIVERGENCE_START))
 
     # Build messages for council - use Ternion RCA prompt, not Cursor's
     history = state.get("conversation_history", [])
@@ -100,11 +104,17 @@ async def divergence_node(state: TernionState) -> TernionState:
         successful_count=len(successful),
         total_count=len(analyses),
     )
+    
+    # Add thinking logs for each analysis
+    for a in successful:
+        preview = a["analysis"][:100].replace("\n", " ") + "..." if len(a["analysis"]) > 100 else a["analysis"]
+        thinking_logs.append(t(ThinkingLogKey.DIVERGENCE_ANALYSIS, council_id=a['council_id'], preview=preview))
 
     return {
         **state,
         "current_phase": WorkflowPhase.CONVERGENCE.value,
         "council_analyses": list(analyses),
+        "thinking_logs": thinking_logs,
     }
 
 
@@ -122,6 +132,9 @@ async def convergence_node(state: TernionState) -> TernionState:
         Updated state with synthesized report
     """
     logger.info("workflow_convergence_start")
+    
+    thinking_logs = list(state.get("thinking_logs", []))
+    thinking_logs.append(t(ThinkingLogKey.CONVERGENCE_START))
 
     analyses = state.get("council_analyses", [])
     successful_analyses = [a for a in analyses if not a.get("error")]
@@ -155,11 +168,15 @@ async def convergence_node(state: TernionState) -> TernionState:
             temperature=0.5,  # Lower temperature for synthesis
         )
 
+        preview = response.content[:80].replace("\n", " ") + "..."
+        thinking_logs.append(t(ThinkingLogKey.CONVERGENCE_COMPLETE, preview=preview))
+
         return {
             **state,
             "current_phase": WorkflowPhase.EXECUTION.value,
             "ternion_report": response.content,
             "is_consensus": len(successful_analyses) > 1,
+            "thinking_logs": thinking_logs,
         }
     except Exception as e:
         logger.error("convergence_failed", error=str(e))
@@ -188,6 +205,9 @@ async def execution_node(state: TernionState) -> TernionState:
         Updated state with generated code
     """
     logger.info("workflow_execution_start")
+    
+    thinking_logs = list(state.get("thinking_logs", []))
+    thinking_logs.append(t(ThinkingLogKey.EXECUTION_START))
 
     # Build messages with Cursor's system prompt (for format compliance)
     cursor_prompt = state.get("cursor_system_prompt")
@@ -225,10 +245,13 @@ async def execution_node(state: TernionState) -> TernionState:
             temperature=0.3,  # Lower temperature for code generation
         )
 
+        thinking_logs.append(t(ThinkingLogKey.EXECUTION_COMPLETE))
+
         return {
             **state,
             "current_phase": WorkflowPhase.FINAL_CHECK.value,
             "generated_code": response.content,
+            "thinking_logs": thinking_logs,
         }
     except Exception as e:
         logger.error("execution_failed", error=str(e))
@@ -254,6 +277,9 @@ async def final_check_node(state: TernionState) -> TernionState:
         Updated state with review result
     """
     logger.info("workflow_final_check_start")
+    
+    thinking_logs = list(state.get("thinking_logs", []))
+    thinking_logs.append(t(ThinkingLogKey.REVIEW_START))
 
     generated_code = state.get("generated_code", "")
     revision_count = state.get("revision_count", 0)
@@ -291,21 +317,25 @@ async def final_check_node(state: TernionState) -> TernionState:
 
         # Parse review result
         if "approved" in review_text or "lgtm" in review_text:
+            thinking_logs.append(t(ThinkingLogKey.REVIEW_APPROVED))
             return {
                 **state,
                 "current_phase": WorkflowPhase.COMPLETE.value,
                 "review_result": ReviewResult.APPROVED.value,
                 "review_feedback": response.content,
                 "final_output": generated_code,
+                "thinking_logs": thinking_logs,
             }
         else:
             # Revision needed - will loop back to execution
+            thinking_logs.append(t(ThinkingLogKey.REVIEW_REVISION))
             return {
                 **state,
                 "current_phase": WorkflowPhase.EXECUTION.value,
                 "review_result": ReviewResult.REVISION_NEEDED.value,
                 "review_feedback": response.content,
                 "revision_count": revision_count + 1,
+                "thinking_logs": thinking_logs,
             }
     except Exception as e:
         logger.warning("review_failed", error=str(e))

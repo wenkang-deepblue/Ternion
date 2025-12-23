@@ -13,6 +13,7 @@ from ternion import __version__
 from ternion.core.exceptions import TernionError
 from ternion.core.models import ErrorDetail, ErrorResponse
 from ternion.server.routes import router
+from ternion.server.control_routes import router as control_router
 
 logger = structlog.get_logger(__name__)
 
@@ -36,6 +37,7 @@ app.add_middleware(
 
 # Include routes
 app.include_router(router)
+app.include_router(control_router)  # Control Panel API
 
 
 @app.exception_handler(TernionError)

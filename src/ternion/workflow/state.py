@@ -82,5 +82,8 @@ class TernionState(TypedDict, total=False):
     # Error tracking
     errors: list[str]
 
+    # Thinking stream logs (Cursor-compatible markdown)
+    thinking_logs: list[str]
+
     # Final result
     final_output: str

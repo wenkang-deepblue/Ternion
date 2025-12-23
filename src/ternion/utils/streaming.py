@@ -11,7 +11,11 @@ import uuid
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
+import structlog
+
 from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
+
+logger = structlog.get_logger(__name__)
 
 
 def create_sse_stream(
@@ -34,10 +38,8 @@ def create_sse_stream(
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    # Stream content word by word for a more realistic effect
     words = content.split(" ")
     for i, word in enumerate(words):
-        # Add space before word (except first)
         text = f" {word}" if i > 0 else word
 
         chunk = ChatCompletionChunk(
@@ -52,7 +54,6 @@ def create_sse_stream(
         )
         yield f"data: {chunk.model_dump_json()}\n\n"
 
-    # Send final chunk with finish_reason
     final_chunk = ChatCompletionChunk(
         id=chunk_id,
         created=created,
@@ -72,7 +73,7 @@ async def stream_sse_chunks(
     chunks: AsyncGenerator[str, None],
 ) -> AsyncGenerator[str, None]:
     """
-    Convert content chunks to SSE format.
+    Convert content chunks to SSE format with error handling.
 
     Args:
         chunks: Async generator of content strings from LLM
@@ -83,44 +84,53 @@ async def stream_sse_chunks(
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    async for content in chunks:
-        chunk = ChatCompletionChunk(
+    try:
+        async for content in chunks:
+            chunk = ChatCompletionChunk(
+                id=chunk_id,
+                created=created,
+                model="ternion-team",
+                choices=[
+                    StreamChoice(
+                        delta=ChoiceDelta(content=content),
+                    )
+                ],
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+
+        final_chunk = ChatCompletionChunk(
             id=chunk_id,
             created=created,
             model="ternion-team",
             choices=[
                 StreamChoice(
-                    delta=ChoiceDelta(content=content),
+                    delta=ChoiceDelta(),
+                    finish_reason="stop",
                 )
             ],
         )
-        yield f"data: {chunk.model_dump_json()}\n\n"
-
-    # Send final chunk
-    final_chunk = ChatCompletionChunk(
-        id=chunk_id,
-        created=created,
-        model="ternion-team",
-        choices=[
-            StreamChoice(
-                delta=ChoiceDelta(),
-                finish_reason="stop",
-            )
-        ],
-    )
-    yield f"data: {final_chunk.model_dump_json()}\n\n"
-    yield "data: [DONE]\n\n"
+        yield f"data: {final_chunk.model_dump_json()}\n\n"
+        yield "data: [DONE]\n\n"
+    except Exception as e:
+        logger.exception("stream_interrupted", error=str(e))
+        yield format_sse_error("STREAM_INTERRUPTED", str(e))
 
 
-def format_sse_error(message: str) -> str:
+def format_sse_error(error_code: str, detail: str = "") -> str:
     """
-    Format an error message as an SSE event.
+    Format an error as an SSE event with error code for i18n.
 
-    Useful for sending errors during streaming.
+    Args:
+        error_code: Error code for frontend i18n lookup (e.g., 'STREAM_INTERRUPTED')
+        detail: Raw error detail for debugging/visibility console
+
+    Returns:
+        SSE-formatted error event string
     """
     error_data = {
         "error": {
-            "message": message,
+            "code": error_code,
+            "detail": detail,
             "type": "stream_error",
         }
     }

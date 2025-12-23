@@ -80,6 +80,15 @@ class LoggingSettings(BaseSettings):
     log_file: str | None = None
 
 
+class CostControlSettings(BaseSettings):
+    """Cost control configuration."""
+
+    daily_limit_usd: float = 5.0
+    monthly_limit_usd: float = 50.0
+    request_limit_usd: float = 1.0
+    alert_threshold: float = 0.9  # 90% threshold for warnings
+
+
 class Settings(BaseSettings):
     """Main application settings."""
 
@@ -93,6 +102,7 @@ class Settings(BaseSettings):
     providers: ProvidersSettings = Field(default_factory=ProvidersSettings)
     discussion: DiscussionSettings = Field(default_factory=DiscussionSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    cost_control: CostControlSettings = Field(default_factory=CostControlSettings)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "Settings":

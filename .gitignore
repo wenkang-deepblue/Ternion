@@ -114,3 +114,9 @@ README.md
 # Secret files
 .env.local
 .secrets/
+
+# Reference
+reference/
+
+# CSS
+App.css
