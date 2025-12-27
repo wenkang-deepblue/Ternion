@@ -111,12 +111,16 @@ export function StatusBar({ config, t }: StatusBarProps) {
           completeText={getRoleConfigText('arbiter', t.statusArbiterConfigured)}
         />
 
+        <span className="text-slate-300 dark:text-slate-600">|</span>
+
         {/* Writer Status */}
         <StatusItem
           isComplete={writerConfigured}
           pendingText={t.statusConfigWriter}
           completeText={getRoleConfigText('writer', t.statusWriterConfigured)}
         />
+
+        <span className="text-slate-300 dark:text-slate-600">|</span>
 
         {/* Reviewer Status */}
         <StatusItem

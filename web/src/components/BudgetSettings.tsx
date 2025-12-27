@@ -13,10 +13,15 @@ import { useToast } from './Toast';
 import type { Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
 
+// Budget section icon
+import budgetIconLight from '../assets/icons/budget_light_mode_50dp.svg';
+import budgetIconDark from '../assets/icons/budget_dark_mode_50dp.svg';
+
 interface BudgetSettingsProps {
   config: Config | null;
   onConfigUpdate: (config: Config) => void;
   t: Translations;
+  isDarkMode: boolean;
 }
 
 const THRESHOLD_OPTIONS = [
@@ -29,7 +34,7 @@ const THRESHOLD_OPTIONS = [
   { value: 0.95, label: '95%' },
 ];
 
-export function BudgetSettings({ config, onConfigUpdate, t }: BudgetSettingsProps) {
+export function BudgetSettings({ config, onConfigUpdate, t, isDarkMode }: BudgetSettingsProps) {
   const { showToast } = useToast();
   const [budget, setBudget] = useState<BudgetConfig>({
     monthly_limit_usd: 50,
@@ -85,6 +90,7 @@ export function BudgetSettings({ config, onConfigUpdate, t }: BudgetSettingsProp
       <div className="card-header flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
+            <img src={isDarkMode ? budgetIconDark : budgetIconLight} alt="" className="w-6 h-6" />
             {t.budgetTitle}
           </h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
@@ -108,14 +114,17 @@ export function BudgetSettings({ config, onConfigUpdate, t }: BudgetSettingsProp
             <label className="label">{t.monthlyLimit}</label>
             <div className="flex items-center gap-2">
               <span className="text-slate-500 font-medium text-lg">$</span>
-              <input
-                type="number"
-                className="input flex-1"
-                value={budget.monthly_limit_usd}
-                onChange={(e) => handleLimitChange(e.target.value)}
-                min="0"
-                step="5"
-              />
+              <div className="input-rainbow-glow flex-1">
+                <input
+                  type="number"
+                  className="input"
+                  style={{ width: '100%' }}
+                  value={budget.monthly_limit_usd}
+                  onChange={(e) => handleLimitChange(e.target.value)}
+                  min="0"
+                  step="5"
+                />
+              </div>
             </div>
             <p className="text-sm text-slate-500 mt-1">
               {t.budgetLimitNote}

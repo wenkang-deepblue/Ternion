@@ -21,6 +21,9 @@ export default {
           900: '#1e3a8a',
         },
       },
+      fontFamily: {
+        mono: ['"Google Sans Code"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+      },
     },
   },
   plugins: [],

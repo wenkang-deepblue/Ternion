@@ -104,7 +104,8 @@ class UserConfig(BaseModel):
         }
     )
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
-    language: str = "en"  # "en" or "zh"
+    theme: str = "system"  # "light", "dark", "system"
+    language: str = "auto"  # "auto", "en", "zh"
     updated_at: str = ""
 
 
@@ -253,6 +254,10 @@ class ConfigStore:
             "budget": {
                 "monthly_limit_usd": config.budget.monthly_limit_usd,
                 "alert_threshold": config.budget.alert_threshold,
+            },
+            "preferences": {
+                "theme": config.theme,
+                "language": config.language,
             },
             "updated_at": config.updated_at,
         }

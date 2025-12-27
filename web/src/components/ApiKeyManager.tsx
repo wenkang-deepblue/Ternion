@@ -14,37 +14,63 @@ import { useToast } from './Toast';
 import type { Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
 
+// API Key section icons
+import apiKeyIconLight from '../assets/icons/api_key_light_mode_50dp.svg';
+import apiKeyIconDark from '../assets/icons/api_key_dark_mode_50dp.svg';
+
+// Provider logos
+import geminiLogo from '../assets/icons/gemini_logo.png';
+import claudeLogo from '../assets/icons/claude_logo.png';
+import openaiLogo from '../assets/icons/openai_logo.png';
+import openaiLogoDark from '../assets/icons/openai_logo_dark_mode.png';
+
+// Visibility toggle icon
+import visibilityIconLight from '../assets/icons/visibility_light_mode_50dp.svg';
+import visibilityIconDark from '../assets/icons/visibility_dark_mode_50dp.svg';
+
+// Delete icon
+import deleteIconLight from '../assets/icons/delete_light_mode_50dp.svg';
+import deleteIconDark from '../assets/icons/delete_dark_mode_50dp.svg';
+
 interface ApiKeyManagerProps {
   config: Config | null;
   onConfigUpdate: (config: Config) => void;
   t: Translations;
+  isDarkMode: boolean;
 }
 
 const PROVIDER_INFO = {
   google: {
-    name: 'Google Gemini',
-    description: 'Google AI Studio API Key',
     placeholder: 'AIza...',
     link: 'https://aistudio.google.com/',
-    icon: '🔵',
+    logo: geminiLogo,
+    logoDark: geminiLogo,
   },
   anthropic: {
-    name: 'Anthropic Claude',
-    description: 'Anthropic API Key',
     placeholder: 'sk-ant-...',
     link: 'https://console.anthropic.com/',
-    icon: '🟠',
+    logo: claudeLogo,
+    logoDark: claudeLogo,
   },
   openai: {
-    name: 'OpenAI GPT',
-    description: 'OpenAI API Key',
     placeholder: 'sk-...',
     link: 'https://platform.openai.com/',
-    icon: '🟢',
+    logo: openaiLogo,
+    logoDark: openaiLogoDark,
   },
 };
 
-export function ApiKeyManager({ config, onConfigUpdate, t }: ApiKeyManagerProps) {
+// Provider names and descriptions from i18n
+const getProviderInfo = (provider: string, t: Translations) => {
+  const providerData = {
+    google: { name: t.providerGoogle, desc: t.providerGoogleDesc },
+    anthropic: { name: t.providerAnthropic, desc: t.providerAnthropicDesc },
+    openai: { name: t.providerOpenai, desc: t.providerOpenaiDesc },
+  };
+  return providerData[provider as keyof typeof providerData] || { name: provider, desc: '' };
+};
+
+export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyManagerProps) {
   const { showToast } = useToast();
   const [newKeys, setNewKeys] = useState<Record<string, { name: string; key: string }>>({
     google: { name: '', key: '' },
@@ -115,10 +141,9 @@ export function ApiKeyManager({ config, onConfigUpdate, t }: ApiKeyManagerProps)
         [provider]: { name: '', key: '' },
       }));
 
-      // Success message
-      const providerName = PROVIDER_INFO[provider as keyof typeof PROVIDER_INFO].name;
-      const successMsg = getErrorMessage(t, testResult.code);
-      showToast(`${providerName} ${successMsg}`, 'success');
+      // Success message with localized provider name
+      const { name: providerName } = getProviderInfo(provider, t);
+      showToast(`${providerName} ${t.code_SUCCESS}`, 'success');
 
     } catch (error) {
       console.error('Test API Error:', error);
@@ -158,6 +183,7 @@ export function ApiKeyManager({ config, onConfigUpdate, t }: ApiKeyManagerProps)
     <div className="card">
       <div className="card-header">
         <h2 className="text-lg font-semibold flex items-center gap-2">
+          <img src={isDarkMode ? apiKeyIconDark : apiKeyIconLight} alt="" className="w-6 h-6" />
           {t.apiKeyTitle}
         </h2>
         <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
@@ -170,6 +196,7 @@ export function ApiKeyManager({ config, onConfigUpdate, t }: ApiKeyManagerProps)
           const status = config?.providers[provider];
           const keys = status?.keys || [];
           const selectedKeyId = status?.selected_key_id;
+          const { name: providerName, desc: providerDesc } = getProviderInfo(provider, t);
 
           return (
             <div
@@ -179,14 +206,14 @@ export function ApiKeyManager({ config, onConfigUpdate, t }: ApiKeyManagerProps)
               <div className="flex items-start justify-between mb-3">
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xl">{info.icon}</span>
-                    <h3 className="font-medium">{info.name}</h3>
+                    <img src={isDarkMode ? info.logoDark : info.logo} alt={providerName} className="w-6 h-6" />
+                    <h3 className="font-medium">{providerName}</h3>
                     {status?.enabled && (
                       <span className="badge badge-success">{t.enabled}</span>
                     )}
                   </div>
                   <p className="text-sm text-slate-500 mt-1">
-                    {info.description} •{' '}
+                    {providerDesc} •{' '}
                     <a
                       href={info.link}
                       target="_blank"
@@ -225,10 +252,10 @@ export function ApiKeyManager({ config, onConfigUpdate, t }: ApiKeyManagerProps)
                       <button
                         type="button"
                         onClick={() => handleDeleteKey(provider, keyInfo.id)}
-                        className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all duration-200 active:scale-95 cursor-pointer"
+                        className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all duration-200 active:scale-85 cursor-pointer"
                         title={t.delete}
                       >
-                        🗑️
+                        <img src={isDarkMode ? deleteIconDark : deleteIconLight} alt="Delete" className="w-4 h-4" />
                       </button>
                     </div>
                   ))}
@@ -242,15 +269,17 @@ export function ApiKeyManager({ config, onConfigUpdate, t }: ApiKeyManagerProps)
                   <span className="text-xs text-slate-500 dark:text-slate-400 flex-1">{t.apiKeyLabel}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    style={{ width: '260px', flexShrink: 0 }}
-                    className="input"
-                    placeholder={t.apiKeyPlaceholder}
-                    value={newKeys[provider]?.name || ''}
-                    onChange={(e) => handleNameChange(provider, e.target.value)}
-                  />
-                  <div className="relative flex-1">
+                  <div className="input-rainbow-glow" style={{ width: '260px', flexShrink: 0 }}>
+                    <input
+                      type="text"
+                      style={{ width: '100%' }}
+                      className="input"
+                      placeholder={t.apiKeyPlaceholder}
+                      value={newKeys[provider]?.name || ''}
+                      onChange={(e) => handleNameChange(provider, e.target.value)}
+                    />
+                  </div>
+                  <div className="relative flex-1 input-rainbow-glow">
                     <input
                       type={showKeys[provider] ? 'text' : 'password'}
                       style={{ width: '100%', paddingRight: '2.5rem' }}
@@ -262,9 +291,13 @@ export function ApiKeyManager({ config, onConfigUpdate, t }: ApiKeyManagerProps)
                     <button
                       type="button"
                       className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-                      onClick={() => setShowKeys(prev => ({ ...prev, [provider]: !prev[provider] }))}
+                      onMouseDown={() => setShowKeys(prev => ({ ...prev, [provider]: true }))}
+                      onMouseUp={() => setShowKeys(prev => ({ ...prev, [provider]: false }))}
+                      onMouseLeave={() => setShowKeys(prev => ({ ...prev, [provider]: false }))}
+                      onTouchStart={() => setShowKeys(prev => ({ ...prev, [provider]: true }))}
+                      onTouchEnd={() => setShowKeys(prev => ({ ...prev, [provider]: false }))}
                     >
-                      {showKeys[provider] ? '🙈' : '👁️'}
+                      <img src={isDarkMode ? visibilityIconDark : visibilityIconLight} alt="Toggle visibility" className="w-5 h-5" />
                     </button>
                   </div>
                   <button

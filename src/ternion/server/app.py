@@ -13,7 +13,7 @@ from ternion import __version__
 from ternion.core.exceptions import TernionError
 from ternion.core.models import ErrorDetail, ErrorResponse
 from ternion.server.routes import router
-from ternion.server.control_routes import router as control_router
+from ternion.server.control_routes import router as control_router, log_manager
 
 logger = structlog.get_logger(__name__)
 
@@ -49,6 +49,7 @@ async def ternion_error_handler(request: Request, exc: TernionError) -> JSONResp
         status_code=exc.status_code,
         path=request.url.path,
     )
+    log_manager.emit("ERROR", "ERROR", f"{exc.message}")
     return JSONResponse(
         status_code=exc.status_code,
         content=ErrorResponse(
@@ -68,6 +69,7 @@ async def general_error_handler(request: Request, exc: Exception) -> JSONRespons
         error=str(exc),
         path=request.url.path,
     )
+    log_manager.emit("ERROR", "ERROR", str(exc))
     return JSONResponse(
         status_code=500,
         content=ErrorResponse(
@@ -86,9 +88,12 @@ async def startup_event() -> None:
         "ternion_starting",
         version=__version__,
     )
+    log_manager.emit("INFO", "LIFECYCLE", f"Server started (version {__version__})")
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     """Cleanup resources on shutdown."""
     logger.info("ternion_shutting_down")
+    log_manager.emit("INFO", "LIFECYCLE", "Server shutting down")
+

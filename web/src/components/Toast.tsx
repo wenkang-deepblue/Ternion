@@ -9,6 +9,11 @@
 
 import { useState, createContext, useContext, useCallback, useRef } from 'react';
 
+// Toast icons
+import checkIcon from '../assets/icons/check.svg';
+import errorIcon from '../assets/icons/error.svg';
+import infoIcon from '../assets/icons/information.svg';
+
 interface ToastContextType {
   showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
 }
@@ -43,12 +48,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       setToasts(prev =>
         prev.map(t => (t.id === id ? { ...t, exiting: true } : t))
       );
-    }, 4500);
+    }, 2000);
 
     // Remove from DOM after fade-out animation (0.5s)
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
-    }, 5000);
+    }, 2500);
   }, []);
 
   return (
@@ -71,9 +76,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             transform: 'translate(-50%, -50%)',
           }}
         >
-          {toast.type === 'success' && <span className="text-emerald-400">✅</span>}
-          {toast.type === 'error' && <span className="text-red-400">❌</span>}
-          {toast.type === 'info' && <span className="text-blue-400">ℹ️</span>}
+          {toast.type === 'success' && <img src={checkIcon} alt="" className="w-5 h-5" />}
+          {toast.type === 'error' && <img src={errorIcon} alt="" className="w-5 h-5" />}
+          {toast.type === 'info' && <img src={infoIcon} alt="" className="w-5 h-5" />}
           <span className="font-medium whitespace-pre-line text-left">{toast.message}</span>
         </div>
       ))}

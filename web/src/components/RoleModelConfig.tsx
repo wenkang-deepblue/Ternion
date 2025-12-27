@@ -14,10 +14,23 @@ import { useToast } from './Toast';
 import type { Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
 
+// Section icon
+import characterIconLight from '../assets/icons/character_light_mode_50dp.svg';
+import characterIconDark from '../assets/icons/character_dark_mode_50dp.svg';
+
+// Role icons
+import arbiterIconLight from '../assets/icons/arbiter_light_mode_50dp.svg';
+import arbiterIconDark from '../assets/icons/arbiter_dark_mode_50dp.svg';
+import writerIconLight from '../assets/icons/writer_light_mode_50dp.svg';
+import writerIconDark from '../assets/icons/writer_dark_mode_50dp.svg';
+import reviewerIconLight from '../assets/icons/reviewer_light_mode_50dp.svg';
+import reviewerIconDark from '../assets/icons/reviewer_dark_mode_50dp.svg';
+
 interface RoleModelConfigProps {
   config: Config | null;
   onConfigUpdate: (config: Config) => void;
   t: Translations;
+  isDarkMode: boolean;
 }
 
 const PROVIDER_NAMES: Record<string, string> = {
@@ -39,28 +52,39 @@ const MODEL_NAMES: Record<string, string> = {
   'gpt-5.1-codex': 'GPT 5.1 Codex',
 };
 
-export function RoleModelConfig({ config, onConfigUpdate, t }: RoleModelConfigProps) {
+export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleModelConfigProps) {
   const { showToast } = useToast();
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
   const [selectedRoles, setSelectedRoles] = useState<Record<string, RoleConfig>>({});
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
 
+  // Get role icon based on dark mode
+  const getRoleIcon = (role: string) => {
+    switch (role) {
+      case 'arbiter':
+        return isDarkMode ? arbiterIconDark : arbiterIconLight;
+      case 'writer':
+        return isDarkMode ? writerIconDark : writerIconLight;
+      case 'reviewer':
+        return isDarkMode ? reviewerIconDark : reviewerIconLight;
+      default:
+        return isDarkMode ? arbiterIconDark : arbiterIconLight;
+    }
+  };
+
   const ROLE_INFO = {
     arbiter: {
       name: t.arbiterName,
       description: t.arbiterDesc,
-      icon: '🎯',
     },
     writer: {
       name: t.writerName,
       description: t.writerDesc,
-      icon: '✍️',
     },
     reviewer: {
       name: t.reviewerName,
       description: t.reviewerDesc,
-      icon: '🔍',
     },
   };
 
@@ -149,6 +173,7 @@ export function RoleModelConfig({ config, onConfigUpdate, t }: RoleModelConfigPr
       <div className="card-header flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
+            <img src={isDarkMode ? characterIconDark : characterIconLight} alt="" className="w-6 h-6" />
             {t.roleConfigTitle}
           </h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
@@ -179,7 +204,7 @@ export function RoleModelConfig({ config, onConfigUpdate, t }: RoleModelConfigPr
               className="p-4 rounded-lg border border-slate-200 dark:border-slate-700"
             >
               <div className="flex items-center gap-2 mb-4">
-                <span className="text-xl">{info.icon}</span>
+                <img src={getRoleIcon(role)} alt="" className="w-6 h-6" />
                 <div>
                   <h3 className="font-medium">{info.name}</h3>
                   <p className="text-sm text-slate-500">{info.description}</p>

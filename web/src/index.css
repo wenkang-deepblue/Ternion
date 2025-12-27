@@ -1,30 +1,42 @@
 @import "tailwindcss";
+@config "../tailwind.config.js";
 
-/* Toast animations */
+/* Google Sans Code font for log display */
+@font-face {
+  font-family: 'Google Sans Code';
+  src: url('/fonts/GoogleSansCode-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Toast animations - scale from center */
 @keyframes fade-in {
   from {
     opacity: 0;
-    transform: translate(-50%, -50%) translateY(-20px);
+    transform: translate(-50%, -50%) scale(0.8);
   }
+
   to {
     opacity: 1;
-    transform: translate(-50%, -50%) translateY(0);
+    transform: translate(-50%, -50%) scale(1);
   }
 }
 
 @keyframes fade-out {
   from {
     opacity: 1;
-    transform: translate(-50%, -50%) translateY(0);
+    transform: translate(-50%, -50%) scale(1);
   }
+
   to {
     opacity: 0;
-    transform: translate(-50%, -50%) translateY(-20px);
+    transform: translate(-50%, -50%) scale(0.8);
   }
 }
 
 .animate-fade-in {
-  animation: fade-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: fade-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .animate-fade-out {
@@ -45,6 +57,10 @@
   --text-primary: #f1f5f9;
   --text-secondary: #94a3b8;
   --border-color: #334155;
+}
+
+html {
+  overflow-y: scroll;
 }
 
 body {
@@ -80,6 +96,46 @@ body {
   padding: 1.5rem;
 }
 
+/* Rainbow shadow animation
+@keyframes rainbow-shadow {
+  0%, 100% { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(232, 65, 51, 0.5); }
+  12.5%    { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(248, 121, 21, 0.5); }
+  25%      { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(249, 186, 2, 0.5); }
+  37.5%    { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(50, 166, 81, 0.5); }
+  50%      { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(34, 191, 222, 0.5); }
+  62.5%    { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(64, 131, 242, 0.5); }
+  75%      { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(159, 64, 242, 0.5); }
+  87.5%    { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(242, 55, 158, 0.5); }
+}
+
+@keyframes rainbow-shadow-dark {
+  0%, 100% { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(232, 65, 51, 0.6); }
+  12.5%    { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(248, 121, 21, 0.6); }
+  25%      { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(249, 186, 2, 0.6); }
+  37.5%    { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(50, 166, 81, 0.6); }
+  50%      { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(34, 191, 222, 0.6); }
+  62.5%    { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(64, 131, 242, 0.6); }
+  75%      { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(159, 64, 242, 0.6); }
+  87.5%    { box-shadow: 0 0 0 1px #3b82f6, 0 0 15px rgba(242, 55, 158, 0.6); }
+}
+*/
+
+@keyframes rainbow-rotate {
+  0% {
+    --rainbow-angle: 0deg;
+  }
+
+  100% {
+    --rainbow-angle: 360deg;
+  }
+}
+
+@property --rainbow-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
 /* Input styles */
 .input {
   width: 100%;
@@ -88,13 +144,15 @@ body {
   border: 1px solid #cbd5e1;
   background-color: white;
   color: #0f172a;
-  transition: all 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  position: relative;
+  z-index: 1;
 }
 
 .input:focus {
   outline: none;
-  box-shadow: 0 0 0 2px #3b82f6;
   border-color: #3b82f6;
+  box-shadow: 0 0 0 1px #3b82f6;
 }
 
 .dark .input {
@@ -103,8 +161,106 @@ body {
   color: #f1f5f9;
 }
 
+.dark .input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1px #3b82f6;
+}
+
+/* Ensure input content (including buttons inside) is above rainbow effects */
+.input-rainbow-glow .input {
+  position: relative;
+  z-index: 3;
+}
+
+.input-rainbow-glow button {
+  z-index: 4;
+}
+
 .input::placeholder {
   color: #94a3b8;
+}
+
+/* Rainbow glow effect - uses :has() to detect focused input and adds glow via ::before */
+.input-rainbow-glow {
+  position: relative;
+}
+
+/* Outer glow layer - blurred rainbow gradient */
+.input-rainbow-glow::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 0.75rem;
+  background: conic-gradient(from var(--rainbow-angle),
+      #e84133 0%,
+      #f87915 12.5%,
+      #f9ba02 25%,
+      #32a651 37.5%,
+      #22bfde 50%,
+      #4083f2 62.5%,
+      #9f40f2 75%,
+      #f2379e 87.5%,
+      #e84133 100%);
+  filter: blur(6px);
+  opacity: 0;
+  transition: opacity 0.3s;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Border layer - sharp rainbow gradient ring */
+.input-rainbow-glow::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 0.5rem;
+  padding: 1.5px;
+  background: conic-gradient(from var(--rainbow-angle),
+      #e84133 0%,
+      #f87915 12.5%,
+      #f9ba02 25%,
+      #32a651 37.5%,
+      #22bfde 50%,
+      #4083f2 62.5%,
+      #9f40f2 75%,
+      #f2379e 87.5%,
+      #e84133 100%);
+  -webkit-mask: 
+    linear-gradient(#fff 0 0) content-box, 
+    linear-gradient(#fff 0 0);
+  mask: 
+    linear-gradient(#fff 0 0) content-box, 
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.3s;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.input-rainbow-glow:has(.input:focus)::before {
+  opacity: 0.7;
+  animation: rainbow-rotate 4.5s linear infinite;
+}
+
+.input-rainbow-glow:has(.input:focus)::after {
+  opacity: 1;
+  animation: rainbow-rotate 4.5s linear infinite;
+}
+
+/* Hide default border when rainbow is active */
+.input-rainbow-glow:has(.input:focus) .input {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.dark .input-rainbow-glow:has(.input:focus)::before {
+  opacity: 0.7;
+}
+
+.dark .input-rainbow-glow:has(.input:focus)::after {
+  opacity: 1;
 }
 
 /* Button styles */

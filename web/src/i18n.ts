@@ -19,6 +19,7 @@ export interface Translations {
   // Tabs
   tabConfig: string;
   tabUsage: string;
+  tabLogs: string;
 
   // Status Bar
   statusAddApiKey: string;
@@ -44,6 +45,15 @@ export interface Translations {
   apiKeySelected: string;
   apiKeyGetKey: string;
   enabled: string;
+
+  // Provider names and descriptions
+  providerGoogle: string;
+  providerGoogleDesc: string;
+  providerAnthropic: string;
+  providerAnthropicDesc: string;
+  providerOpenai: string;
+  providerOpenaiDesc: string;
+  apiKeyDuplicate: string;
 
   // Role Model Config
   roleConfigTitle: string;
@@ -72,6 +82,7 @@ export interface Translations {
   code_INVALID_PROVIDER: string;
   code_PROVIDER_NOT_FOUND: string;
   code_API_KEY_NOT_FOUND: string;
+  code_API_KEY_DUPLICATE: string;
   code_PROVIDER_NOT_ENABLED: string;
   code_MODEL_NOT_AVAILABLE: string;
   code_INVALID_BUDGET_LIMIT: string;
@@ -119,6 +130,25 @@ export interface Translations {
 
   // Language toggle
   languageToggle: string;
+
+  // Observability Panel
+  logsTitle: string;
+  logsDescription: string;
+  logsConnecting: string;
+  logsConnected: string;
+  logsDisconnected: string;
+  logsClear: string;
+  logsAutoScroll: string;
+  logsNoLogs: string;
+
+  // Settings Dropdown
+  settingsTitle: string;
+  settingsTheme: string;
+  settingsThemeLight: string;
+  settingsThemeDark: string;
+  settingsThemeSystem: string;
+  settingsLanguage: string;
+  settingsLanguageAuto: string;
 }
 
 const EN: Translations = {
@@ -130,8 +160,9 @@ const EN: Translations = {
   darkMode: 'Switch to dark mode',
 
   // Tabs
-  tabConfig: '⚙️ Config',
-  tabUsage: '📊 Usage',
+  tabConfig: 'Config',
+  tabUsage: 'Usage',
+  tabLogs: 'Logs',
 
   // Status Bar
   statusAddApiKey: 'Please add at least one API Key',
@@ -144,7 +175,7 @@ const EN: Translations = {
   statusReviewerConfigured: 'Reviewer',
 
   // API Key Manager
-  apiKeyTitle: '🔑 API Key Management',
+  apiKeyTitle: 'API Key Management',
   apiKeyDescription: 'Add LLM provider API Keys to enable models',
   apiKeyStorageNote: '(Saved keys stored in: ~/.ternion/config.json)',
   apiKeyPlaceholder: 'Better to be same as console',
@@ -158,8 +189,17 @@ const EN: Translations = {
   apiKeyGetKey: 'Get Key',
   enabled: 'Enabled',
 
+  // Provider names and descriptions
+  providerGoogle: 'Google Gemini',
+  providerGoogleDesc: 'Google AI Studio API Key',
+  providerAnthropic: 'Anthropic Claude',
+  providerAnthropicDesc: 'Anthropic API Key',
+  providerOpenai: 'OpenAI GPT',
+  providerOpenaiDesc: 'OpenAI API Key',
+  apiKeyDuplicate: 'This API Key already exists',
+
   // Role Model Config
-  roleConfigTitle: '🎭 Role Model Configuration',
+  roleConfigTitle: 'Role Model Configuration',
   roleConfigDescription: 'Select model series and specific model for each role',
   roleConfigHint: '(Please add API Key above to enable models)',
   arbiterName: 'Arbiter',
@@ -179,7 +219,7 @@ const EN: Translations = {
   noApiKey: '(No API Key)',
 
   // Budget Settings
-  budgetTitle: '💰 Budget Settings',
+  budgetTitle: 'Budget Settings',
   budgetDescription: 'Recommended to set monthly budget limit and alert threshold',
   monthlyLimit: 'Monthly Limit (USD)',
   alertThreshold: 'Alert Threshold',
@@ -213,6 +253,7 @@ const EN: Translations = {
   code_INVALID_PROVIDER: 'Invalid provider',
   code_PROVIDER_NOT_FOUND: 'Provider not found',
   code_API_KEY_NOT_FOUND: 'API key not found',
+  code_API_KEY_DUPLICATE: 'This API Key already exists',
   code_PROVIDER_NOT_ENABLED: 'Provider not enabled',
   code_MODEL_NOT_AVAILABLE: 'Model not available',
   code_INVALID_BUDGET_LIMIT: 'Invalid budget limit',
@@ -234,6 +275,25 @@ const EN: Translations = {
 
   // Language toggle
   languageToggle: 'Language',
+
+  // Observability Panel
+  logsTitle: 'Live Logs',
+  logsDescription: 'Real-time backend processing logs',
+  logsConnecting: 'Connecting...',
+  logsConnected: 'Connected',
+  logsDisconnected: 'Disconnected',
+  logsClear: 'Clear',
+  logsAutoScroll: 'Auto-scroll',
+  logsNoLogs: 'No logs yet',
+
+  // Settings Dropdown
+  settingsTitle: 'Settings',
+  settingsTheme: 'Theme',
+  settingsThemeLight: 'Light',
+  settingsThemeDark: 'Dark',
+  settingsThemeSystem: 'System',
+  settingsLanguage: 'Language',
+  settingsLanguageAuto: 'Auto',
 };
 
 const ZH: Translations = {
@@ -245,8 +305,9 @@ const ZH: Translations = {
   darkMode: '切换到深色模式',
 
   // Tabs
-  tabConfig: '⚙️ 配置',
-  tabUsage: '📊 用量',
+  tabConfig: '配置',
+  tabUsage: '用量',
+  tabLogs: '日志',
 
   // Status Bar
   statusAddApiKey: '请添加至少一个 API Key',
@@ -259,7 +320,7 @@ const ZH: Translations = {
   statusReviewerConfigured: '审稿人',
 
   // API Key Manager
-  apiKeyTitle: '🔑 API Key 管理',
+  apiKeyTitle: 'API Key 管理',
   apiKeyDescription: '添加 LLM 提供商的 API Key 以启用对应模型',
   apiKeyStorageNote: '（已保存的 API Key 存储在：~/.ternion/config.json）',
   apiKeyPlaceholder: '建议与控制台一致',
@@ -273,8 +334,17 @@ const ZH: Translations = {
   apiKeyGetKey: '获取 Key',
   enabled: '已启用',
 
+  // Provider names and descriptions
+  providerGoogle: 'Google Gemini',
+  providerGoogleDesc: 'Google AI Studio API Key',
+  providerAnthropic: 'Anthropic Claude',
+  providerAnthropicDesc: 'Anthropic API Key',
+  providerOpenai: 'OpenAI GPT',
+  providerOpenaiDesc: 'OpenAI API Key',
+  apiKeyDuplicate: '此 API Key 已存在',
+
   // Role Model Config
-  roleConfigTitle: '🎭 角色模型配置',
+  roleConfigTitle: '角色模型配置',
   roleConfigDescription: '为每个角色选择使用的模型系列和具体模型',
   roleConfigHint: '（请先在上方添加 API Key 以启用模型）',
   arbiterName: '主持人 (Arbiter)',
@@ -294,7 +364,7 @@ const ZH: Translations = {
   noApiKey: '(未配置 API Key)',
 
   // Budget Settings
-  budgetTitle: '💰 预算设置',
+  budgetTitle: '预算设置',
   budgetDescription: '建议设置每月预算上限和提醒阈值',
   monthlyLimit: '月度预算上限 (USD)',
   alertThreshold: '提醒阈值',
@@ -328,6 +398,7 @@ const ZH: Translations = {
   code_INVALID_PROVIDER: '无效的提供商',
   code_PROVIDER_NOT_FOUND: '未找到提供商配置',
   code_API_KEY_NOT_FOUND: 'API Key 未找到',
+  code_API_KEY_DUPLICATE: '此 API Key 已存在',
   code_PROVIDER_NOT_ENABLED: '提供商未启用',
   code_MODEL_NOT_AVAILABLE: '模型不可用',
   code_INVALID_BUDGET_LIMIT: '无效的预算上限',
@@ -349,6 +420,25 @@ const ZH: Translations = {
 
   // Language toggle
   languageToggle: '语言',
+
+  // Observability Panel
+  logsTitle: '实时日志',
+  logsDescription: '后端处理日志实时流',
+  logsConnecting: '连接中...',
+  logsConnected: '已连接',
+  logsDisconnected: '已断开',
+  logsClear: '清空',
+  logsAutoScroll: '自动滚动',
+  logsNoLogs: '暂无日志',
+
+  // Settings Dropdown
+  settingsTitle: '设置',
+  settingsTheme: '主题',
+  settingsThemeLight: '明亮',
+  settingsThemeDark: '暗色',
+  settingsThemeSystem: '跟随系统',
+  settingsLanguage: '语言',
+  settingsLanguageAuto: '自动',
 };
 
 export const translations: Record<Language, Translations> = {
@@ -361,7 +451,7 @@ export const translations: Record<Language, Translations> = {
  */
 export function detectBrowserLanguage(): Language {
   if (typeof navigator !== 'undefined') {
-    const lang = navigator.language || (navigator as any).userLanguage || 'en';
+    const lang = (navigator.language || (navigator as any).userLanguage || 'en').toLowerCase();
     if (lang.startsWith('zh')) {
       return 'zh';
     }

@@ -31,6 +31,10 @@ export interface Config {
   providers: Record<string, ProviderStatus>;
   roles: Record<string, RoleConfig>;
   budget: BudgetConfig;
+  preferences?: {
+    theme: string;
+    language: string;
+  };
   updated_at?: string;
 }
 
@@ -149,6 +153,23 @@ class ApiClient {
 
   async getModels(): Promise<ModelsData> {
     return this.request<ModelsData>('/models');
+  }
+
+  async updatePreferences(prefs: {
+    theme?: string;
+    language?: string;
+  }): Promise<{ success: boolean; preferences: { theme: string; language: string } }> {
+    return this.request('/preferences', {
+      method: 'PUT',
+      body: JSON.stringify(prefs),
+    });
+  }
+
+  async revealFile(path: string): Promise<{ success: boolean }> {
+    return this.request('/reveal-file', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
   }
 }
 

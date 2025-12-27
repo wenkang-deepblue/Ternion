@@ -93,6 +93,28 @@ class TestProviderResponse(BaseModel):
     message: str
 
 
+# Display name mapping for providers
+PROVIDER_DISPLAY_NAMES = {
+    "google": "Google Gemini",
+    "anthropic": "Anthropic Claude",
+    "openai": "OpenAI GPT",
+}
+
+
+def _get_provider_display_name(provider: str) -> str:
+    """Get human-readable display name for a provider."""
+    return PROVIDER_DISPLAY_NAMES.get(provider, provider.title())
+
+
+def _get_model_display_name(provider: str, model_id: str) -> str:
+    """Get human-readable display name for a model."""
+    models = AVAILABLE_MODELS.get(provider, [])
+    for m in models:
+        if m["id"] == model_id:
+            return m["name"]
+    return model_id
+
+
 # Endpoints
 @router.get("/config")
 async def get_config() -> dict:
@@ -107,11 +129,18 @@ async def get_config() -> dict:
 @router.post("/api-keys/add")
 async def add_api_key(request: AddApiKeyRequest) -> dict:
     """Add a new API key to a provider."""
+    provider_display = _get_provider_display_name(request.provider)
+
     if request.provider not in ["google", "anthropic", "openai"]:
         raise HTTPException(status_code=400, detail="INVALID_PROVIDER")
 
     config = config_store.load()
     provider_config = config.providers.get(request.provider, ProviderConfig())
+
+    # Check for duplicate API key
+    for existing_key in provider_config.api_keys:
+        if existing_key.api_key == request.api_key:
+            raise HTTPException(status_code=400, detail="API_KEY_DUPLICATE")
 
     # Create new key entry
     new_entry = ApiKeyEntry(name=request.name, api_key=request.api_key)
@@ -124,6 +153,17 @@ async def add_api_key(request: AddApiKeyRequest) -> dict:
     config.providers[request.provider] = provider_config
     config_store.save(config)
 
+    log_manager.emit(
+        "INFO",
+        "USER_ACTION",
+        f'API Key saved: {provider_display} (key name: "{request.name}")'
+    )
+    log_manager.emit(
+        "INFO",
+        "USER_ACTION",
+        f'Config saved to: [file]{config_store.config_path}[/file]'
+    )
+
     return {
         "success": True,
         "key_id": new_entry.id,
@@ -134,6 +174,8 @@ async def add_api_key(request: AddApiKeyRequest) -> dict:
 @router.post("/api-keys/delete")
 async def delete_api_key(request: DeleteApiKeyRequest) -> dict:
     """Delete an API key from a provider."""
+    provider_display = _get_provider_display_name(request.provider)
+
     if request.provider not in ["google", "anthropic", "openai"]:
         raise HTTPException(status_code=400, detail="INVALID_PROVIDER")
 
@@ -142,6 +184,13 @@ async def delete_api_key(request: DeleteApiKeyRequest) -> dict:
 
     if not provider_config:
         raise HTTPException(status_code=404, detail="PROVIDER_NOT_FOUND")
+
+    # Find key name before deletion for logging
+    key_name = ""
+    for k in provider_config.api_keys:
+        if k.id == request.key_id:
+            key_name = k.name
+            break
 
     # Find and remove the key
     original_count = len(provider_config.api_keys)
@@ -162,12 +211,20 @@ async def delete_api_key(request: DeleteApiKeyRequest) -> dict:
     config.providers[request.provider] = provider_config
     config_store.save(config)
 
+    log_manager.emit(
+        "WARN",
+        "USER_ACTION",
+        f'API Key deleted: {provider_display} (key name: "{key_name}")'
+    )
+
     return {"success": True, "config": config_store.to_safe_dict()}
 
 
 @router.post("/api-keys/select")
 async def select_api_key(request: SelectApiKeyRequest) -> dict:
     """Select an API key as the active one for a provider."""
+    provider_display = _get_provider_display_name(request.provider)
+
     if request.provider not in ["google", "anthropic", "openai"]:
         raise HTTPException(status_code=400, detail="INVALID_PROVIDER")
 
@@ -182,7 +239,7 @@ async def select_api_key(request: SelectApiKeyRequest) -> dict:
     if not key_exists:
         raise HTTPException(status_code=404, detail="API_KEY_NOT_FOUND")
 
-    # Get the key name for toast message
+    # Get the key name for toast message and logging
     key_name = ""
     for k in provider_config.api_keys:
         if k.id == request.key_id:
@@ -192,6 +249,12 @@ async def select_api_key(request: SelectApiKeyRequest) -> dict:
     provider_config.selected_key_id = request.key_id
     config.providers[request.provider] = provider_config
     config_store.save(config)
+
+    log_manager.emit(
+        "INFO",
+        "USER_ACTION",
+        f'API Key selected: {provider_display} (key name: "{key_name}")'
+    )
 
     return {
         "success": True,
@@ -233,14 +296,26 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
                     provider=role_update.provider, model=role_update.model
                 )
 
+                # Log role change
+                provider_display = _get_provider_display_name(role_update.provider)
+                model_display = _get_model_display_name(role_update.provider, role_update.model)
+                role_display = role_name.capitalize()
+                log_manager.emit(
+                    "INFO",
+                    "USER_ACTION",
+                    f"{role_display} model set to: {provider_display} / {model_display}"
+                )
+
     # Update budget
     if request.budget:
+        budget_changed = False
         if request.budget.monthly_limit_usd is not None:
             if request.budget.monthly_limit_usd <= 0:
                 raise HTTPException(
                     status_code=400, detail="INVALID_BUDGET_LIMIT"
                 )
             config.budget.monthly_limit_usd = request.budget.monthly_limit_usd
+            budget_changed = True
         if request.budget.alert_threshold is not None:
             if not 0 < request.budget.alert_threshold <= 1:
                 raise HTTPException(
@@ -248,6 +323,15 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
                     detail="INVALID_BUDGET_THRESHOLD",
                 )
             config.budget.alert_threshold = request.budget.alert_threshold
+            budget_changed = True
+
+        if budget_changed:
+            threshold_pct = int(config.budget.alert_threshold * 100)
+            log_manager.emit(
+                "INFO",
+                "USER_ACTION",
+                f"Budget settings saved: ${config.budget.monthly_limit_usd:.2f} limit, {threshold_pct}% alert threshold"
+            )
 
     config_store.save(config)
     logger.info("config_updated")
@@ -268,18 +352,22 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
 
     Makes a minimal API call to verify the key works.
     """
+    provider_display = _get_provider_display_name(request.provider)
+
     if request.provider not in ["google", "anthropic", "openai"]:
         return TestProviderResponse(
             success=False, message="Invalid provider specified", code="INVALID_PROVIDER"
         )
+
+    log_manager.emit("INFO", "USER_ACTION", f"Testing API Key for {provider_display}...")
 
     try:
         if request.provider == "google":
             import google.generativeai as genai
 
             genai.configure(api_key=request.api_key)
-            # List models to verify key
             list(genai.list_models())
+            log_manager.emit("INFO", "USER_ACTION", f"API Key test successful: {provider_display}")
             return TestProviderResponse(
                 success=True, message="Google API connected", code="SUCCESS"
             )
@@ -288,12 +376,12 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
             import anthropic
 
             client = anthropic.Anthropic(api_key=request.api_key)
-            # Make a minimal request
             client.messages.create(
                 model="claude-3-haiku-20240307",
                 max_tokens=1,
                 messages=[{"role": "user", "content": "Hi"}],
             )
+            log_manager.emit("INFO", "USER_ACTION", f"API Key test successful: {provider_display}")
             return TestProviderResponse(
                 success=True, message="Anthropic API connected", code="SUCCESS"
             )
@@ -302,8 +390,8 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
             import openai
 
             client = openai.OpenAI(api_key=request.api_key)
-            # List models to verify key
             client.models.list()
+            log_manager.emit("INFO", "USER_ACTION", f"API Key test successful: {provider_display}")
             return TestProviderResponse(
                 success=True, message="OpenAI API connected", code="SUCCESS"
             )
@@ -311,12 +399,13 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
     except Exception as e:
         error_msg = str(e)
         error_lower = error_msg.lower()
-        # Detect auth errors: various API providers use different error messages
         auth_keywords = ["invalid", "unauthorized", "not valid", "api_key_invalid", "authentication", "incorrect"]
         if any(kw in error_lower for kw in auth_keywords):
+            log_manager.emit("ERROR", "USER_ACTION", f"API Key test failed: {provider_display} - {error_msg[:2000]}")
             return TestProviderResponse(
                 success=False, message=error_msg[:100], code="AUTH_ERROR"
             )
+        log_manager.emit("ERROR", "USER_ACTION", f"API Key test failed: {provider_display} - {error_msg[:2000]}")
         return TestProviderResponse(
             success=False, message=error_msg[:100], code="CONNECTION_ERROR"
         )
@@ -335,6 +424,40 @@ async def get_status() -> dict:
     }
 
 
+class PreferencesUpdateRequest(BaseModel):
+    """Request to update user preferences."""
+
+    theme: str | None = None  # "light", "dark", "system"
+    language: str | None = None  # "auto", "en", "zh"
+
+
+@router.put("/preferences")
+async def update_preferences(request: PreferencesUpdateRequest) -> dict:
+    """Update user preferences (theme, language)."""
+    config = config_store.load()
+
+    if request.theme is not None:
+        if request.theme not in ("light", "dark", "system"):
+            raise HTTPException(status_code=400, detail="INVALID_THEME")
+        config.theme = request.theme
+
+    if request.language is not None:
+        if request.language not in ("auto", "en", "zh"):
+            raise HTTPException(status_code=400, detail="INVALID_LANGUAGE")
+        config.language = request.language
+
+    config_store.save(config)
+    logger.info("preferences_updated", theme=config.theme, language=config.language)
+
+    return {
+        "success": True,
+        "preferences": {
+            "theme": config.theme,
+            "language": config.language,
+        },
+    }
+
+
 @router.get("/models")
 async def get_available_models() -> dict:
     """Get available models for each provider."""
@@ -346,3 +469,129 @@ async def get_available_models() -> dict:
         },
         "enabled_providers": enabled,
     }
+
+
+class RevealFileRequest(BaseModel):
+    """Request to reveal a file in the system file manager."""
+
+    path: str
+
+
+@router.post("/reveal-file")
+async def reveal_file(request: RevealFileRequest) -> dict:
+    """Reveal a file in the system file manager (Finder on macOS, Explorer on Windows)."""
+    import subprocess
+    import platform
+    import os
+
+    path = os.path.expanduser(request.path)
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="FILE_NOT_FOUND")
+
+    try:
+        system = platform.system()
+        if system == "Darwin":  # macOS
+            subprocess.run(["open", "-R", path], check=True)
+        elif system == "Windows":
+            subprocess.run(["explorer", "/select,", path], check=True)
+        else:  # Linux
+            # Try xdg-open on the parent directory
+            parent = os.path.dirname(path)
+            subprocess.run(["xdg-open", parent], check=True)
+
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Log streaming for observability
+import asyncio
+from datetime import datetime, timezone
+from typing import AsyncGenerator
+from collections import deque
+from fastapi.responses import StreamingResponse
+
+
+class LogManager:
+    """Manages log entries for SSE streaming to observability panel."""
+
+    def __init__(self, max_history: int = 100):
+        self._history: deque = deque(maxlen=max_history)
+        self._subscribers: list[asyncio.Queue] = []
+
+    def emit(self, level: str, category: str, message: str) -> None:
+        """Emit a log entry to all subscribers."""
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "category": category,
+            "message": message,
+        }
+        self._history.append(entry)
+        for queue in self._subscribers:
+            try:
+                queue.put_nowait(entry)
+            except asyncio.QueueFull:
+                pass
+
+    def subscribe(self) -> asyncio.Queue:
+        """Subscribe to log stream."""
+        queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+        self._subscribers.append(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue) -> None:
+        """Unsubscribe from log stream."""
+        if queue in self._subscribers:
+            self._subscribers.remove(queue)
+
+    def get_history(self) -> list:
+        """Get recent log history."""
+        return list(self._history)
+
+
+log_manager = LogManager()
+
+
+async def _log_event_generator(queue: asyncio.Queue) -> AsyncGenerator[str, None]:
+    """Generate SSE events from log queue."""
+    import json
+    try:
+        # Send initial history
+        for entry in log_manager.get_history():
+            yield f"data: {json.dumps(entry)}\n\n"
+        
+        # Stream new logs
+        while True:
+            try:
+                entry = await asyncio.wait_for(queue.get(), timeout=30.0)
+                yield f"data: {json.dumps(entry)}\n\n"
+            except asyncio.TimeoutError:
+                # Send keepalive
+                yield ": keepalive\n\n"
+    except asyncio.CancelledError:
+        pass
+
+
+@router.get("/logs/stream")
+async def stream_logs() -> StreamingResponse:
+    """SSE endpoint for real-time log streaming."""
+    queue = log_manager.subscribe()
+
+    async def cleanup_generator():
+        try:
+            async for event in _log_event_generator(queue):
+                yield event
+        finally:
+            log_manager.unsubscribe(queue)
+
+    return StreamingResponse(
+        cleanup_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
