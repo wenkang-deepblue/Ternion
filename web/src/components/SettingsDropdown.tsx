@@ -26,7 +26,7 @@ import computerIconLight from '../assets/icons/computer_light_mode_50dp.svg';
 import computerIconDark from '../assets/icons/computer_dark_mode_50dp.svg';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type LanguageMode = 'auto' | 'en' | 'zh';
+export type LanguageMode = 'auto' | 'en' | 'zh' | 'es' | 'fr' | 'de' | 'ja' | 'ko';
 
 interface SettingsDropdownProps {
   t: Translations;
@@ -100,6 +100,11 @@ export function SettingsDropdown({
     { value: 'auto', label: t.settingsLanguageAuto },
     { value: 'en', label: 'English' },
     { value: 'zh', label: '中文' },
+    { value: 'es', label: 'Español' },
+    { value: 'fr', label: 'Français' },
+    { value: 'de', label: 'Deutsch' },
+    { value: 'ja', label: '日本語' },
+    { value: 'ko', label: '한국어' },
   ];
 
   const [isLangMenuOpen, setIsLangMenuOpen] = useState(false);
@@ -127,7 +132,7 @@ export function SettingsDropdown({
         onClick={() => setIsOpen(!isOpen)}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
-        className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 active:scale-85"
+        className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-all duration-200 active:scale-85 hover:scale-110"
         title={t.settingsTitle}
       >
         <img
@@ -176,7 +181,7 @@ export function SettingsDropdown({
         {/* Language Section (Custom Dropdown) */}
         <div className="relative" ref={langMenuRef}>
           <div className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2 uppercase tracking-wide">
-            {t.settingsLanguage}
+            Language
           </div>
 
           <button

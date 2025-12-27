@@ -27,10 +27,16 @@ export interface BudgetConfig {
   alert_threshold: number;
 }
 
+export interface PortsConfig {
+  backend: number;
+  web: number;
+}
+
 export interface Config {
   providers: Record<string, ProviderStatus>;
   roles: Record<string, RoleConfig>;
   budget: BudgetConfig;
+  ports?: PortsConfig;
   preferences?: {
     theme: string;
     language: string;
@@ -169,6 +175,22 @@ class ApiClient {
     return this.request('/reveal-file', {
       method: 'POST',
       body: JSON.stringify({ path }),
+    });
+  }
+
+  async getPorts(): Promise<PortsConfig> {
+    return this.request<PortsConfig>('/ports');
+  }
+
+  async updatePorts(ports: Partial<PortsConfig>): Promise<{
+    success: boolean;
+    ports: PortsConfig;
+    restart_required: boolean;
+    message: string;
+  }> {
+    return this.request('/ports', {
+      method: 'POST',
+      body: JSON.stringify(ports),
     });
   }
 }

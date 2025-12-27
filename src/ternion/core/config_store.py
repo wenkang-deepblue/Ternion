@@ -86,6 +86,13 @@ class BudgetConfig(BaseModel):
     alert_threshold: float = 0.9  # 90%
 
 
+class PortsConfig(BaseModel):
+    """Server port configuration."""
+
+    backend: int = 8000  # Ternion API server port
+    web: int = 7990      # Web control panel port
+
+
 class UserConfig(BaseModel):
     """Complete user configuration."""
 
@@ -104,6 +111,7 @@ class UserConfig(BaseModel):
         }
     )
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    ports: PortsConfig = Field(default_factory=PortsConfig)
     theme: str = "system"  # "light", "dark", "system"
     language: str = "auto"  # "auto", "en", "zh"
     updated_at: str = ""
@@ -254,6 +262,10 @@ class ConfigStore:
             "budget": {
                 "monthly_limit_usd": config.budget.monthly_limit_usd,
                 "alert_threshold": config.budget.alert_threshold,
+            },
+            "ports": {
+                "backend": config.ports.backend,
+                "web": config.ports.web,
             },
             "preferences": {
                 "theme": config.theme,

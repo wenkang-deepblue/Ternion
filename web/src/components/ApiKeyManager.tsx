@@ -265,11 +265,11 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyM
               {/* Add New Key */}
               <div className="flex flex-col gap-1">
                 <div className="flex gap-2" style={{ marginLeft: '2px' }}>
-                  <span className="text-xs text-slate-500 dark:text-slate-400" style={{ width: '260px' }}>{t.apiKeyNameLabel}</span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400" style={{ width: '275px' }}>{t.apiKeyNameLabel}</span>
                   <span className="text-xs text-slate-500 dark:text-slate-400 flex-1">{t.apiKeyLabel}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="input-rainbow-glow" style={{ width: '260px', flexShrink: 0 }}>
+                  <div className="input-rainbow-glow" style={{ width: '275px', flexShrink: 0 }}>
                     <input
                       type="text"
                       style={{ width: '100%' }}
@@ -301,8 +301,8 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyM
                     </button>
                   </div>
                   <button
-                    style={{ width: '120px', flexShrink: 0 }}
-                    className="btn btn-primary"
+                    style={{ minWidth: '100px', height: '46px', flexShrink: 0 }}
+                    className="btn btn-primary text-xs whitespace-nowrap"
                     onClick={() => handleTestAndSave(provider)}
                     disabled={!newKeys[provider]?.key || testing === provider || saving}
                   >

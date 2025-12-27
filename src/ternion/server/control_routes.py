@@ -18,6 +18,7 @@ from ternion.core.config_store import (
     ApiKeyEntry,
     RoleConfig,
     BudgetConfig,
+    PortsConfig,
     config_store,
     AVAILABLE_MODELS,
 )
@@ -91,6 +92,13 @@ class TestProviderResponse(BaseModel):
 
     success: bool
     message: str
+
+
+class PortsUpdateRequest(BaseModel):
+    """Request to update port configuration."""
+
+    backend: int | None = None
+    web: int | None = None
 
 
 # Display name mapping for providers
@@ -439,12 +447,26 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
     if request.theme is not None:
         if request.theme not in ("light", "dark", "system"):
             raise HTTPException(status_code=400, detail="INVALID_THEME")
+        old_theme = config.theme
         config.theme = request.theme
+        if old_theme != request.theme:
+            log_manager.emit(
+                "INFO",
+                "USER_ACTION",
+                f"Theme changed: {old_theme} → {request.theme}",
+            )
 
     if request.language is not None:
-        if request.language not in ("auto", "en", "zh"):
+        if request.language not in ("auto", "en", "zh", "es", "fr", "de", "ja", "ko"):
             raise HTTPException(status_code=400, detail="INVALID_LANGUAGE")
+        old_language = config.language
         config.language = request.language
+        if old_language != request.language:
+            log_manager.emit(
+                "INFO",
+                "USER_ACTION",
+                f"Language changed: {old_language} → {request.language}",
+            )
 
     config_store.save(config)
     logger.info("preferences_updated", theme=config.theme, language=config.language)
@@ -468,6 +490,60 @@ async def get_available_models() -> dict:
             for provider, models in AVAILABLE_MODELS.items()
         },
         "enabled_providers": enabled,
+    }
+
+
+@router.get("/ports")
+async def get_ports() -> dict:
+    """Get current port configuration."""
+    config = config_store.load()
+    return {
+        "backend": config.ports.backend,
+        "web": config.ports.web,
+    }
+
+
+@router.post("/ports")
+async def update_ports(request: PortsUpdateRequest) -> dict:
+    """
+    Update port configuration.
+
+    Port changes are saved to config but require manual server restart to take effect.
+    """
+    config = config_store.load()
+
+    # Validate port range (1024-65535)
+    def validate_port(port: int, name: str) -> None:
+        if port < 1024 or port > 65535:
+            raise HTTPException(
+                status_code=400,
+                detail=f"INVALID_PORT_{name.upper()}"
+            )
+
+    if request.backend is not None:
+        validate_port(request.backend, "backend")
+        config.ports.backend = request.backend
+
+    if request.web is not None:
+        validate_port(request.web, "web")
+        config.ports.web = request.web
+
+    config_store.save(config)
+
+    log_manager.emit(
+        "INFO",
+        "USER_ACTION",
+        f"Port configuration saved: backend={config.ports.backend}, web={config.ports.web}"
+    )
+
+    return {
+        "success": True,
+        "ports": {
+            "backend": config.ports.backend,
+            "web": config.ports.web,
+        },
+        "restart_required": True,
+        "message": "Port configuration saved. Restart server to apply changes.",
     }
 
 

@@ -183,7 +183,8 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
         </div>
         {hasChanges && enabledProviders.length > 0 && (
           <button
-            className="btn btn-primary"
+            style={{ minWidth: '100px', height: '45px', flexShrink: 0 }}
+            className="btn btn-primary text-xs whitespace-nowrap"
             onClick={handleSave}
             disabled={saving}
           >

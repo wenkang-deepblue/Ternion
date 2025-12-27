@@ -16,6 +16,7 @@ import StatusBar from './components/StatusBar';
 import ApiKeyManager from './components/ApiKeyManager';
 import RoleModelConfig from './components/RoleModelConfig';
 import BudgetSettings from './components/BudgetSettings';
+import PortsSettings from './components/PortsSettings';
 import UsageDashboard from './components/UsageDashboard';
 import ObservabilityPanel from './components/ObservabilityPanel';
 import SettingsDropdown from './components/SettingsDropdown';
@@ -29,6 +30,8 @@ import ternionLogoDark from './assets/icons/ternion-logo-dark.png';
 // Tab icons for light/dark mode
 import configIconLight from './assets/icons/configuration_light_mode_50dp.svg';
 import configIconDark from './assets/icons/configuration_dark_mode_50dp.svg';
+import portIconLight from './assets/icons/port_light_mode_50dp.svg';
+import portIconDark from './assets/icons/port_dark_mode_50dp.svg';
 import usageIconLight from './assets/icons/usage_light_mode_50dp.svg';
 import usageIconDark from './assets/icons/usage_dark_mode_50dp.svg';
 import logIconLight from './assets/icons/log_light_mode_dp50.svg';
@@ -37,7 +40,7 @@ import logIconDark from './assets/icons/log_dark_mode_dp50.svg';
 function AppContent() {
   const [config, setConfig] = useState<Config | null>(null);
   const [status, setStatus] = useState<ServerStatus | null>(null);
-  const [activeTab, setActiveTab] = useState<'config' | 'usage' | 'logs'>('config');
+  const [activeTab, setActiveTab] = useState<'config' | 'ports' | 'usage' | 'logs'>('config');
 
   // Preference states
   const [themeMode, setThemeMode] = useState<ThemeMode>('system');
@@ -175,7 +178,7 @@ function AppContent() {
         <div className="max-w-5xl mx-auto px-4">
           <div className="flex gap-1 -mb-px">
             <button
-              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 flex items-center gap-2 ${
+              className={`px-4 py-2 text-sm font-medium transition-all border-b-2 flex items-center gap-2 transform hover:scale-105 cursor-pointer ${
                 activeTab === 'config'
                   ? 'text-blue-600 border-blue-600 dark:text-[#88b2f6] dark:border-[#88b2f6]'
                   : 'text-slate-500 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
@@ -186,7 +189,18 @@ function AppContent() {
               {t.tabConfig}
             </button>
             <button
-              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 flex items-center gap-2 ${
+              className={`px-4 py-2 text-sm font-medium transition-all border-b-2 flex items-center gap-2 transform hover:scale-105 cursor-pointer ${
+                activeTab === 'ports'
+                  ? 'text-blue-600 border-blue-600 dark:text-[#88b2f6] dark:border-[#88b2f6]'
+                  : 'text-slate-500 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
+              }`}
+              onClick={() => setActiveTab('ports')}
+            >
+              <img src={isDarkMode ? portIconDark : portIconLight} alt="" className="w-5 h-5" />
+              {t.tabPorts}
+            </button>
+            <button
+              className={`px-4 py-2 text-sm font-medium transition-all border-b-2 flex items-center gap-2 transform hover:scale-105 cursor-pointer ${
                 activeTab === 'usage'
                   ? 'text-blue-600 border-blue-600 dark:text-[#88b2f6] dark:border-[#88b2f6]'
                   : 'text-slate-500 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
@@ -197,7 +211,7 @@ function AppContent() {
               {t.tabUsage}
             </button>
             <button
-              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 flex items-center gap-2 ${
+              className={`px-4 py-2 text-sm font-medium transition-all border-b-2 flex items-center gap-2 transform hover:scale-105 cursor-pointer ${
                 activeTab === 'logs'
                   ? 'text-blue-600 border-blue-600 dark:text-[#88b2f6] dark:border-[#88b2f6]'
                   : 'text-slate-500 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
@@ -220,6 +234,7 @@ function AppContent() {
             <BudgetSettings config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} />
           </div>
         )}
+        {activeTab === 'ports' && <PortsSettings t={t} isDarkMode={isDarkMode} />}
         {activeTab === 'usage' && <UsageDashboard t={t} />}
         {activeTab === 'logs' && <ObservabilityPanel t={t} isDarkMode={isDarkMode} />}
       </main>
@@ -228,7 +243,7 @@ function AppContent() {
       <footer className="border-t border-slate-200 dark:border-slate-700 py-6 mt-12">
         <div className="max-w-5xl mx-auto px-4 text-center text-sm text-slate-500">
           <p>
-            Ternion v0.4.0 • {t.appSubtitle} •{' '}
+            Ternion v0.4.6 • {t.appSubtitle} •{' '}
             <a
               href="http://localhost:8000/docs"
               target="_blank"
