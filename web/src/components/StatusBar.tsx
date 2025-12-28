@@ -42,7 +42,7 @@ function StatusItem({ isComplete, pendingText, completeText }: StatusItemProps) 
   return (
     <div className="flex items-center gap-1.5 text-xs">
       <span
-        className={`w-2 h-2 rounded-full flex-shrink-0 ${
+        className={`w-2 h-2 rounded-full shrink-0 ${
           isComplete ? 'bg-emerald-500' : 'bg-red-500'
         }`}
       />

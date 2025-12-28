@@ -7,7 +7,7 @@
  * - Selecting active API key per provider
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import api from '../api/client';
 import type { Config } from '../api/client';
 import { useToast } from './Toast';
@@ -70,6 +70,15 @@ const getProviderInfo = (provider: string, t: Translations) => {
   return providerData[provider as keyof typeof providerData] || { name: provider, desc: '' };
 };
 
+// Measure text width using Canvas API (supports CJK characters)
+const measureTextWidth = (text: string, font: string = '0.8rem Inter, sans-serif'): number => {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return text.length * 10;
+  ctx.font = font;
+  return ctx.measureText(text).width;
+};
+
 export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyManagerProps) {
   const { showToast } = useToast();
   const [newKeys, setNewKeys] = useState<Record<string, { name: string; key: string }>>({
@@ -80,6 +89,12 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyM
   const [testing, setTesting] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
+
+  // Calculate key name input width based on placeholder text
+  const keyNameInputWidth = useMemo(() => {
+    const textWidth = measureTextWidth(t.apiKeyPlaceholder);
+    return `${Math.max(textWidth + 35, 150)}px`;
+  }, [t.apiKeyPlaceholder]);
 
   const handleNameChange = (provider: string, value: string) => {
     setNewKeys(prev => ({
@@ -265,11 +280,11 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyM
               {/* Add New Key */}
               <div className="flex flex-col gap-1">
                 <div className="flex gap-2" style={{ marginLeft: '2px' }}>
-                  <span className="text-xs text-slate-500 dark:text-slate-400" style={{ width: '275px' }}>{t.apiKeyNameLabel}</span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400" style={{ width: keyNameInputWidth, minWidth: '150px' }}>{t.apiKeyNameLabel}</span>
                   <span className="text-xs text-slate-500 dark:text-slate-400 flex-1">{t.apiKeyLabel}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="input-rainbow-glow" style={{ width: '275px', flexShrink: 0 }}>
+                  <div className="input-rainbow-glow" style={{ width: keyNameInputWidth, minWidth: '150px', flexShrink: 0 }}>
                     <input
                       type="text"
                       style={{ width: '100%' }}

@@ -178,6 +178,7 @@ body {
 
 .input::placeholder {
   color: #94a3b8;
+  font-size: 0.8rem;
 }
 
 /* Rainbow glow effect - uses :has() to detect focused input and adds glow via ::before */

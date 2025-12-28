@@ -547,6 +547,60 @@ async def update_ports(request: PortsUpdateRequest) -> dict:
     }
 
 
+class DownloadLogsResponse(BaseModel):
+    """Response from log download."""
+
+    success: bool
+    file_path: str
+    log_count: int
+
+
+@router.post("/logs/download")
+async def download_logs() -> DownloadLogsResponse:
+    """
+    Download current session logs to ~/.ternion/log.json.
+
+    Exports all logs from the current session to a JSON file for offline analysis.
+    """
+    import json as json_lib
+    from pathlib import Path
+    from datetime import datetime, timezone
+
+    logs = log_manager.get_history()
+    file_path = Path.home() / ".ternion" / "log.json"
+
+    # Ensure directory exists
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build export data
+    export_data = {
+        "session_start": logs[0]["timestamp"] if logs else datetime.now(timezone.utc).isoformat(),
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "log_count": len(logs),
+        "logs": logs,
+    }
+
+    # Write to file
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json_lib.dump(export_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"WRITE_ERROR: {str(e)}")
+
+    # Emit log entry about the download
+    log_manager.emit(
+        "INFO",
+        "USER_ACTION",
+        f"Logs downloaded: {len(logs)} entries saved to [file]{file_path}[/file]",
+    )
+
+    return DownloadLogsResponse(
+        success=True,
+        file_path=str(file_path),
+        log_count=len(logs),
+    )
+
+
 class RevealFileRequest(BaseModel):
     """Request to reveal a file in the system file manager."""
 

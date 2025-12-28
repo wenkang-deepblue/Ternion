@@ -193,6 +193,16 @@ class ApiClient {
       body: JSON.stringify(ports),
     });
   }
+
+  async downloadLogs(): Promise<{
+    success: boolean;
+    file_path: string;
+    log_count: number;
+  }> {
+    return this.request('/logs/download', {
+      method: 'POST',
+    });
+  }
 }
 
 export const api = new ApiClient();

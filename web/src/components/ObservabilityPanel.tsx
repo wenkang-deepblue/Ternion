@@ -49,6 +49,12 @@ export function ObservabilityPanel({ t, isDarkMode }: ObservabilityPanelProps) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [autoScroll, setAutoScroll] = useState(true);
+  const [downloading, setDownloading] = useState(false);
+  const [lastDownload, setLastDownload] = useState<{
+    filePath: string;
+    logCount: number;
+    timestamp: string;
+  } | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -104,6 +110,24 @@ export function ObservabilityPanel({ t, isDarkMode }: ObservabilityPanelProps) {
       await api.revealFile(path);
     } catch (err) {
       console.error('Failed to reveal file:', err);
+    }
+  };
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      const result = await api.downloadLogs();
+      if (result.success) {
+        setLastDownload({
+          filePath: result.file_path,
+          logCount: result.log_count,
+          timestamp: new Date().toLocaleTimeString(),
+        });
+      }
+    } catch (err) {
+      console.error('Failed to download logs:', err);
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -208,9 +232,16 @@ export function ObservabilityPanel({ t, isDarkMode }: ObservabilityPanelProps) {
           </label>
           <button
             onClick={handleClear}
-            className="btn text-sm bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 dark:hover:text-white transition-all duration-200 active:scale-95"
+            className="btn text-xs w-22 h-10 flex items-center justify-center bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200 transition-all duration-200 active:scale-95 hover:-translate-y-0.5 hover:bg-[#fae6e4] hover:text-[#e84133] dark:hover:bg-[#fae6e4] dark:hover:text-[#e84133]"
           >
             {t.logsClear}
+          </button>
+          <button
+            onClick={handleDownload}
+            disabled={downloading || logs.length === 0}
+            className="btn btn-primary text-xs w-22 h-10 whitespace-nowrap"
+          >
+            {downloading ? t.logsDownloading : t.logsDownload}
           </button>
         </div>
       </div>
@@ -242,6 +273,39 @@ export function ObservabilityPanel({ t, isDarkMode }: ObservabilityPanelProps) {
             ))
           )}
         </div>
+        {/* Download success notification */}
+        {lastDownload && (
+          <div className="mt-5 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-300">
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+              </svg>
+              <span className="font-medium">{t.logsDownloadSuccess}</span>
+              <span className="text-emerald-600 dark:text-emerald-400">
+                ({lastDownload.logCount} {t.logsEntriesCount})
+              </span>
+            </div>
+            <div className="flex items-center gap-3 text-sm">
+              <span className="text-slate-500 dark:text-slate-400">{t.logsDownloadedTo}:</span>
+              <button
+                onClick={() => handleRevealFile(lastDownload.filePath)}
+                className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline underline-offset-2 transition-colors font-mono text-xs cursor-pointer"
+                title={t.logsOpenFile}
+              >
+                {lastDownload.filePath}
+              </button>
+              <button
+                onClick={() => setLastDownload(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+                title="Dismiss"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

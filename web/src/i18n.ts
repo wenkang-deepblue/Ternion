@@ -155,6 +155,13 @@ export interface Translations {
   logsClear: string;
   logsAutoScroll: string;
   logsNoLogs: string;
+  logsDownload: string;
+  logsDownloading: string;
+  logsDownloadSuccess: string;
+  logsDownloadError: string;
+  logsDownloadedTo: string;
+  logsEntriesCount: string;
+  logsOpenFile: string;
 
   // Settings Dropdown
   settingsTitle: string;
@@ -194,7 +201,7 @@ const EN: Translations = {
   apiKeyTitle: 'API Key Management',
   apiKeyDescription: 'Add LLM provider API Keys to enable models',
   apiKeyStorageNote: '(Saved keys stored in: ~/.ternion/config.json)',
-  apiKeyPlaceholder: 'Better to be same as API console',
+  apiKeyPlaceholder: 'Recommand to be same as API console',
   apiKeyNameLabel: 'Key Name',
   apiKeyLabel: 'API Key',
   apiKeyTestAndSave: 'Test & Save',
@@ -315,6 +322,13 @@ const EN: Translations = {
   logsClear: 'Clear',
   logsAutoScroll: 'Auto-scroll',
   logsNoLogs: 'No logs yet',
+  logsDownload: 'Export',
+  logsDownloading: 'Exporting...',
+  logsDownloadSuccess: 'Logs exported successfully',
+  logsDownloadError: 'Failed to export logs',
+  logsDownloadedTo: 'Saved to',
+  logsEntriesCount: 'entries',
+  logsOpenFile: 'Show in File Manager',
 
   // Settings Dropdown
   settingsTitle: 'Settings',
@@ -475,6 +489,13 @@ const ZH: Translations = {
   logsClear: '清空',
   logsAutoScroll: '自动滚动',
   logsNoLogs: '暂无日志',
+  logsDownload: '导出',
+  logsDownloading: '导出中...',
+  logsDownloadSuccess: '日志导出成功',
+  logsDownloadError: '日志导出失败',
+  logsDownloadedTo: '已保存至',
+  logsEntriesCount: '条记录',
+  logsOpenFile: '在文件管理器中显示',
 
   // Settings Dropdown
   settingsTitle: '设置',
@@ -635,6 +656,13 @@ const ES: Translations = {
   logsClear: 'Limpiar',
   logsAutoScroll: 'Auto-desplazamiento',
   logsNoLogs: 'Sin registros aún',
+  logsDownload: 'Exportar',
+  logsDownloading: 'Exportando...',
+  logsDownloadSuccess: 'Registros exportados exitosamente',
+  logsDownloadError: 'Error al exportar registros',
+  logsDownloadedTo: 'Guardado en',
+  logsEntriesCount: 'entradas',
+  logsOpenFile: 'Mostrar en Administrador de archivos',
 
   // Settings Dropdown
   settingsTitle: 'Configuración',
@@ -795,6 +823,13 @@ const FR: Translations = {
   logsClear: 'Effacer',
   logsAutoScroll: 'Défilement auto',
   logsNoLogs: 'Aucun journal pour l\'instant',
+  logsDownload: 'Exporter',
+  logsDownloading: 'Exportation...',
+  logsDownloadSuccess: 'Journaux exportés avec succès',
+  logsDownloadError: 'Échec de l\'exportation des journaux',
+  logsDownloadedTo: 'Enregistré dans',
+  logsEntriesCount: 'entrées',
+  logsOpenFile: 'Afficher dans le gestionnaire de fichiers',
 
   // Settings Dropdown
   settingsTitle: 'Paramètres',
@@ -955,6 +990,13 @@ const DE: Translations = {
   logsClear: 'Löschen',
   logsAutoScroll: 'Auto-Scrollen',
   logsNoLogs: 'Noch keine Protokolle',
+  logsDownload: 'Exportieren',
+  logsDownloading: 'Wird exportiert...',
+  logsDownloadSuccess: 'Protokolle erfolgreich exportiert',
+  logsDownloadError: 'Fehler beim Exportieren der Protokolle',
+  logsDownloadedTo: 'Gespeichert unter',
+  logsEntriesCount: 'Einträge',
+  logsOpenFile: 'Im Dateimanager anzeigen',
 
   // Settings Dropdown
   settingsTitle: 'Einstellungen',
@@ -1115,6 +1157,13 @@ const JA: Translations = {
   logsClear: 'クリア',
   logsAutoScroll: '自動スクロール',
   logsNoLogs: 'ログはまだありません',
+  logsDownload: 'エクスポート',
+  logsDownloading: 'エクスポート中...',
+  logsDownloadSuccess: 'ログを正常にエクスポートしました',
+  logsDownloadError: 'ログのエクスポートに失敗しました',
+  logsDownloadedTo: '保存先',
+  logsEntriesCount: '件',
+  logsOpenFile: 'ファイルマネージャーで表示',
 
   // Settings Dropdown
   settingsTitle: '設定',
@@ -1275,6 +1324,13 @@ const KO: Translations = {
   logsClear: '지우기',
   logsAutoScroll: '자동 스크롤',
   logsNoLogs: '아직 로그가 없습니다',
+  logsDownload: '내보내기',
+  logsDownloading: '내보내는 중...',
+  logsDownloadSuccess: '로그 내보내기 완료',
+  logsDownloadError: '로그 내보내기 실패',
+  logsDownloadedTo: '저장 위치',
+  logsEntriesCount: '개 항목',
+  logsOpenFile: '파일 관리자에서 보기',
 
   // Settings Dropdown
   settingsTitle: '설정',
