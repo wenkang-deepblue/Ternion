@@ -120,20 +120,20 @@ body {
 }
 */
 
-@keyframes rainbow-rotate {
-  0% {
-    --rainbow-angle: 0deg;
-  }
-
-  100% {
-    --rainbow-angle: 360deg;
-  }
+/* Animation for linear path rainbow movement using background-position */
+@property --rainbow-offset {
+  syntax: '<percentage>';
+  initial-value: 0%;
+  inherits: false;
 }
 
-@property --rainbow-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
+@keyframes rainbow-march {
+  0% {
+    --rainbow-offset: 0%;
+  }
+  100% {
+    --rainbow-offset: 100%;
+  }
 }
 
 /* Input styles */
@@ -181,27 +181,44 @@ body {
   font-size: 0.8rem;
 }
 
-/* Rainbow glow effect - uses :has() to detect focused input and adds glow via ::before */
 .input-rainbow-glow {
   position: relative;
 }
 
-/* Outer glow layer - blurred rainbow gradient */
+/* Outer glow layer - blurred rainbow effect extending outward */
 .input-rainbow-glow::before {
   content: '';
   position: absolute;
   inset: -2px;
-  border-radius: 0.75rem;
-  background: conic-gradient(from var(--rainbow-angle),
-      #e84133 0%,
-      #f87915 12.5%,
-      #f9ba02 25%,
-      #32a651 37.5%,
-      #22bfde 50%,
-      #4083f2 62.5%,
-      #9f40f2 75%,
-      #f2379e 87.5%,
-      #e84133 100%);
+  border-radius: 1rem;
+  background: 
+    /* Top edge: starts at red, ends near cyan */
+    linear-gradient(90deg,
+      #e84133, #f87915, #f9ba02, #32a651, #22bfde, #4083f2, #9f40f2, #f2379e, #e84133
+    ),
+    /* Right edge: starts at cyan (where top ended) */
+    linear-gradient(180deg,
+      #22bfde, #4083f2, #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651, #22bfde
+    ),
+    /* Bottom edge: starts at purple, reversed direction */
+    linear-gradient(270deg,
+      #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651, #22bfde, #4083f2, #9f40f2
+    ),
+    /* Left edge: starts at green (where bottom ended) */
+    linear-gradient(0deg,
+      #32a651, #22bfde, #4083f2, #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651
+    );
+  background-size:
+    200% 8px,
+    8px 200%,
+    200% 8px,
+    8px 200%;
+  background-position:
+    calc(100% - var(--rainbow-offset) * 2) 0,
+    100% calc(100% - var(--rainbow-offset) * 2),
+    calc(var(--rainbow-offset) * 2) 100%,
+    0 calc(var(--rainbow-offset) * 2);
+  background-repeat: repeat-x, repeat-y, repeat-x, repeat-y;
   filter: blur(6px);
   opacity: 0;
   transition: opacity 0.3s;
@@ -215,17 +232,36 @@ body {
   position: absolute;
   inset: 0;
   border-radius: 0.5rem;
-  padding: 1.5px;
-  background: conic-gradient(from var(--rainbow-angle),
-      #e84133 0%,
-      #f87915 12.5%,
-      #f9ba02 25%,
-      #32a651 37.5%,
-      #22bfde 50%,
-      #4083f2 62.5%,
-      #9f40f2 75%,
-      #f2379e 87.5%,
-      #e84133 100%);
+  /* Same 4-edge gradient approach with offset colors for seamless corners */
+  background: 
+    /* Top edge: starts at red */
+    linear-gradient(90deg,
+      #e84133, #f87915, #f9ba02, #32a651, #22bfde, #4083f2, #9f40f2, #f2379e, #e84133
+    ),
+    /* Right edge: starts at cyan */
+    linear-gradient(180deg,
+      #22bfde, #4083f2, #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651, #22bfde
+    ),
+    /* Bottom edge: starts at purple, reversed direction */
+    linear-gradient(270deg,
+      #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651, #22bfde, #4083f2, #9f40f2
+    ),
+    /* Left edge: starts at green, reversed direction */
+    linear-gradient(0deg,
+      #32a651, #22bfde, #4083f2, #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651
+    );
+  background-size:
+    200% 1.5px,
+    1.5px 200%,
+    200% 1.5px,
+    1.5px 200%;
+  /* Clockwise rotation: same direction as ::before */
+  background-position:
+    calc(100% - var(--rainbow-offset) * 2) 0,
+    100% calc(100% - var(--rainbow-offset) * 2),
+    calc(var(--rainbow-offset) * 2) 100%,
+    0 calc(var(--rainbow-offset) * 2);
+  background-repeat: repeat-x, repeat-y, repeat-x, repeat-y;
   -webkit-mask: 
     linear-gradient(#fff 0 0) content-box, 
     linear-gradient(#fff 0 0);
@@ -234,6 +270,7 @@ body {
     linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
+  padding: 1.5px;
   opacity: 0;
   transition: opacity 0.3s;
   z-index: 2;
@@ -242,12 +279,12 @@ body {
 
 .input-rainbow-glow:has(.input:focus)::before {
   opacity: 0.7;
-  animation: rainbow-rotate 4.5s linear infinite;
+  animation: rainbow-march 6s linear infinite;
 }
 
 .input-rainbow-glow:has(.input:focus)::after {
   opacity: 1;
-  animation: rainbow-rotate 4.5s linear infinite;
+  animation: rainbow-march 6s linear infinite;
 }
 
 /* Hide default border when rainbow is active */
