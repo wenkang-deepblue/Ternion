@@ -273,6 +273,34 @@ async def handle_passthrough(
                 max_tokens=request.max_tokens,
             )
 
+            # Track usage if available
+            if response.usage:
+                usage_data = response.usage or {}
+                prompt_tokens = (
+                    usage_data.get("prompt_tokens")
+                    or usage_data.get("input_tokens")
+                    or 0
+                )
+                completion_tokens = (
+                    usage_data.get("completion_tokens")
+                    or usage_data.get("output_tokens")
+                    or 0
+                )
+                thoughts_tokens = usage_data.get("thoughts_tokens") or usage_data.get("reasoning_tokens") or 0
+                total_tokens = usage_data.get("total_tokens", 0)
+                if provider_name == "google":
+                    output_for_cost = completion_tokens + thoughts_tokens
+                else:
+                    output_for_cost = completion_tokens
+                budget_manager.record_usage(
+                    provider=provider_name,
+                    model=request.model,
+                    input_tokens=prompt_tokens,
+                    output_tokens=output_for_cost,
+                    thoughts_tokens=thoughts_tokens,
+                    context_length=total_tokens,
+                )
+
             return JSONResponse(
                 content=ChatCompletionResponse(
                     model=request.model,

@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 
 from ternion.core.models import ChatMessage, ImageContent, TextContent
 from ternion.providers.base import BaseProvider, ProviderResponse
+from ternion.utils.log_manager import log_manager
 
 logger = structlog.get_logger(__name__)
 
@@ -97,13 +98,45 @@ class OpenAIProvider(BaseProvider):
         )
 
         choice = response.choices[0]
+        usage = response.usage
+
+        # Extract token counts
+        prompt_tokens = usage.prompt_tokens if usage else 0
+        completion_tokens = usage.completion_tokens if usage else 0
+        total_tokens = usage.total_tokens if usage else 0
+
+        # Extract reasoning tokens if available (included in completion_tokens)
+        reasoning_tokens = 0
+        if usage and hasattr(usage, "completion_tokens_details") and usage.completion_tokens_details:
+            reasoning_tokens = getattr(usage.completion_tokens_details, "reasoning_tokens", 0) or 0
+
+        logger.info(
+            "openai_token_usage",
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            reasoning_tokens=reasoning_tokens,
+            total_tokens=total_tokens,
+        )
+
+        # Emit to UI log panel
+        log_manager.emit_token_usage(
+            provider="openai",
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            thoughts_tokens=reasoning_tokens,
+            total_tokens=total_tokens,
+        )
+
         return ProviderResponse(
             content=choice.message.content or "",
             finish_reason=choice.finish_reason,
             usage={
-                "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-                "completion_tokens": response.usage.completion_tokens if response.usage else 0,
-                "total_tokens": response.usage.total_tokens if response.usage else 0,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "reasoning_tokens": reasoning_tokens,
+                "total_tokens": total_tokens,
             },
             raw_response=response,
         )
@@ -144,12 +177,89 @@ class OpenAIProvider(BaseProvider):
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
+            stream_options={"include_usage": True},
             **kwargs,
         )
 
+        received_text = ""
+        usage_data = None
+
         async for chunk in stream:
+            # Check for usage data in final chunk
+            if hasattr(chunk, "usage") and chunk.usage:
+                usage_data = chunk.usage
+
             if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+                content = chunk.choices[0].delta.content
+                received_text += content
+                yield content
+
+        # Log token usage after stream completes
+        if usage_data:
+            prompt_tokens = usage_data.prompt_tokens or 0
+            completion_tokens = usage_data.completion_tokens or 0
+            total_tokens = usage_data.total_tokens or 0
+
+            # Extract reasoning tokens if available
+            reasoning_tokens = 0
+            if hasattr(usage_data, "completion_tokens_details") and usage_data.completion_tokens_details:
+                reasoning_tokens = getattr(usage_data.completion_tokens_details, "reasoning_tokens", 0) or 0
+
+            logger.info(
+                "openai_token_usage",
+                model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                reasoning_tokens=reasoning_tokens,
+                total_tokens=total_tokens,
+            )
+
+            log_manager.emit_token_usage(
+                provider="openai",
+                model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                thoughts_tokens=reasoning_tokens,
+                total_tokens=total_tokens,
+            )
+
+            # Record usage for cost tracking
+            from ternion.core.budget import budget_manager
+            budget_manager.record_usage(
+                provider="openai",
+                model=model,
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                thoughts_tokens=reasoning_tokens,
+            )
+        elif received_text:
+            # Fallback: estimate tokens from received content
+            from ternion.utils.token_estimator import estimate_tokens_from_text
+
+            estimated_output = estimate_tokens_from_text(received_text)
+            logger.warning(
+                "openai_token_usage_estimated",
+                model=model,
+                estimated_output_tokens=estimated_output,
+            )
+
+            log_manager.emit_token_usage_interrupted(
+                provider="openai",
+                model=model,
+                prompt_tokens=0,
+                received_output_tokens=estimated_output,
+                estimated_remaining=0,
+                estimated_total=estimated_output,
+            )
+            # Record estimated usage for interrupted streams
+            from ternion.core.budget import budget_manager
+            budget_manager.record_usage(
+                provider="openai",
+                model=model,
+                input_tokens=0,
+                output_tokens=estimated_output,
+                thoughts_tokens=0,
+            )
 
     async def is_available(self) -> bool:
         """

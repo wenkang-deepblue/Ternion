@@ -12,8 +12,11 @@ from typing import Any
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig
 
+from ternion.core.budget import budget_manager
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
 from ternion.providers.base import BaseProvider, ProviderResponse
+from ternion.utils.log_manager import log_manager
+from ternion.utils.token_estimator import estimate_tokens_from_text
 
 logger = structlog.get_logger(__name__)
 
@@ -103,13 +106,41 @@ class GoogleProvider(BaseProvider):
             generation_config=config,
         )
 
+        # Extract token counts from usage_metadata
+        usage_metadata = response.usage_metadata
+        prompt_tokens = usage_metadata.prompt_token_count if usage_metadata else 0
+        candidates_tokens = usage_metadata.candidates_token_count if usage_metadata else 0
+        thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
+        total_tokens = usage_metadata.total_token_count if usage_metadata else 0
+        output_tokens = candidates_tokens + thoughts_tokens
+
+        logger.info(
+            "gemini_token_usage",
+            model=model_name,
+            prompt_tokens=prompt_tokens,
+            candidates_tokens=candidates_tokens,
+            thoughts_tokens=thoughts_tokens,
+            total_tokens=total_tokens,
+        )
+
+        # Emit to UI log panel
+        log_manager.emit_token_usage(
+            provider="google",
+            model=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=output_tokens,
+            thoughts_tokens=thoughts_tokens,
+            total_tokens=total_tokens,
+        )
+
         return ProviderResponse(
             content=response.text,
             finish_reason="stop",
             usage={
-                "prompt_tokens": response.usage_metadata.prompt_token_count if response.usage_metadata else 0,
-                "completion_tokens": response.usage_metadata.candidates_token_count if response.usage_metadata else 0,
-                "total_tokens": response.usage_metadata.total_token_count if response.usage_metadata else 0,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": candidates_tokens,
+                "thoughts_tokens": thoughts_tokens,
+                "total_tokens": total_tokens,
             },
             raw_response=response,
         )
@@ -165,9 +196,74 @@ class GoogleProvider(BaseProvider):
             stream=True,
         )
 
+        last_chunk = None
+        received_text = ""
         async for chunk in response:
+            last_chunk = chunk
             if chunk.text:
+                received_text += chunk.text
                 yield chunk.text
+
+        # Log token usage from the final chunk
+        if last_chunk and hasattr(last_chunk, "usage_metadata") and last_chunk.usage_metadata:
+            usage_metadata = last_chunk.usage_metadata
+            prompt_tokens = usage_metadata.prompt_token_count if usage_metadata else 0
+            candidates_tokens = usage_metadata.candidates_token_count if usage_metadata else 0
+            thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
+            total_tokens = usage_metadata.total_token_count if usage_metadata else 0
+            output_tokens = candidates_tokens + thoughts_tokens
+
+            logger.info(
+                "gemini_token_usage",
+                model=model_name,
+                prompt_tokens=prompt_tokens,
+                candidates_tokens=output_tokens,
+                thoughts_tokens=thoughts_tokens,
+                total_tokens=total_tokens,
+            )
+
+            # Emit to UI log panel
+            log_manager.emit_token_usage(
+                provider="google",
+                model=model_name,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=output_tokens,
+                thoughts_tokens=thoughts_tokens,
+                total_tokens=total_tokens,
+            )
+
+            # Record usage for cost tracking
+            budget_manager.record_usage(
+                provider="google",
+                model=model_name,
+                input_tokens=prompt_tokens,
+                output_tokens=output_tokens,
+                thoughts_tokens=thoughts_tokens,
+                context_length=total_tokens,
+            )
+        elif received_text:
+            estimated_output = estimate_tokens_from_text(received_text)
+            logger.warning(
+                "gemini_token_usage_estimated",
+                model=model_name,
+                estimated_output_tokens=estimated_output,
+            )
+            log_manager.emit_token_usage_interrupted(
+                provider="google",
+                model=model_name,
+                prompt_tokens=0,
+                received_output_tokens=estimated_output,
+                estimated_remaining=0,
+                estimated_total=estimated_output,
+            )
+            # Record estimated usage for interrupted streams
+            budget_manager.record_usage(
+                provider="google",
+                model=model_name,
+                input_tokens=0,
+                output_tokens=estimated_output,
+                thoughts_tokens=0,
+            )
 
     async def is_available(self) -> bool:
         """

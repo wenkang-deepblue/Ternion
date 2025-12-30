@@ -129,6 +129,19 @@ export interface Translations {
   usageRequests: string;
   usageByProvider: string;
   usageNoData: string;
+  usageDisclaimer: string;
+  usageDontRemind: string;
+  usageDailyUsage: string;
+  usageMonthlyUsage: string;
+  usageAllTokens: string;
+  usageCost: string;
+  usageInputTokens: string;
+  usageOutputTokens: string;
+  usagePercentage: string;
+  usageModifyBudget: string;
+  usageCurrentBudget: string;
+  usageChangeTo: string;
+  usageConfirm: string;
   loading: string;
 
   // Common UI
@@ -275,6 +288,19 @@ const EN: Translations = {
   usageRequests: 'Requests',
   usageByProvider: 'Cost by Provider',
   usageNoData: 'No usage data',
+  usageDisclaimer: 'Usage data shown here is estimated and may not reflect actual billing. Please refer to your API provider\'s billing dashboard for accurate costs.',
+  usageDontRemind: "Don't show again",
+  usageDailyUsage: 'Daily Usage',
+  usageMonthlyUsage: 'Monthly Usage',
+  usageAllTokens: 'All Tokens',
+  usageCost: 'Cost',
+  usageInputTokens: 'Input Tokens',
+  usageOutputTokens: 'Output Tokens',
+  usagePercentage: 'Usage Amount',
+  usageModifyBudget: 'Modify',
+  usageCurrentBudget: 'Current budget limit',
+  usageChangeTo: 'change to',
+  usageConfirm: 'Confirm',
   loading: 'Loading...',
 
   // Common UI
@@ -442,6 +468,19 @@ const ZH: Translations = {
   usageRequests: '请求数',
   usageByProvider: '各提供商用量',
   usageNoData: '暂无用量数据',
+  usageDisclaimer: '此处显示的用量数据为估算值，可能与实际账单不符。请以 API 提供商的账单为准。',
+  usageDontRemind: '不再显示',
+  usageDailyUsage: '每日用量',
+  usageMonthlyUsage: '月度用量',
+  usageAllTokens: '全部Token',
+  usageCost: '金额',
+  usageInputTokens: '输入Token',
+  usageOutputTokens: '输出Token',
+  usagePercentage: '用量金额',
+  usageModifyBudget: '修改预算',
+  usageCurrentBudget: '当前预算上限',
+  usageChangeTo: '调整为',
+  usageConfirm: '确认',
   loading: '加载中...',
 
   // Common UI
@@ -609,6 +648,19 @@ const ES: Translations = {
   usageRequests: 'Solicitudes',
   usageByProvider: 'Costo por Proveedor',
   usageNoData: 'Sin datos de uso',
+  usageDisclaimer: 'Los datos de uso mostrados aquí son estimados y pueden no reflejar la facturación real. Consulte el panel de facturación de su proveedor de API para obtener costos precisos.',
+  usageDontRemind: 'No volver a mostrar',
+  usageDailyUsage: 'Uso Diario',
+  usageMonthlyUsage: 'Uso Mensual',
+  usageAllTokens: 'Todos los Tokens',
+  usageCost: 'Costo',
+  usageInputTokens: 'Tokens de Entrada',
+  usageOutputTokens: 'Tokens de Salida',
+  usagePercentage: 'Monto de Uso',
+  usageModifyBudget: 'Modificar',
+  usageCurrentBudget: 'Límite de presupuesto actual',
+  usageChangeTo: 'cambiar a',
+  usageConfirm: 'Confirmar',
   loading: 'Cargando...',
 
   // Common UI
@@ -776,6 +828,19 @@ const FR: Translations = {
   usageRequests: 'Requêtes',
   usageByProvider: 'Coût par Fournisseur',
   usageNoData: 'Aucune donnée d\'utilisation',
+  usageDisclaimer: 'Les données d\'utilisation affichées ici sont estimées et peuvent ne pas refléter la facturation réelle. Veuillez consulter le tableau de bord de facturation de votre fournisseur d\'API pour des coûts précis.',
+  usageDontRemind: 'Ne plus afficher',
+  usageDailyUsage: 'Utilisation Quotidienne',
+  usageMonthlyUsage: 'Utilisation Mensuelle',
+  usageAllTokens: 'Tous les Tokens',
+  usageCost: 'Coût',
+  usageInputTokens: 'Tokens d\'Entrée',
+  usageOutputTokens: 'Tokens de Sortie',
+  usagePercentage: 'Montant d\'Utilisation',
+  usageModifyBudget: 'Modifier',
+  usageCurrentBudget: 'Limite de budget actuelle',
+  usageChangeTo: 'changer en',
+  usageConfirm: 'Confirmer',
   loading: 'Chargement...',
 
   // Common UI
@@ -943,6 +1008,19 @@ const DE: Translations = {
   usageRequests: 'Anfragen',
   usageByProvider: 'Kosten pro Anbieter',
   usageNoData: 'Keine Nutzungsdaten',
+  usageDisclaimer: 'Die hier angezeigten Nutzungsdaten sind geschätzt und entsprechen möglicherweise nicht der tatsächlichen Abrechnung. Bitte überprüfen Sie das Abrechnungs-Dashboard Ihres API-Anbieters für genaue Kosten.',
+  usageDontRemind: 'Nicht mehr anzeigen',
+  usageDailyUsage: 'Tägliche Nutzung',
+  usageMonthlyUsage: 'Monatliche Nutzung',
+  usageAllTokens: 'Alle Tokens',
+  usageCost: 'Kosten',
+  usageInputTokens: 'Eingabe-Tokens',
+  usageOutputTokens: 'Ausgabe-Tokens',
+  usagePercentage: 'Nutzungsbetrag',
+  usageModifyBudget: 'Ändern',
+  usageCurrentBudget: 'Aktuelles Budgetlimit',
+  usageChangeTo: 'ändern zu',
+  usageConfirm: 'Bestätigen',
   loading: 'Laden...',
 
   // Common UI
@@ -1110,6 +1188,19 @@ const JA: Translations = {
   usageRequests: 'リクエスト数',
   usageByProvider: 'プロバイダー別コスト',
   usageNoData: '使用データなし',
+  usageDisclaimer: 'ここに表示される使用量データは推定値であり、実際の請求額と異なる場合があります。正確なコストについては、APIプロバイダーの請求ダッシュボードをご確認ください。',
+  usageDontRemind: '今後表示しない',
+  usageDailyUsage: '日別使用量',
+  usageMonthlyUsage: '月別使用量',
+  usageAllTokens: 'すべてのトークン',
+  usageCost: 'コスト',
+  usageInputTokens: '入力トークン',
+  usageOutputTokens: '出力トークン',
+  usagePercentage: '使用金額',
+  usageModifyBudget: '修正',
+  usageCurrentBudget: '現在の予算上限',
+  usageChangeTo: '変更先',
+  usageConfirm: '確認',
   loading: '読み込み中...',
 
   // Common UI
@@ -1277,6 +1368,19 @@ const KO: Translations = {
   usageRequests: '요청 수',
   usageByProvider: '공급자별 비용',
   usageNoData: '사용 데이터 없음',
+  usageDisclaimer: '여기에 표시된 사용량 데이터는 추정치이며 실제 청구 금액과 다를 수 있습니다. 정확한 비용은 API 제공업체의 청구 대시보드를 참조하세요.',
+  usageDontRemind: '다시 표시 안 함',
+  usageDailyUsage: '일별 사용량',
+  usageMonthlyUsage: '월별 사용량',
+  usageAllTokens: '모든 토큰',
+  usageCost: '비용',
+  usageInputTokens: '입력 토큰',
+  usageOutputTokens: '출력 토큰',
+  usagePercentage: '사용 금액',
+  usageModifyBudget: '수정',
+  usageCurrentBudget: '현재 예산 한도',
+  usageChangeTo: '변경',
+  usageConfirm: '확인',
   loading: '로딩 중...',
 
   // Common UI

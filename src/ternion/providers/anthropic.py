@@ -12,8 +12,10 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
+from ternion.core.budget import budget_manager
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
 from ternion.providers.base import BaseProvider, ProviderResponse
+from ternion.utils.log_manager import log_manager
 
 logger = structlog.get_logger(__name__)
 
@@ -92,19 +94,53 @@ class AnthropicProvider(BaseProvider):
             **kwargs,
         )
 
-        # Extract text from response content
+        # Extract text from response content and estimate thinking tokens
         content = ""
+        thinking_text = ""
         for block in response.content:
-            if hasattr(block, "text"):
+            if hasattr(block, "type"):
+                if block.type == "thinking" and hasattr(block, "thinking"):
+                    thinking_text += block.thinking
+                elif block.type == "text" and hasattr(block, "text"):
+                    content += block.text
+            elif hasattr(block, "text"):
                 content += block.text
+
+        # Extract token counts
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+        total_tokens = input_tokens + output_tokens
+
+        # Estimate thinking tokens (4 chars = 1 token, included in output_tokens)
+        thinking_tokens = len(thinking_text.encode("utf-8")) // 4 if thinking_text else 0
+
+        logger.info(
+            "anthropic_token_usage",
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            thinking_tokens=thinking_tokens,
+            total_tokens=total_tokens,
+        )
+
+        # Emit to UI log panel
+        log_manager.emit_token_usage(
+            provider="anthropic",
+            model=model,
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            thoughts_tokens=thinking_tokens,
+            total_tokens=total_tokens,
+        )
 
         return ProviderResponse(
             content=content,
             finish_reason=response.stop_reason,
             usage={
-                "prompt_tokens": response.usage.input_tokens,
-                "completion_tokens": response.usage.output_tokens,
-                "total_tokens": response.usage.input_tokens + response.usage.output_tokens,
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "thoughts_tokens": thinking_tokens,
+                "total_tokens": total_tokens,
             },
             raw_response=response,
         )
@@ -147,8 +183,81 @@ class AnthropicProvider(BaseProvider):
             max_tokens=max_tokens or 4096,
             **kwargs,
         ) as stream:
+            received_text = ""
             async for text in stream.text_stream:
+                received_text += text
                 yield text
+
+            # Get final message for token usage
+            final_message = await stream.get_final_message()
+            if final_message and final_message.usage:
+                input_tokens = final_message.usage.input_tokens
+                output_tokens = final_message.usage.output_tokens
+                total_tokens = input_tokens + output_tokens
+
+                # Estimate thinking tokens from content blocks
+                thinking_tokens = 0
+                if final_message.content:
+                    for block in final_message.content:
+                        if hasattr(block, "type") and block.type == "thinking":
+                            if hasattr(block, "thinking"):
+                                thinking_tokens += len(block.thinking.encode("utf-8")) // 4
+
+                logger.info(
+                    "anthropic_token_usage",
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    thinking_tokens=thinking_tokens,
+                    total_tokens=total_tokens,
+                )
+
+                log_manager.emit_token_usage(
+                    provider="anthropic",
+                    model=model,
+                    prompt_tokens=input_tokens,
+                    completion_tokens=output_tokens,
+                    thoughts_tokens=thinking_tokens,
+                    total_tokens=total_tokens,
+                )
+
+                # Record usage for cost tracking
+                from ternion.core.budget import budget_manager
+                budget_manager.record_usage(
+                    provider="anthropic",
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    thoughts_tokens=thinking_tokens,
+                    context_length=total_tokens,
+                )
+            elif received_text:
+                # Fallback: estimate tokens from received content
+                from ternion.utils.token_estimator import estimate_tokens_from_text
+
+                estimated_output = estimate_tokens_from_text(received_text)
+                logger.warning(
+                    "anthropic_token_usage_estimated",
+                    model=model,
+                    estimated_output_tokens=estimated_output,
+                )
+
+                log_manager.emit_token_usage_interrupted(
+                    provider="anthropic",
+                    model=model,
+                    prompt_tokens=0,
+                    received_output_tokens=estimated_output,
+                    estimated_remaining=0,
+                    estimated_total=estimated_output,
+                )
+                # Record estimated usage for interrupted streams
+                budget_manager.record_usage(
+                    provider="anthropic",
+                    model=model,
+                    input_tokens=0,
+                    output_tokens=estimated_output,
+                    thoughts_tokens=0,
+                )
 
     async def is_available(self) -> bool:
         """

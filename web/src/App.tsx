@@ -235,7 +235,7 @@ function AppContent() {
           </div>
         )}
         {activeTab === 'ports' && <PortsSettings t={t} isDarkMode={isDarkMode} />}
-        {activeTab === 'usage' && <UsageDashboard t={t} />}
+        {activeTab === 'usage' && <UsageDashboard t={t} isDarkMode={isDarkMode} onConfigUpdate={handleConfigUpdate} />}
         {activeTab === 'logs' && <ObservabilityPanel t={t} isDarkMode={isDarkMode} />}
       </main>
 

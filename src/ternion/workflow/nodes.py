@@ -9,6 +9,7 @@ import structlog
 from typing import Any
 
 from ternion.core.config import settings
+from ternion.core.budget import budget_manager
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.providers.manager import provider_manager
 from ternion.router.prompts import (
@@ -18,6 +19,7 @@ from ternion.router.prompts import (
     FINAL_CHECK_PROMPT,
 )
 from ternion.utils.i18n import t, ThinkingLogKey
+from ternion.utils.log_manager import log_manager
 from ternion.workflow.state import TernionState, WorkflowPhase, ReviewResult
 
 logger = structlog.get_logger(__name__)
@@ -70,6 +72,40 @@ async def divergence_node(state: TernionState) -> TernionState:
                 messages=council_messages,
                 temperature=0.7,
             )
+            usage = response.usage or {}
+            input_tokens = (
+                usage.get("prompt_tokens")
+                or usage.get("input_tokens")
+                or 0
+            )
+            completion_tokens = (
+                usage.get("completion_tokens")
+                or usage.get("output_tokens")
+                or 0
+            )
+            thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
+            output_for_cost = (
+                completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+            )
+            budget_manager.record_usage(
+                provider=provider.name,
+                model=getattr(provider, "default_model", "unknown"),
+                input_tokens=input_tokens,
+                output_tokens=output_for_cost,
+                thoughts_tokens=thoughts_tokens,
+                context_length=usage.get("total_tokens", 0),
+            )
+            if input_tokens or output_for_cost or thoughts_tokens:
+                log_manager.emit(
+                    level="INFO",
+                    category="WORKFLOW",
+                    message=(
+                        f"divergence_usage | provider={provider.name} | "
+                        f"model={getattr(provider, 'default_model', 'unknown')} | "
+                        f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
+                        f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
+                    ),
+                )
             return {
                 "council_id": council_id,
                 "provider": provider_name,
@@ -167,6 +203,38 @@ async def convergence_node(state: TernionState) -> TernionState:
             messages=messages,
             temperature=0.5,  # Lower temperature for synthesis
         )
+        usage = response.usage or {}
+        input_tokens = (
+            usage.get("prompt_tokens")
+            or usage.get("input_tokens")
+            or 0
+        )
+        completion_tokens = (
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or 0
+        )
+        thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
+        output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        budget_manager.record_usage(
+            provider=provider.name,
+            model=getattr(provider, "default_model", "unknown"),
+            input_tokens=input_tokens,
+            output_tokens=output_for_cost,
+            thoughts_tokens=thoughts_tokens,
+            context_length=usage.get("total_tokens", 0),
+        )
+        if input_tokens or output_for_cost or thoughts_tokens:
+            log_manager.emit(
+                level="INFO",
+                category="WORKFLOW",
+                message=(
+                    f"convergence_usage | provider={provider.name} | "
+                    f"model={getattr(provider, 'default_model', 'unknown')} | "
+                    f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
+                    f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
+                ),
+            )
 
         preview = response.content[:80].replace("\n", " ") + "..."
         thinking_logs.append(t(ThinkingLogKey.CONVERGENCE_COMPLETE, preview=preview))
@@ -244,6 +312,38 @@ async def execution_node(state: TernionState) -> TernionState:
             messages=messages,
             temperature=0.3,  # Lower temperature for code generation
         )
+        usage = response.usage or {}
+        input_tokens = (
+            usage.get("prompt_tokens")
+            or usage.get("input_tokens")
+            or 0
+        )
+        completion_tokens = (
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or 0
+        )
+        thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
+        output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        budget_manager.record_usage(
+            provider=provider.name,
+            model=getattr(provider, "default_model", "unknown"),
+            input_tokens=input_tokens,
+            output_tokens=output_for_cost,
+            thoughts_tokens=thoughts_tokens,
+            context_length=usage.get("total_tokens", 0),
+        )
+        if input_tokens or output_for_cost or thoughts_tokens:
+            log_manager.emit(
+                level="INFO",
+                category="WORKFLOW",
+                message=(
+                    f"execution_usage | provider={provider.name} | "
+                    f"model={getattr(provider, 'default_model', 'unknown')} | "
+                    f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
+                    f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
+                ),
+            )
 
         thinking_logs.append(t(ThinkingLogKey.EXECUTION_COMPLETE))
 
@@ -312,6 +412,38 @@ async def final_check_node(state: TernionState) -> TernionState:
             messages=messages,
             temperature=0.2,  # Low temperature for critical review
         )
+        usage = response.usage or {}
+        input_tokens = (
+            usage.get("prompt_tokens")
+            or usage.get("input_tokens")
+            or 0
+        )
+        completion_tokens = (
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or 0
+        )
+        thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
+        output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        budget_manager.record_usage(
+            provider=provider.name,
+            model=getattr(provider, "default_model", "unknown"),
+            input_tokens=input_tokens,
+            output_tokens=output_for_cost,
+            thoughts_tokens=thoughts_tokens,
+            context_length=usage.get("total_tokens", 0),
+        )
+        if input_tokens or output_for_cost or thoughts_tokens:
+            log_manager.emit(
+                level="INFO",
+                category="WORKFLOW",
+                message=(
+                    f"final_check_usage | provider={provider.name} | "
+                    f"model={getattr(provider, 'default_model', 'unknown')} | "
+                    f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
+                    f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
+                ),
+            )
 
         review_text = response.content.lower()
 

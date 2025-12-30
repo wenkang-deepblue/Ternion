@@ -120,19 +120,19 @@ body {
 }
 */
 
-@keyframes rainbow-rotate {
-  0% {
-    --rainbow-angle: 0deg;
+@keyframes rainbow-loop {
+  from {
+    --rainbow-shift: 0px;
   }
 
-  100% {
-    --rainbow-angle: 360deg;
+  to {
+    --rainbow-shift: var(--rainbow-cycle);
   }
 }
 
-@property --rainbow-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
+@property --rainbow-shift {
+  syntax: '<length>';
+  initial-value: 0px;
   inherits: false;
 }
 
@@ -184,6 +184,19 @@ body {
 /* Rainbow glow effect - uses :has() to detect focused input and adds glow via ::before */
 .input-rainbow-glow {
   position: relative;
+  --rainbow-segment: 14px;
+  --rainbow-cycle: calc(var(--rainbow-segment) * 9);
+  --rainbow-shift: 0px;
+  --rainbow-stops:
+    #e84133 0 calc(1 * var(--rainbow-segment)),
+    #f87915 calc(1 * var(--rainbow-segment)) calc(2 * var(--rainbow-segment)),
+    #f9ba02 calc(2 * var(--rainbow-segment)) calc(3 * var(--rainbow-segment)),
+    #32a651 calc(3 * var(--rainbow-segment)) calc(4 * var(--rainbow-segment)),
+    #22bfde calc(4 * var(--rainbow-segment)) calc(5 * var(--rainbow-segment)),
+    #4083f2 calc(5 * var(--rainbow-segment)) calc(6 * var(--rainbow-segment)),
+    #9f40f2 calc(6 * var(--rainbow-segment)) calc(7 * var(--rainbow-segment)),
+    #f2379e calc(7 * var(--rainbow-segment)) calc(8 * var(--rainbow-segment)),
+    #e84133 calc(8 * var(--rainbow-segment)) calc(9 * var(--rainbow-segment));
 }
 
 /* Outer glow layer - blurred rainbow gradient */
@@ -192,16 +205,17 @@ body {
   position: absolute;
   inset: -2px;
   border-radius: 0.75rem;
-  background: conic-gradient(from var(--rainbow-angle),
-      #e84133 0%,
-      #f87915 12.5%,
-      #f9ba02 25%,
-      #32a651 37.5%,
-      #22bfde 50%,
-      #4083f2 62.5%,
-      #9f40f2 75%,
-      #f2379e 87.5%,
-      #e84133 100%);
+  background:
+    linear-gradient(90deg, var(--rainbow-stops)) top / var(--rainbow-cycle) 3px repeat-x,
+    linear-gradient(90deg, var(--rainbow-stops)) bottom / var(--rainbow-cycle) 3px repeat-x,
+    linear-gradient(0deg, var(--rainbow-stops)) left / 3px var(--rainbow-cycle) repeat-y,
+    linear-gradient(0deg, var(--rainbow-stops)) right / 3px var(--rainbow-cycle) repeat-y;
+  background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+  background-position:
+    var(--rainbow-shift) 0,
+    calc(-1 * var(--rainbow-shift)) 100%,
+    0 var(--rainbow-shift),
+    100% calc(-1 * var(--rainbow-shift));
   filter: blur(6px);
   opacity: 0;
   transition: opacity 0.3s;
@@ -216,16 +230,17 @@ body {
   inset: 0;
   border-radius: 0.5rem;
   padding: 1.5px;
-  background: conic-gradient(from var(--rainbow-angle),
-      #e84133 0%,
-      #f87915 12.5%,
-      #f9ba02 25%,
-      #32a651 37.5%,
-      #22bfde 50%,
-      #4083f2 62.5%,
-      #9f40f2 75%,
-      #f2379e 87.5%,
-      #e84133 100%);
+  background:
+    linear-gradient(90deg, var(--rainbow-stops)) top / var(--rainbow-cycle) 2px repeat-x,
+    linear-gradient(90deg, var(--rainbow-stops)) bottom / var(--rainbow-cycle) 2px repeat-x,
+    linear-gradient(0deg, var(--rainbow-stops)) left / 2px var(--rainbow-cycle) repeat-y,
+    linear-gradient(0deg, var(--rainbow-stops)) right / 2px var(--rainbow-cycle) repeat-y;
+  background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+  background-position:
+    var(--rainbow-shift) 0,
+    calc(-1 * var(--rainbow-shift)) 100%,
+    0 var(--rainbow-shift),
+    100% calc(-1 * var(--rainbow-shift));
   -webkit-mask: 
     linear-gradient(#fff 0 0) content-box, 
     linear-gradient(#fff 0 0);
@@ -242,12 +257,12 @@ body {
 
 .input-rainbow-glow:has(.input:focus)::before {
   opacity: 0.7;
-  animation: rainbow-rotate 4.5s linear infinite;
+  animation: rainbow-loop 4.5s linear infinite;
 }
 
 .input-rainbow-glow:has(.input:focus)::after {
   opacity: 1;
-  animation: rainbow-rotate 4.5s linear infinite;
+  animation: rainbow-loop 4.5s linear infinite;
 }
 
 /* Hide default border when rainbow is active */
@@ -289,14 +304,14 @@ body {
 }
 
 .btn-primary {
-  background-color: #2563eb;
+  background-color: #1871e6;
   color: white;
-  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
+  box-shadow: 0 1px 2px rgba(24, 113, 230, 0.2);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background-color: #1d4ed8;
-  box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.3);
+  background-color: #145ab4;
+  box-shadow: 0 4px 6px -1px rgba(24, 113, 230, 0.3);
   transform: translateY(-1px);
 }
 

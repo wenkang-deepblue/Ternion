@@ -338,8 +338,12 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
             log_manager.emit(
                 "INFO",
                 "USER_ACTION",
-                f"Budget settings saved: ${config.budget.monthly_limit_usd:.2f} limit, {threshold_pct}% alert threshold"
+                f"Budget updated: Limit=${config.budget.monthly_limit_usd}, Alert={threshold_pct}%"
             )
+
+            # Sync active budget manager settings
+            budget_manager.settings.monthly_limit_usd = config.budget.monthly_limit_usd
+            budget_manager.settings.alert_threshold = config.budget.alert_threshold
 
     config_store.save(config)
     logger.info("config_updated")
@@ -348,9 +352,9 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
 
 
 @router.get("/usage")
-async def get_usage() -> dict:
-    """Get current usage statistics."""
-    return budget_manager.get_usage_summary()
+async def get_usage(month: str | None = None) -> dict:
+    """Get detailed usage statistics for charts and dashboard."""
+    return budget_manager.get_detailed_usage(month=month)
 
 
 @router.post("/test-provider")
@@ -437,11 +441,12 @@ class PreferencesUpdateRequest(BaseModel):
 
     theme: str | None = None  # "light", "dark", "system"
     language: str | None = None  # "auto", "en", "zh"
+    hide_usage_disclaimer: bool | None = None  # Hide usage disclaimer warning
 
 
 @router.put("/preferences")
 async def update_preferences(request: PreferencesUpdateRequest) -> dict:
-    """Update user preferences (theme, language)."""
+    """Update user preferences (theme, language, hide_usage_disclaimer)."""
     config = config_store.load()
 
     if request.theme is not None:
@@ -468,6 +473,9 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
                 f"Language changed: {old_language} → {request.language}",
             )
 
+    if request.hide_usage_disclaimer is not None:
+        config.hide_usage_disclaimer = request.hide_usage_disclaimer
+
     config_store.save(config)
     logger.info("preferences_updated", theme=config.theme, language=config.language)
 
@@ -476,6 +484,7 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
         "preferences": {
             "theme": config.theme,
             "language": config.language,
+            "hide_usage_disclaimer": config.hide_usage_disclaimer,
         },
     }
 
@@ -637,51 +646,10 @@ async def reveal_file(request: RevealFileRequest) -> dict:
 
 # Log streaming for observability
 import asyncio
-from datetime import datetime, timezone
 from typing import AsyncGenerator
-from collections import deque
 from fastapi.responses import StreamingResponse
 
-
-class LogManager:
-    """Manages log entries for SSE streaming to observability panel."""
-
-    def __init__(self, max_history: int = 100):
-        self._history: deque = deque(maxlen=max_history)
-        self._subscribers: list[asyncio.Queue] = []
-
-    def emit(self, level: str, category: str, message: str) -> None:
-        """Emit a log entry to all subscribers."""
-        entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": level,
-            "category": category,
-            "message": message,
-        }
-        self._history.append(entry)
-        for queue in self._subscribers:
-            try:
-                queue.put_nowait(entry)
-            except asyncio.QueueFull:
-                pass
-
-    def subscribe(self) -> asyncio.Queue:
-        """Subscribe to log stream."""
-        queue: asyncio.Queue = asyncio.Queue(maxsize=50)
-        self._subscribers.append(queue)
-        return queue
-
-    def unsubscribe(self, queue: asyncio.Queue) -> None:
-        """Unsubscribe from log stream."""
-        if queue in self._subscribers:
-            self._subscribers.remove(queue)
-
-    def get_history(self) -> list:
-        """Get recent log history."""
-        return list(self._history)
-
-
-log_manager = LogManager()
+from ternion.utils.log_manager import log_manager
 
 
 async def _log_event_generator(queue: asyncio.Queue) -> AsyncGenerator[str, None]:

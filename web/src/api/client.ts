@@ -40,8 +40,42 @@ export interface Config {
   preferences?: {
     theme: string;
     language: string;
+    hide_usage_disclaimer?: boolean;
   };
   updated_at?: string;
+}
+
+export interface ProviderDetail {
+  input_tokens: number;
+  output_tokens: number;
+  thoughts_tokens?: number;
+  input_cost?: number;
+  output_cost?: number;
+  thoughts_cost?: number;
+}
+
+export interface DailyUsageRecord {
+  date: string;
+  cost: number;
+  input_cost?: number;
+  output_cost?: number;
+  thoughts_cost?: number;
+  input_tokens: number;
+  output_tokens: number;
+  thoughts_tokens: number;
+  providers?: Record<string, ProviderDetail>;
+}
+
+export interface MonthlyUsageRecord {
+  month: string;
+  cost: number;
+  input_cost?: number;
+  output_cost?: number;
+  thoughts_cost?: number;
+  input_tokens: number;
+  output_tokens: number;
+  thoughts_tokens: number;
+  providers?: Record<string, ProviderDetail>;
 }
 
 export interface UsageData {
@@ -51,7 +85,15 @@ export interface UsageData {
   monthly_limit_usd: number;
   remaining_usd: number;
   usage_pct: number;
+  input_tokens: number;
+  output_tokens: number;
+  thoughts_tokens: number;
   provider_costs: Record<string, number>;
+  provider_details: Record<string, ProviderDetail>;
+  daily_data: DailyUsageRecord[];
+  monthly_data: MonthlyUsageRecord[];
+  available_months: string[];
+  available_years: string[];
 }
 
 export interface ModelInfo {
@@ -135,6 +177,11 @@ class ApiClient {
   async updateConfig(config: Partial<{
     roles?: Record<string, RoleConfig>;
     budget?: Partial<BudgetConfig>;
+    preferences?: {
+      theme?: string;
+      language?: string;
+      hide_usage_disclaimer?: boolean;
+    };
   }>): Promise<{ success: boolean; config: Config }> {
     return this.request('/config', {
       method: 'POST',
@@ -142,8 +189,9 @@ class ApiClient {
     });
   }
 
-  async getUsage(): Promise<UsageData> {
-    return this.request<UsageData>('/usage');
+  async getUsage(month?: string): Promise<UsageData> {
+    const params = month ? `?month=${month}` : '';
+    return this.request<UsageData>(`/usage${params}`);
   }
 
   async testProvider(provider: string, apiKey: string): Promise<TestResult> {
@@ -164,7 +212,8 @@ class ApiClient {
   async updatePreferences(prefs: {
     theme?: string;
     language?: string;
-  }): Promise<{ success: boolean; preferences: { theme: string; language: string } }> {
+    hide_usage_disclaimer?: boolean;
+  }): Promise<{ success: boolean; preferences: { theme: string; language: string; hide_usage_disclaimer: boolean } }> {
     return this.request('/preferences', {
       method: 'PUT',
       body: JSON.stringify(prefs),

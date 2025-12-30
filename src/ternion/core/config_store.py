@@ -114,6 +114,7 @@ class UserConfig(BaseModel):
     ports: PortsConfig = Field(default_factory=PortsConfig)
     theme: str = "system"  # "light", "dark", "system"
     language: str = "auto"  # "auto", "en", "zh"
+    hide_usage_disclaimer: bool = False  # Hide usage disclaimer warning
     updated_at: str = ""
 
 
@@ -270,6 +271,7 @@ class ConfigStore:
             "preferences": {
                 "theme": config.theme,
                 "language": config.language,
+                "hide_usage_disclaimer": config.hide_usage_disclaimer,
             },
             "updated_at": config.updated_at,
         }
