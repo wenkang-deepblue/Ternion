@@ -2,6 +2,7 @@
  * Role Model Configuration component for Ternion Control Panel.
  *
  * Provides UI for configuring which LLM model to use for each role:
+ * - Ternion A/B/C: Divergence phase analysis
  * - Arbiter: Moderator/synthesizer
  * - Writer: Code generator
  * - Reviewer: Code reviewer
@@ -25,6 +26,11 @@ import writerIconLight from '../assets/icons/writer_light_mode_50dp.svg';
 import writerIconDark from '../assets/icons/writer_dark_mode_50dp.svg';
 import reviewerIconLight from '../assets/icons/reviewer_light_mode_50dp.svg';
 import reviewerIconDark from '../assets/icons/reviewer_dark_mode_50dp.svg';
+
+// Ternion icons (same for light/dark mode)
+import ternionAIcon from '../assets/icons/ternion_a.svg';
+import ternionBIcon from '../assets/icons/ternion_b.svg';
+import ternionCIcon from '../assets/icons/ternion_c.svg';
 
 interface RoleModelConfigProps {
   config: Config | null;
@@ -52,6 +58,8 @@ const MODEL_NAMES: Record<string, string> = {
   'gpt-5.1-codex': 'GPT 5.1 Codex',
 };
 
+const DRAFT_STORAGE_KEY = 'ternion_role_model_draft';
+
 export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleModelConfigProps) {
   const { showToast } = useToast();
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
@@ -59,9 +67,15 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
 
-  // Get role icon based on dark mode
+  // Get role icon based on role type
   const getRoleIcon = (role: string) => {
     switch (role) {
+      case 'ternion_a':
+        return ternionAIcon;
+      case 'ternion_b':
+        return ternionBIcon;
+      case 'ternion_c':
+        return ternionCIcon;
       case 'arbiter':
         return isDarkMode ? arbiterIconDark : arbiterIconLight;
       case 'writer':
@@ -74,6 +88,20 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
   };
 
   const ROLE_INFO = {
+    // Ternion members (Divergence phase) - placed before core roles
+    ternion_a: {
+      name: t.ternionAName,
+      description: t.ternionADesc,
+    },
+    ternion_b: {
+      name: t.ternionBName,
+      description: t.ternionBDesc,
+    },
+    ternion_c: {
+      name: t.ternionCName,
+      description: t.ternionCDesc,
+    },
+    // Core roles (Convergence, Execution, Final Check phases)
     arbiter: {
       name: t.arbiterName,
       description: t.arbiterDesc,
@@ -88,6 +116,16 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
     },
   };
 
+  const ROLE_KEYS = Object.keys(ROLE_INFO);
+  const ROLE_DISPLAY_NAMES: Record<string, string> = {
+    ternion_a: t.ternionAName,
+    ternion_b: t.ternionBName,
+    ternion_c: t.ternionCName,
+    arbiter: t.arbiterName,
+    writer: t.writerName,
+    reviewer: t.reviewerName,
+  };
+
   useEffect(() => {
     loadModels();
   }, []);
@@ -97,10 +135,24 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
   }, [config]);
 
   useEffect(() => {
+    if (hasChanges) {
+      return;
+    }
+    const draftRaw = typeof window !== 'undefined' ? window.sessionStorage.getItem(DRAFT_STORAGE_KEY) : null;
+    if (draftRaw) {
+      try {
+        const draft = JSON.parse(draftRaw) as Record<string, RoleConfig>;
+        setSelectedRoles(draft);
+        setHasChanges(true);
+        return;
+      } catch {
+        // ignore corrupted draft
+      }
+    }
     if (config?.roles) {
       setSelectedRoles(config.roles);
     }
-  }, [config]);
+  }, [config, hasChanges]);
 
   const loadModels = async () => {
     try {
@@ -112,22 +164,45 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
   };
 
   const handleProviderChange = (role: string, provider: string) => {
-    const models = modelsData?.models[provider] || [];
-    const defaultModel = models[0]?.id || '';
-
-    setSelectedRoles(prev => ({
-      ...prev,
-      [role]: { provider, model: defaultModel },
-    }));
+    // Clear model when provider changes - user must explicitly select model
+    // No auto-selection to prevent unintended cost from expensive models
+    setSelectedRoles(prev => {
+      const next = {
+        ...prev,
+        [role]: { provider, model: '' },
+      };
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(next));
+      }
+      return next;
+    });
     setHasChanges(true);
   };
 
-  const handleModelChange = (role: string, model: string) => {
-    setSelectedRoles(prev => ({
-      ...prev,
-      [role]: { ...prev[role], model },
-    }));
+  const handleModelChange = async (role: string, model: string) => {
+    const provider = selectedRoles[role]?.provider;
+    setSelectedRoles(prev => {
+      const next = {
+        ...prev,
+        [role]: { ...prev[role], model },
+      };
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(next));
+      }
+      return next;
+    });
     setHasChanges(true);
+
+    if (!provider || !model) {
+      return;
+    }
+
+    try {
+      await api.logRoleSelection(role, provider, model);
+    } catch (error) {
+      const errorCode = error instanceof Error ? error.message : String(error);
+      showToast(getErrorMessage(t, errorCode), 'error');
+    }
   };
 
   const handleSave = async () => {
@@ -138,13 +213,15 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
       });
       onConfigUpdate(result.config);
       setHasChanges(false);
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+      }
 
       // Build toast message with role configuration status
       const lines: string[] = [];
-      const roleNames = { arbiter: t.arbiterName, writer: t.writerName, reviewer: t.reviewerName };
       const enabledProviders = modelsData?.enabled_providers || [];
 
-      for (const [role, name] of Object.entries(roleNames)) {
+      for (const [role, name] of Object.entries(ROLE_DISPLAY_NAMES)) {
         const roleConfig = selectedRoles[role];
         if (roleConfig && enabledProviders.includes(roleConfig.provider)) {
           const providerName = PROVIDER_NAMES[roleConfig.provider] || roleConfig.provider;
@@ -167,6 +244,25 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
 
   const enabledProviders = modelsData?.enabled_providers || [];
   const allProviders = Object.keys(modelsData?.models || {});
+  const allRolesConfigured = ROLE_KEYS.every(role => {
+    const roleConfig = selectedRoles[role];
+    if (!roleConfig?.provider || !roleConfig?.model) {
+      return false;
+    }
+    if (!enabledProviders.includes(roleConfig.provider)) {
+      return false;
+    }
+    const available = (modelsData?.models[roleConfig.provider] || []).map(m => m.id);
+    return available.includes(roleConfig.model);
+  });
+  const hasAnySelection = ROLE_KEYS.some(role => {
+    const roleConfig = selectedRoles[role];
+    return Boolean(roleConfig?.provider || roleConfig?.model);
+  });
+  const hasIncompleteRoles = !allRolesConfigured;
+  const showSaveButton = enabledProviders.length > 0 && (hasAnySelection || hasChanges || allRolesConfigured);
+  const canSave = hasChanges && allRolesConfigured && enabledProviders.length > 0 && !saving;
+  const saveButtonTitle = hasIncompleteRoles ? t.roleNotSaved : '';
 
   return (
     <div className="card">
@@ -178,15 +274,27 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
           </h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
             {t.roleConfigDescription}
-            <span className="text-slate-400 dark:text-slate-500">{t.roleConfigHint}</span>
+            {enabledProviders.length === 0 ? (
+              <span className="text-slate-400 dark:text-slate-500">{t.roleConfigHint}</span>
+            ) : (
+              <span className="inline-flex items-center gap-1 ml-1">
+                <span className="text-slate-400 dark:text-slate-500">（</span>
+                <span className="inline-block w-2 h-2 rounded-full bg-green-500"></span>
+                <span className="text-green-600 dark:text-green-400">
+                  {t.apiKeyAdded || '已添加 API Key'}: {enabledProviders.map(p => PROVIDER_NAMES[p] || p).join(', ')}
+                </span>
+                <span className="text-slate-400 dark:text-slate-500">）</span>
+              </span>
+            )}
           </p>
         </div>
-        {hasChanges && enabledProviders.length > 0 && (
+        {showSaveButton && (
           <button
             style={{ minWidth: '100px', height: '45px', flexShrink: 0 }}
-            className="btn btn-primary text-xs whitespace-nowrap"
+            className={`btn text-xs whitespace-nowrap ${canSave ? 'btn-primary' : 'btn-disabled'}`}
             onClick={handleSave}
-            disabled={saving}
+            disabled={!canSave}
+            title={saveButtonTitle}
           >
             {saving ? t.saving : t.saveChanges}
           </button>
@@ -271,6 +379,11 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
                       }`
                     : '--/----'}
                 </code>
+                {(!config?.roles?.[role] ||
+                  config?.roles?.[role]?.provider !== roleConfig?.provider ||
+                  config?.roles?.[role]?.model !== roleConfig?.model)
+                  ? `，${t.unsavedLabel}`
+                  : ''}
               </div>
             </div>
           );

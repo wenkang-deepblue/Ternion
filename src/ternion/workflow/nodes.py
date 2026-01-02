@@ -9,6 +9,7 @@ import structlog
 from typing import Any
 
 from ternion.core.config import settings
+from ternion.core.config_store import config_store
 from ternion.core.budget import budget_manager
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.providers.manager import provider_manager
@@ -17,6 +18,7 @@ from ternion.router.prompts import (
     CONVERGENCE_PROMPT,
     EXECUTION_PROMPT,
     FINAL_CHECK_PROMPT,
+    GLOBAL_SECURITY_RULES,
 )
 from ternion.utils.i18n import t, ThinkingLogKey
 from ternion.utils.log_manager import log_manager
@@ -25,51 +27,173 @@ from ternion.workflow.state import TernionState, WorkflowPhase, ReviewResult
 logger = structlog.get_logger(__name__)
 
 
+def _prepend_global_security_rules(prompt: str) -> str:
+    """
+    Prepend global security rules to a phase-specific system prompt.
+
+    This keeps provider compatibility by emitting a single system prompt string.
+    """
+    rules = GLOBAL_SECURITY_RULES.strip()
+    if not rules:
+        return prompt
+    return f"{rules}\n\n{prompt}"
+
+
+def _append_global_security_rules(prompt: str) -> str:
+    """
+    Append global security rules to an external system prompt.
+
+    This is used for preserving the client's system prompt semantics while
+    ensuring global security constraints remain present.
+    """
+    rules = GLOBAL_SECURITY_RULES.strip()
+    if not rules:
+        return prompt
+    prompt = prompt.strip()
+    if not prompt:
+        return rules
+    return f"{prompt}\n\n{rules}"
+
+
+def _parse_review_status(review_content: str) -> ReviewResult:
+    """
+    Parse the review status from the reviewer output.
+
+    The primary protocol is a strict first-line status marker:
+    - TERNION_REVIEW_STATUS=APPROVED
+    - TERNION_REVIEW_STATUS=REVISION_NEEDED
+
+    Falls back to legacy markers for backward compatibility.
+    """
+    text = (review_content or "").strip()
+    first_line = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            first_line = stripped
+            break
+
+    if first_line == "TERNION_REVIEW_STATUS=APPROVED":
+        return ReviewResult.APPROVED
+    if first_line == "TERNION_REVIEW_STATUS=REVISION_NEEDED":
+        return ReviewResult.REVISION_NEEDED
+
+    lowered = text.lower()
+    if "status: approved" in lowered or "lgtm" in lowered:
+        return ReviewResult.APPROVED
+    if "status: revision needed" in lowered:
+        return ReviewResult.REVISION_NEEDED
+
+    return ReviewResult.REVISION_NEEDED
+
+
+def _sanitize_preview(text: str, max_length: int = 100) -> str:
+    """
+    Sanitize preview text to prevent triggering Cursor's apply logic.
+
+    Breaks potential trigger patterns like code fences (```) that could
+    cause unintended behavior when displayed in thinking logs.
+
+    Args:
+        text: Raw text to sanitize
+        max_length: Maximum length of preview
+
+    Returns:
+        Sanitized preview string safe for display
+    """
+    if not text:
+        return ""
+    
+    # Truncate and replace newlines
+    preview = text[:max_length].replace("\n", " ")
+    if len(text) > max_length:
+        preview += "..."
+    
+    # Break code fence triggers by inserting zero-width space
+    # This prevents Cursor from interpreting ``` as code block markers
+    preview = preview.replace("```", "`\u200b`\u200b`")
+    
+    # Also break common markdown triggers that might cause issues
+    preview = preview.replace("~~~", "~\u200b~\u200b~")
+    
+    return preview
+
+
 async def divergence_node(state: TernionState) -> TernionState:
     """
     Step 1: The Divergence - Parallel Root Cause Analysis.
 
-    Three council members (Gemini, GPT, Claude) analyze the problem
+    Three ternion members (Gemini, GPT, Claude) analyze the problem
     concurrently, focusing on root cause analysis without writing code.
 
     Args:
         state: Current workflow state
 
     Returns:
-        Updated state with council analyses
+        Updated state with ternion analyses
     """
     logger.info("workflow_divergence_start")
     
     thinking_logs = list(state.get("thinking_logs", []))
     thinking_logs.append(t(ThinkingLogKey.DIVERGENCE_START))
 
-    # Build messages for council - use Ternion RCA prompt, not Cursor's
+    # Build messages for ternion - use Ternion RCA prompt, not Cursor's
     history = state.get("conversation_history", [])
-    council_messages = [
-        ChatMessage(role=MessageRole.SYSTEM, content=DIVERGENCE_PROMPT),
+    system_prompt = _prepend_global_security_rules(DIVERGENCE_PROMPT)
+    ternion_messages = [
+        ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
     ]
     for msg in history:
-        council_messages.append(
+        ternion_messages.append(
             ChatMessage(role=MessageRole(msg["role"]), content=msg["content"])
         )
 
-    # Run council analyses in parallel
-    providers = ["google", "openai", "anthropic"]
-    council_ids = ["council_1", "council_2", "council_3"]
+    # Read ternion configurations from config_store
+    ternion_ids = ["ternion_a", "ternion_b", "ternion_c"]
+    ternion_configs = []
+    unconfigured = []
+    
+    for ternion_id in ternion_ids:
+        cfg = config_store.get_role_config(ternion_id)
+        if cfg and cfg.provider and cfg.model:
+            ternion_configs.append({
+                "ternion_id": ternion_id,
+                "provider": cfg.provider,
+                "model": cfg.model,
+            })
+        else:
+            unconfigured.append(ternion_id)
+    
+    # Check if any ternions are not configured
+    if unconfigured:
+        error_msg = f"Ternion models not configured: {', '.join(unconfigured)}. Please configure in Web Control Panel."
+        logger.warning("ternion_not_configured", unconfigured=unconfigured)
+        thinking_logs.append(f"⚠️ {error_msg}")
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "errors": state.get("errors", []) + [error_msg],
+            "ternion_analyses": [],
+            "thinking_logs": thinking_logs,
+        }
 
-    async def analyze(provider_name: str, council_id: str) -> dict[str, Any]:
+    async def analyze(ternion_cfg: dict) -> dict[str, Any]:
+        ternion_id = ternion_cfg["ternion_id"]
+        provider_name = ternion_cfg["provider"]
+        model = ternion_cfg["model"]
         try:
             provider = provider_manager.get_provider(provider_name)
             if not provider:
                 return {
-                    "council_id": council_id,
+                    "ternion_id": ternion_id,
                     "provider": provider_name,
                     "analysis": "",
                     "error": f"Provider {provider_name} not configured",
                 }
 
             response = await provider.chat_completion(
-                messages=council_messages,
+                messages=ternion_messages,
+                model=model,
                 temperature=0.7,
             )
             usage = response.usage or {}
@@ -89,7 +213,7 @@ async def divergence_node(state: TernionState) -> TernionState:
             )
             budget_manager.record_usage(
                 provider=provider.name,
-                model=getattr(provider, "default_model", "unknown"),
+                model=model,
                 input_tokens=input_tokens,
                 output_tokens=output_for_cost,
                 thoughts_tokens=thoughts_tokens,
@@ -101,36 +225,33 @@ async def divergence_node(state: TernionState) -> TernionState:
                     category="WORKFLOW",
                     message=(
                         f"divergence_usage | provider={provider.name} | "
-                        f"model={getattr(provider, 'default_model', 'unknown')} | "
+                        f"model={model} | "
                         f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
                         f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
                     ),
                 )
             return {
-                "council_id": council_id,
+                "ternion_id": ternion_id,
                 "provider": provider_name,
                 "analysis": response.content,
                 "error": None,
             }
         except Exception as e:
             logger.warning(
-                "council_analysis_failed",
-                council_id=council_id,
+                "ternion_analysis_failed",
+                ternion_id=ternion_id,
                 provider=provider_name,
                 error=str(e),
             )
             return {
-                "council_id": council_id,
+                "ternion_id": ternion_id,
                 "provider": provider_name,
                 "analysis": "",
                 "error": str(e),
             }
 
-    # Execute concurrently
-    tasks = [
-        analyze(provider, council_id)
-        for provider, council_id in zip(providers, council_ids)
-    ]
+    # Execute concurrently using user-configured ternions
+    tasks = [analyze(cfg) for cfg in ternion_configs]
     analyses = await asyncio.gather(*tasks)
 
     # Filter successful analyses
@@ -143,13 +264,13 @@ async def divergence_node(state: TernionState) -> TernionState:
     
     # Add thinking logs for each analysis
     for a in successful:
-        preview = a["analysis"][:100].replace("\n", " ") + "..." if len(a["analysis"]) > 100 else a["analysis"]
-        thinking_logs.append(t(ThinkingLogKey.DIVERGENCE_ANALYSIS, council_id=a['council_id'], preview=preview))
+        preview = _sanitize_preview(a["analysis"])
+        thinking_logs.append(t(ThinkingLogKey.DIVERGENCE_ANALYSIS, ternion_id=a['ternion_id'], preview=preview))
 
     return {
         **state,
         "current_phase": WorkflowPhase.CONVERGENCE.value,
-        "council_analyses": list(analyses),
+        "ternion_analyses": list(analyses),
         "thinking_logs": thinking_logs,
     }
 
@@ -158,11 +279,11 @@ async def convergence_node(state: TernionState) -> TernionState:
     """
     Step 2: The Convergence - Arbiter Synthesis.
 
-    The Arbiter (Gemini) synthesizes all council analyses,
+    The Arbiter synthesizes all ternion analyses,
     resolves conflicts, and produces a unified Ternion Analysis Report.
 
     Args:
-        state: Current workflow state with council analyses
+        state: Current workflow state with ternion analyses
 
     Returns:
         Updated state with synthesized report
@@ -172,7 +293,7 @@ async def convergence_node(state: TernionState) -> TernionState:
     thinking_logs = list(state.get("thinking_logs", []))
     thinking_logs.append(t(ThinkingLogKey.CONVERGENCE_START))
 
-    analyses = state.get("council_analyses", [])
+    analyses = state.get("ternion_analyses", [])
     successful_analyses = [a for a in analyses if not a.get("error")]
 
     if not successful_analyses:
@@ -180,7 +301,7 @@ async def convergence_node(state: TernionState) -> TernionState:
         return {
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
-            "errors": state.get("errors", []) + ["No council analyses available"],
+            "errors": state.get("errors", []) + ["No ternion analyses available"],
             "ternion_report": "",
             "is_consensus": False,
         }
@@ -188,19 +309,41 @@ async def convergence_node(state: TernionState) -> TernionState:
     # Build synthesis prompt
     synthesis_content = "Council Analyses:\n\n"
     for analysis in successful_analyses:
-        synthesis_content += f"### {analysis['council_id'].upper()}\n"
+        synthesis_content += f"### {analysis['ternion_id'].upper()}\n"
         synthesis_content += f"{analysis['analysis']}\n\n"
 
     messages = [
-        ChatMessage(role=MessageRole.SYSTEM, content=CONVERGENCE_PROMPT),
+        ChatMessage(
+            role=MessageRole.SYSTEM,
+            content=_prepend_global_security_rules(CONVERGENCE_PROMPT),
+        ),
         ChatMessage(role=MessageRole.USER, content=synthesis_content),
     ]
 
     # Use Arbiter (Gemini with fallback)
     try:
         provider = provider_manager.get_provider_for_role("arbiter")
+        
+        # Get user-configured model from config_store
+        role_cfg = config_store.get_role_config("arbiter")
+        model = role_cfg.model if role_cfg and role_cfg.model else None
+        
+        # Hard validation: model must be explicitly configured
+        if not model:
+            logger.error("arbiter_model_not_configured")
+            return {
+                **state,
+                "errors": state.get("errors", []) + [
+                    "Arbiter model not configured. Please configure it in the Web Control Panel."
+                ],
+                "thinking_logs": thinking_logs + [
+                    t(ThinkingLogKey.CONVERGENCE_ERROR, error="Arbiter model not configured")
+                ],
+            }
+        
         response = await provider.chat_completion(
             messages=messages,
+            model=model,
             temperature=0.5,  # Lower temperature for synthesis
         )
         usage = response.usage or {}
@@ -218,7 +361,7 @@ async def convergence_node(state: TernionState) -> TernionState:
         output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
         budget_manager.record_usage(
             provider=provider.name,
-            model=getattr(provider, "default_model", "unknown"),
+            model=model,
             input_tokens=input_tokens,
             output_tokens=output_for_cost,
             thoughts_tokens=thoughts_tokens,
@@ -230,13 +373,13 @@ async def convergence_node(state: TernionState) -> TernionState:
                 category="WORKFLOW",
                 message=(
                     f"convergence_usage | provider={provider.name} | "
-                    f"model={getattr(provider, 'default_model', 'unknown')} | "
+                    f"model={model} | "
                     f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
                     f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
                 ),
             )
 
-        preview = response.content[:80].replace("\n", " ") + "..."
+        preview = _sanitize_preview(response.content, max_length=80)
         thinking_logs.append(t(ThinkingLogKey.CONVERGENCE_COMPLETE, preview=preview))
 
         return {
@@ -262,7 +405,7 @@ async def execution_node(state: TernionState) -> TernionState:
     """
     Step 3: The Execution - Writer Generates Code.
 
-    The Writer (Claude) generates the final code fix based on
+    The Writer generates the final code fix based on
     the Ternion Analysis Report. Uses Cursor's original system
     prompt to ensure output format compatibility.
 
@@ -284,11 +427,17 @@ async def execution_node(state: TernionState) -> TernionState:
 
     messages = []
 
-    # Use Cursor's system prompt if available, otherwise use our execution prompt
+    # Use Cursor's system prompt if available, otherwise fall back to Ternion's.
+    # Note: Some provider backends only support a single system prompt. Keep exactly one.
     if cursor_prompt:
         messages.append(ChatMessage(role=MessageRole.SYSTEM, content=cursor_prompt))
     else:
-        messages.append(ChatMessage(role=MessageRole.SYSTEM, content=EXECUTION_PROMPT))
+        messages.append(
+            ChatMessage(
+                role=MessageRole.SYSTEM,
+                content=_prepend_global_security_rules(EXECUTION_PROMPT),
+            )
+        )
 
     # Add conversation history
     for msg in history:
@@ -296,20 +445,79 @@ async def execution_node(state: TernionState) -> TernionState:
             ChatMessage(role=MessageRole(msg["role"]), content=msg["content"])
         )
 
-    # Add the Ternion Analysis Report
+    # Inject Writer constraints as a final user instruction without breaking client format rules.
+    # This keeps provider compatibility while ensuring the Writer sees Ternion constraints even
+    # when a client system prompt is present.
+    writer_instructions = _prepend_global_security_rules(EXECUTION_PROMPT)
+
+    # Build the final user instruction content
+    revision_count = state.get("revision_count", 0)
+    review_feedback = state.get("review_feedback", "")
+    previous_code = state.get("generated_code", "")
+
+    content_parts = [
+        "[TERNION WRITER INSTRUCTIONS]\n\n",
+        writer_instructions,
+        "\n\n[TERNION ANALYSIS REPORT]\n\n",
+        ternion_report,
+    ]
+
+    # If this is a revision round, always include reviewer feedback section
+    # Even if feedback is empty, provide a placeholder to prevent Writer confusion
+    if revision_count > 0:
+        # Use placeholder if feedback is empty (e.g., truncated or missing)
+        feedback_content = review_feedback.strip() if review_feedback else (
+            "[NOTE] Reviewer requested revision but feedback content is empty or missing. "
+            "Please carefully review your implementation for potential issues based on "
+            "the original analysis report."
+        )
+        # Use placeholder if previous code is empty (edge case)
+        code_content = previous_code.strip() if previous_code else (
+            "[NOTE] No previous implementation found. This may indicate an error in the "
+            "workflow. Please generate a fresh implementation based on the analysis report."
+        )
+        content_parts.extend([
+            "\n\n[REVIEWER FEEDBACK - REVISION REQUIRED]\n\n",
+            feedback_content,
+            "\n\n[CURRENT IMPLEMENTATION]\n\n",
+            code_content,
+            "\n\nAddress the issues above and revise the implementation.",
+        ])
+    else:
+        content_parts.append("\n\nProceed with the implementation based on the report above.")
+
+    # Add the Ternion Analysis Report + Writer instructions as the final instruction.
     messages.append(
         ChatMessage(
             role=MessageRole.USER,
-            content=f"[TERNION ANALYSIS REPORT]\n\n{ternion_report}\n\n"
-            "Based on the above analysis, please implement the fix.",
+            content="".join(content_parts),
         )
     )
 
     # Use Writer (Claude with fallback)
     try:
         provider = provider_manager.get_provider_for_role("writer")
+        
+        # Get user-configured model from config_store
+        role_cfg = config_store.get_role_config("writer")
+        model = role_cfg.model if role_cfg and role_cfg.model else None
+        
+        # Hard validation: model must be explicitly configured
+        if not model:
+            logger.error("writer_model_not_configured")
+            return {
+                **state,
+                "errors": state.get("errors", []) + [
+                    "Writer model not configured. Please configure it in the Web Control Panel."
+                ],
+                "thinking_logs": thinking_logs + [
+                    t(ThinkingLogKey.EXECUTION_ERROR, error="Writer model not configured")
+                ],
+            }
+        
         response = await provider.chat_completion(
             messages=messages,
+            model=model,
             temperature=0.3,  # Lower temperature for code generation
         )
         usage = response.usage or {}
@@ -327,7 +535,7 @@ async def execution_node(state: TernionState) -> TernionState:
         output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
         budget_manager.record_usage(
             provider=provider.name,
-            model=getattr(provider, "default_model", "unknown"),
+            model=model,
             input_tokens=input_tokens,
             output_tokens=output_for_cost,
             thoughts_tokens=thoughts_tokens,
@@ -339,7 +547,7 @@ async def execution_node(state: TernionState) -> TernionState:
                 category="WORKFLOW",
                 message=(
                     f"execution_usage | provider={provider.name} | "
-                    f"model={getattr(provider, 'default_model', 'unknown')} | "
+                    f"model={model} | "
                     f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
                     f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
                 ),
@@ -367,7 +575,7 @@ async def final_check_node(state: TernionState) -> TernionState:
     """
     Step 4: The Final Check - Reviewer Verification.
 
-    The Reviewer (GPT) checks the generated code for security
+    The Reviewer checks the generated code for security
     and logic issues. May approve or request revision.
 
     Args:
@@ -396,20 +604,56 @@ async def final_check_node(state: TernionState) -> TernionState:
             "final_output": generated_code,
         }
 
-    # Build review messages
+    # Build review messages with analysis context
+    ternion_report = state.get("ternion_report", "")
+    
+    # Build review content with analysis context for proper validation
+    review_content_parts = [
+        "[TERNION ANALYSIS REPORT]\n\n",
+        ternion_report,
+        "\n\n[IMPLEMENTATION TO REVIEW]\n\n",
+        generated_code,
+        "\n\nReview the implementation above for:\n",
+        "1. Correctness: Does it properly address the issues identified in the analysis?\n",
+        "2. Security: Are there any security vulnerabilities?\n",
+        "3. Logic: Are there any logical errors or edge cases not handled?\n",
+    ]
+    
     messages = [
-        ChatMessage(role=MessageRole.SYSTEM, content=FINAL_CHECK_PROMPT),
+        ChatMessage(
+            role=MessageRole.SYSTEM,
+            content=_prepend_global_security_rules(FINAL_CHECK_PROMPT),
+        ),
         ChatMessage(
             role=MessageRole.USER,
-            content=f"Review this code for security and logic issues:\n\n{generated_code}",
+            content="".join(review_content_parts),
         ),
     ]
 
     # Use Reviewer (GPT with fallback)
     try:
         provider = provider_manager.get_provider_for_role("reviewer")
+        
+        # Get user-configured model from config_store
+        role_cfg = config_store.get_role_config("reviewer")
+        model = role_cfg.model if role_cfg and role_cfg.model else None
+        
+        # Hard validation: model must be explicitly configured
+        if not model:
+            logger.error("reviewer_model_not_configured")
+            return {
+                **state,
+                "errors": state.get("errors", []) + [
+                    "Reviewer model not configured. Please configure it in the Web Control Panel."
+                ],
+                "thinking_logs": thinking_logs + [
+                    t(ThinkingLogKey.FINAL_CHECK_ERROR, error="Reviewer model not configured")
+                ],
+            }
+        
         response = await provider.chat_completion(
             messages=messages,
+            model=model,
             temperature=0.2,  # Low temperature for critical review
         )
         usage = response.usage or {}
@@ -427,7 +671,7 @@ async def final_check_node(state: TernionState) -> TernionState:
         output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
         budget_manager.record_usage(
             provider=provider.name,
-            model=getattr(provider, "default_model", "unknown"),
+            model=model,
             input_tokens=input_tokens,
             output_tokens=output_for_cost,
             thoughts_tokens=thoughts_tokens,
@@ -439,16 +683,15 @@ async def final_check_node(state: TernionState) -> TernionState:
                 category="WORKFLOW",
                 message=(
                     f"final_check_usage | provider={provider.name} | "
-                    f"model={getattr(provider, 'default_model', 'unknown')} | "
+                    f"model={model} | "
                     f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
                     f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
                 ),
             )
 
-        review_text = response.content.lower()
+        review_status = _parse_review_status(response.content)
 
-        # Parse review result
-        if "approved" in review_text or "lgtm" in review_text:
+        if review_status == ReviewResult.APPROVED:
             thinking_logs.append(t(ThinkingLogKey.REVIEW_APPROVED))
             return {
                 **state,

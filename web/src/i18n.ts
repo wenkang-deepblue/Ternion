@@ -60,6 +60,12 @@ export interface Translations {
   roleConfigTitle: string;
   roleConfigDescription: string;
   roleConfigHint: string;
+  ternionAName: string;
+  ternionADesc: string;
+  ternionBName: string;
+  ternionBDesc: string;
+  ternionCName: string;
+  ternionCDesc: string;
   arbiterName: string;
   arbiterDesc: string;
   writerName: string;
@@ -72,8 +78,18 @@ export interface Translations {
   selectSeries: string;
   currentConfig: string;
   notConfigured: string;
+  apiKeyAdded: string;
   errorUnknown: string;
   successConnected: string;
+
+  // Status Bar - Ternion
+  statusConfigTernionA: string;
+  statusConfigTernionB: string;
+  statusConfigTernionC: string;
+  statusTernionAConfigured: string;
+  statusTernionBConfigured: string;
+  statusTernionCConfigured: string;
+  statusTernionLine: string;
 
   // API Response Codes
   code_SUCCESS: string;
@@ -91,9 +107,13 @@ export interface Translations {
   code_BUDGET_EXCEEDED: string;
   code_BUDGET_WARNING: string;
   code_STREAM_INTERRUPTED: string;
+  code_ROLES_INCOMPLETE: string;
   saveChanges: string;
   saving: string;
   noApiKey: string;
+  roleNotSaved: string;
+  roleSelectionPending: string;
+  unsavedLabel: string;
 
   // Budget Settings
   budgetTitle: string;
@@ -238,6 +258,12 @@ const EN: Translations = {
   roleConfigTitle: 'Role Model Configuration',
   roleConfigDescription: 'Select model series and specific model for each role',
   roleConfigHint: '(Please add API Key above to enable models)',
+  ternionAName: 'Ternion A',
+  ternionADesc: 'First council member for parallel analysis',
+  ternionBName: 'Ternion B',
+  ternionBDesc: 'Second council member for parallel analysis',
+  ternionCName: 'Ternion C',
+  ternionCDesc: 'Third council member for parallel analysis',
   arbiterName: 'Arbiter',
   arbiterDesc: 'Synthesize opinions, resolve conflicts',
   writerName: 'Writer',
@@ -250,9 +276,22 @@ const EN: Translations = {
   selectSeries: 'Select series...',
   currentConfig: 'Current config',
   notConfigured: 'Not configured',
+  apiKeyAdded: 'API Key added',
   saveChanges: 'Save Changes',
   saving: 'Saving...',
   noApiKey: '(No API Key)',
+  roleNotSaved: 'Role model not saved yet',
+  roleSelectionPending: 'role model selected {model}, not saved yet',
+  unsavedLabel: 'not saved',
+
+  // Status Bar - Ternion
+  statusConfigTernionA: 'Please configure Ternion A model',
+  statusConfigTernionB: 'Please configure Ternion B model',
+  statusConfigTernionC: 'Please configure Ternion C model',
+  statusTernionAConfigured: 'Ternion A',
+  statusTernionBConfigured: 'Ternion B',
+  statusTernionCConfigured: 'Ternion C',
+  statusTernionLine: 'Ternion',
 
   // Budget Settings
   budgetTitle: 'Budget Settings',
@@ -324,6 +363,7 @@ const EN: Translations = {
   code_BUDGET_EXCEEDED: 'Monthly budget exceeded',
   code_BUDGET_WARNING: 'Approaching budget limit',
   code_STREAM_INTERRUPTED: 'Stream interrupted, please retry',
+  code_ROLES_INCOMPLETE: 'Please configure all roles before saving',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Unknown error',
@@ -418,6 +458,12 @@ const ZH: Translations = {
   roleConfigTitle: '角色模型配置',
   roleConfigDescription: '为每个角色选择使用的模型系列和具体模型',
   roleConfigHint: '（请先在上方添加 API Key 以启用模型）',
+  ternionAName: 'Ternion A',
+  ternionADesc: '第一位Ternion，并行分析问题',
+  ternionBName: 'Ternion B',
+  ternionBDesc: '第二位Ternion，并行分析问题',
+  ternionCName: 'Ternion C',
+  ternionCDesc: '第三位Ternion，并行分析问题',
   arbiterName: '主持人 (Arbiter)',
   arbiterDesc: '综合分析各方意见，仲裁冲突',
   writerName: '执笔人 (Writer)',
@@ -430,9 +476,22 @@ const ZH: Translations = {
   selectSeries: '选择模型系列...',
   currentConfig: '当前配置',
   notConfigured: '未配置',
+  apiKeyAdded: '已添加 API Key',
   saveChanges: '保存更改',
   saving: '保存中...',
   noApiKey: '(未配置 API Key)',
+  roleNotSaved: '角色模型未保存',
+  roleSelectionPending: '角色模型选择 {model}，尚未保存',
+  unsavedLabel: '尚未保存',
+
+  // Status Bar - Ternion
+  statusConfigTernionA: '请配置Ternion A 模型',
+  statusConfigTernionB: '请配置Ternion B 模型',
+  statusConfigTernionC: '请配置Ternion C 模型',
+  statusTernionAConfigured: 'Ternion A',
+  statusTernionBConfigured: 'Ternion B',
+  statusTernionCConfigured: 'Ternion C',
+  statusTernionLine: 'Ternion',
 
   // Budget Settings
   budgetTitle: '预算设置',
@@ -504,6 +563,7 @@ const ZH: Translations = {
   code_BUDGET_EXCEEDED: '本月预算已用尽',
   code_BUDGET_WARNING: '接近预算上限，请注意控制用量',
   code_STREAM_INTERRUPTED: '流式传输中断，请重试',
+  code_ROLES_INCOMPLETE: '请先完成所有角色的模型选择',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '未知错误',
@@ -598,6 +658,12 @@ const ES: Translations = {
   roleConfigTitle: 'Configuración de Modelos por Rol',
   roleConfigDescription: 'Seleccione serie de modelo y modelo específico para cada rol',
   roleConfigHint: '(Por favor agregue una clave API arriba para habilitar modelos)',
+  ternionAName: 'Ternion A',
+  ternionADesc: 'Primer miembro del consejo para análisis paralelo',
+  ternionBName: 'Ternion B',
+  ternionBDesc: 'Segundo miembro del consejo para análisis paralelo',
+  ternionCName: 'Ternion C',
+  ternionCDesc: 'Tercer miembro del consejo para análisis paralelo',
   arbiterName: 'Árbitro',
   arbiterDesc: 'Sintetizar opiniones, resolver conflictos',
   writerName: 'Escritor',
@@ -610,9 +676,22 @@ const ES: Translations = {
   selectSeries: 'Seleccionar serie...',
   currentConfig: 'Configuración actual',
   notConfigured: 'No configurado',
+  apiKeyAdded: 'Clave API agregada',
   saveChanges: 'Guardar Cambios',
   saving: 'Guardando...',
   noApiKey: '(Sin Clave API)',
+  roleNotSaved: 'Modelo de rol aún no guardado',
+  roleSelectionPending: 'Modelo de rol seleccionado {model}, aún no guardado',
+  unsavedLabel: 'no guardado',
+
+  // Status Bar - Ternion
+  statusConfigTernionA: 'Configure modelo de Ternion A',
+  statusConfigTernionB: 'Configure modelo de Ternion B',
+  statusConfigTernionC: 'Configure modelo de Ternion C',
+  statusTernionAConfigured: 'Ternion A',
+  statusTernionBConfigured: 'Ternion B',
+  statusTernionCConfigured: 'Ternion C',
+  statusTernionLine: 'Ternion',
 
   // Budget Settings
   budgetTitle: 'Configuración de Presupuesto',
@@ -684,6 +763,7 @@ const ES: Translations = {
   code_BUDGET_EXCEEDED: 'Presupuesto mensual excedido',
   code_BUDGET_WARNING: 'Acercándose al límite de presupuesto',
   code_STREAM_INTERRUPTED: 'Transmisión interrumpida, por favor reintente',
+  code_ROLES_INCOMPLETE: 'Configure todos los roles antes de guardar',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Error desconocido',
@@ -778,6 +858,12 @@ const FR: Translations = {
   roleConfigTitle: 'Configuration des Modèles par Rôle',
   roleConfigDescription: 'Sélectionnez la série et le modèle spécifique pour chaque rôle',
   roleConfigHint: '(Veuillez ajouter une clé API ci-dessus pour activer les modèles)',
+  ternionAName: 'Ternion A',
+  ternionADesc: 'Premier membre du conseil pour analyse parallèle',
+  ternionBName: 'Ternion B',
+  ternionBDesc: 'Deuxième membre du conseil pour analyse parallèle',
+  ternionCName: 'Ternion C',
+  ternionCDesc: 'Troisième membre du conseil pour analyse parallèle',
   arbiterName: 'Arbitre',
   arbiterDesc: 'Synthétiser les opinions, résoudre les conflits',
   writerName: 'Rédacteur',
@@ -790,9 +876,22 @@ const FR: Translations = {
   selectSeries: 'Sélectionner une série...',
   currentConfig: 'Configuration actuelle',
   notConfigured: 'Non configuré',
+  apiKeyAdded: 'Clé API ajoutée',
   saveChanges: 'Sauvegarder',
   saving: 'Sauvegarde...',
   noApiKey: '(Pas de Clé API)',
+  roleNotSaved: 'Modèle de rôle non enregistré',
+  roleSelectionPending: 'Modèle de rôle sélectionné {model}, non enregistré',
+  unsavedLabel: 'non enregistré',
+
+  // Status Bar - Ternion
+  statusConfigTernionA: 'Configurez le modèle Ternion A',
+  statusConfigTernionB: 'Configurez le modèle Ternion B',
+  statusConfigTernionC: 'Configurez le modèle Ternion C',
+  statusTernionAConfigured: 'Ternion A',
+  statusTernionBConfigured: 'Ternion B',
+  statusTernionCConfigured: 'Ternion C',
+  statusTernionLine: 'Ternion',
 
   // Budget Settings
   budgetTitle: 'Paramètres du Budget',
@@ -864,6 +963,7 @@ const FR: Translations = {
   code_BUDGET_EXCEEDED: 'Budget mensuel dépassé',
   code_BUDGET_WARNING: 'Approche de la limite de budget',
   code_STREAM_INTERRUPTED: 'Transmission interrompue, veuillez réessayer',
+  code_ROLES_INCOMPLETE: 'Veuillez configurer tous les rôles avant d\'enregistrer',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Erreur inconnue',
@@ -958,6 +1058,12 @@ const DE: Translations = {
   roleConfigTitle: 'Rollenmodell-Konfiguration',
   roleConfigDescription: 'Wählen Sie Modellserie und spezifisches Modell für jede Rolle',
   roleConfigHint: '(Bitte fügen Sie oben einen API-Schlüssel hinzu, um Modelle zu aktivieren)',
+  ternionAName: 'Ternion A',
+  ternionADesc: 'Erstes Ternionsmitglied für Parallelanalyse',
+  ternionBName: 'Ternion B',
+  ternionBDesc: 'Zweites Ternionsmitglied für Parallelanalyse',
+  ternionCName: 'Ternion C',
+  ternionCDesc: 'Drittes Ternionsmitglied für Parallelanalyse',
   arbiterName: 'Schiedsrichter',
   arbiterDesc: 'Meinungen synthetisieren, Konflikte lösen',
   writerName: 'Verfasser',
@@ -970,9 +1076,22 @@ const DE: Translations = {
   selectSeries: 'Serie auswählen...',
   currentConfig: 'Aktuelle Konfiguration',
   notConfigured: 'Nicht konfiguriert',
+  apiKeyAdded: 'API-Schlüssel hinzugefügt',
   saveChanges: 'Änderungen speichern',
   saving: 'Speichern...',
   noApiKey: '(Kein API-Schlüssel)',
+  roleNotSaved: 'Rollenmodell noch nicht gespeichert',
+  roleSelectionPending: 'Rollenmodell {model} ausgewählt, noch nicht gespeichert',
+  unsavedLabel: 'noch nicht gespeichert',
+
+  // Status Bar - Ternion
+  statusConfigTernionA: 'Bitte konfigurieren Sie das Ternion A Modell',
+  statusConfigTernionB: 'Bitte konfigurieren Sie das Ternion B Modell',
+  statusConfigTernionC: 'Bitte konfigurieren Sie das Ternion C Modell',
+  statusTernionAConfigured: 'Ternion A',
+  statusTernionBConfigured: 'Ternion B',
+  statusTernionCConfigured: 'Ternion C',
+  statusTernionLine: 'Ternion',
 
   // Budget Settings
   budgetTitle: 'Budget-Einstellungen',
@@ -1044,6 +1163,7 @@ const DE: Translations = {
   code_BUDGET_EXCEEDED: 'Monatsbudget überschritten',
   code_BUDGET_WARNING: 'Budget-Limit nähert sich',
   code_STREAM_INTERRUPTED: 'Übertragung unterbrochen, bitte erneut versuchen',
+  code_ROLES_INCOMPLETE: 'Bitte konfigurieren Sie alle Rollen, bevor Sie speichern',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Unbekannter Fehler',
@@ -1138,6 +1258,12 @@ const JA: Translations = {
   roleConfigTitle: 'ロールモデル設定',
   roleConfigDescription: '各ロールのモデルシリーズと特定モデルを選択',
   roleConfigHint: '(上記でAPIキーを追加してモデルを有効化)',
+  ternionAName: 'Ternion A',
+  ternionADesc: '第一のTernion、並列分析担当',
+  ternionBName: 'Ternion B',
+  ternionBDesc: '第二のTernion、並列分析担当',
+  ternionCName: 'Ternion C',
+  ternionCDesc: '第三のTernion、並列分析担当',
   arbiterName: '調停者',
   arbiterDesc: '意見を統合し、対立を解決',
   writerName: '執筆者',
@@ -1150,9 +1276,22 @@ const JA: Translations = {
   selectSeries: 'シリーズを選択...',
   currentConfig: '現在の設定',
   notConfigured: '未設定',
+  apiKeyAdded: 'APIキー追加済み',
   saveChanges: '保存',
   saving: '保存中...',
   noApiKey: '(APIキーなし)',
+  roleNotSaved: 'ロールモデルはまだ保存されていません',
+  roleSelectionPending: 'ロールモデル {model} を選択、まだ保存されていません',
+  unsavedLabel: '未保存',
+
+  // Status Bar - Ternion
+  statusConfigTernionA: 'Ternion A モデルを設定してください',
+  statusConfigTernionB: 'Ternion B モデルを設定してください',
+  statusConfigTernionC: 'Ternion C モデルを設定してください',
+  statusTernionAConfigured: 'Ternion A',
+  statusTernionBConfigured: 'Ternion B',
+  statusTernionCConfigured: 'Ternion C',
+  statusTernionLine: 'Ternion',
 
   // Budget Settings
   budgetTitle: '予算設定',
@@ -1224,6 +1363,7 @@ const JA: Translations = {
   code_BUDGET_EXCEEDED: '月間予算を超過しました',
   code_BUDGET_WARNING: '予算上限に近づいています',
   code_STREAM_INTERRUPTED: '伝送中断、再試行してください',
+  code_ROLES_INCOMPLETE: '保存する前にすべてのロールを設定してください',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '不明なエラー',
@@ -1318,6 +1458,12 @@ const KO: Translations = {
   roleConfigTitle: '역할 모델 구성',
   roleConfigDescription: '각 역할의 모델 시리즈와 특정 모델 선택',
   roleConfigHint: '(위에서 API 키를 추가하여 모델 활성화)',
+  ternionAName: 'Ternion A',
+  ternionADesc: '첫 번째 Ternion, 병렬 분석 담당',
+  ternionBName: 'Ternion B',
+  ternionBDesc: '두 번째 Ternion, 병렬 분석 담당',
+  ternionCName: 'Ternion C',
+  ternionCDesc: '세 번째 Ternion, 병렬 분석 담당',
   arbiterName: '중재자',
   arbiterDesc: '의견을 종합하고 갈등 해결',
   writerName: '작성자',
@@ -1330,9 +1476,22 @@ const KO: Translations = {
   selectSeries: '시리즈 선택...',
   currentConfig: '현재 구성',
   notConfigured: '구성되지 않음',
+  apiKeyAdded: 'API 키 추가됨',
   saveChanges: '저장',
   saving: '저장 중...',
   noApiKey: '(API 키 없음)',
+  roleNotSaved: '역할 모델이 아직 저장되지 않았습니다',
+  roleSelectionPending: '역할 모델 {model} 선택, 아직 저장되지 않았습니다',
+  unsavedLabel: '저장되지 않음',
+
+  // Status Bar - Ternion
+  statusConfigTernionA: 'Ternion A 모델을 구성해 주세요',
+  statusConfigTernionB: 'Ternion B 모델을 구성해 주세요',
+  statusConfigTernionC: 'Ternion C 모델을 구성해 주세요',
+  statusTernionAConfigured: 'Ternion A',
+  statusTernionBConfigured: 'Ternion B',
+  statusTernionCConfigured: 'Ternion C',
+  statusTernionLine: 'Ternion',
 
   // Budget Settings
   budgetTitle: '예산 설정',
@@ -1404,6 +1563,7 @@ const KO: Translations = {
   code_BUDGET_EXCEEDED: '월간 예산 초과',
   code_BUDGET_WARNING: '예산 한도 근접',
   code_STREAM_INTERRUPTED: '전송 중단, 다시 시도해 주세요',
+  code_ROLES_INCOMPLETE: '저장하기 전에 모든 역할을 구성하세요',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '알 수 없는 오류',

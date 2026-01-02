@@ -189,6 +189,17 @@ class ApiClient {
     });
   }
 
+  async logRoleSelection(
+    role: string,
+    provider: string,
+    model: string
+  ): Promise<{ success: boolean; pending: boolean }> {
+    return this.request('/roles/selection', {
+      method: 'POST',
+      body: JSON.stringify({ role, provider, model }),
+    });
+  }
+
   async getUsage(month?: string): Promise<UsageData> {
     const params = month ? `?month=${month}` : '';
     return this.request<UsageData>(`/usage${params}`);

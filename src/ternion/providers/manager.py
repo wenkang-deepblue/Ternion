@@ -1,8 +1,9 @@
 """
 Provider manager for handling multiple LLM providers.
 
-Provides unified access to providers with fallback logic and role-based
-provider selection.
+Provides unified access to providers with role-based selection.
+All role configuration must be explicitly set via Web Control Panel.
+No automatic fallback - user must configure all roles.
 """
 
 import structlog
@@ -10,6 +11,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from ternion.core.config import settings
+from ternion.core.config_store import config_store
 from ternion.core.exceptions import AllProvidersUnavailable, ProviderError
 from ternion.core.models import ChatMessage
 from ternion.providers.base import BaseProvider, ProviderResponse
@@ -22,10 +24,13 @@ logger = structlog.get_logger(__name__)
 
 class ProviderManager:
     """
-    Manages LLM providers with fallback support.
+    Manages LLM providers.
 
     Initializes providers from configuration and provides methods to get
-    providers by name or by role (with automatic fallback).
+    providers by name or by role. All configuration must be explicitly
+    set via Web Control Panel.
+
+    Configuration source: Web Control Panel (config_store) - ~/.ternion/config.json
     """
 
     def __init__(self) -> None:
@@ -34,34 +39,59 @@ class ProviderManager:
         self._initialize_providers()
 
     def _initialize_providers(self) -> None:
-        """Initialize all configured providers."""
-        # OpenAI
-        if settings.providers.openai.api_key:
-            self._providers["openai"] = OpenAIProvider(
-                api_key=settings.providers.openai.api_key,
-                base_url=settings.providers.openai.base_url,
-                default_model=settings.providers.openai.default_model or "gpt-4-turbo",
-            )
-            logger.info("provider_initialized", provider="openai")
+        """
+        Initialize all configured providers.
 
-        # Anthropic
-        if settings.providers.anthropic.api_key:
-            self._providers["anthropic"] = AnthropicProvider(
-                api_key=settings.providers.anthropic.api_key,
-                default_model=settings.providers.anthropic.default_model or "claude-3-5-sonnet-latest",
-            )
-            logger.info("provider_initialized", provider="anthropic")
+        Loads providers configured via Web Control Panel (config_store).
+        """
+        self._providers.clear()
 
-        # Google
-        if settings.providers.google.api_key:
-            self._providers["google"] = GoogleProvider(
-                api_key=settings.providers.google.api_key,
-                default_model=settings.providers.google.default_model or "gemini-2.0-flash",
-            )
-            logger.info("provider_initialized", provider="google")
+        for name in ("openai", "anthropic", "google"):
+            # Use Web Control Panel configuration
+            api_key = config_store.get_provider_api_key(name)
+            if api_key:
+                self._create_provider(name, api_key)
 
         if not self._providers:
-            logger.warning("no_providers_configured")
+            logger.warning(
+                "no_providers_configured",
+                hint="Please add API keys in the Web Control Panel at http://localhost:7990",
+            )
+
+    def _create_provider(self, name: str, api_key: str) -> None:
+        """
+        Create a provider instance by name.
+
+        Args:
+            name: Provider name ('openai', 'anthropic', 'google')
+            api_key: API key for the provider
+        """
+        try:
+            if name == "openai":
+                # base_url can optionally come from settings for proxy support
+                env_config = getattr(settings.providers, "openai", None)
+                self._providers[name] = OpenAIProvider(
+                    api_key=api_key,
+                    base_url=env_config.base_url if env_config else None,
+                )
+            elif name == "anthropic":
+                self._providers[name] = AnthropicProvider(api_key=api_key)
+            elif name == "google":
+                self._providers[name] = GoogleProvider(api_key=api_key)
+            logger.info("provider_initialized", provider=name)
+        except Exception as e:
+            logger.error("provider_init_failed", provider=name, error=str(e))
+
+    def reload(self) -> None:
+        """
+        Reload providers from configuration.
+
+        Call this after Web Control Panel config changes (API key add/delete/select)
+        to ensure providers reflect the latest configuration.
+        """
+        config_store.reload()
+        self._initialize_providers()
+        logger.info("providers_reloaded", available=list(self._providers.keys()))
 
     def get_provider(self, name: str) -> BaseProvider | None:
         """
@@ -79,10 +109,8 @@ class ProviderManager:
         """
         Get a provider for a specific discussion role.
 
-        Uses configuration to determine primary and fallback providers.
-
         Args:
-            role: Role name ('arbiter', 'writer', 'reviewer')
+            role: Role name ('arbiter', 'writer', 'reviewer', 'ternion_a', 'ternion_b', 'ternion_c')
 
         Returns:
             Provider instance
@@ -90,28 +118,29 @@ class ProviderManager:
         Raises:
             AllProvidersUnavailable: If no providers are available for the role
         """
-        role_config = getattr(settings.discussion.roles, role, None)
-        if not role_config:
-            raise ValueError(f"Unknown role: {role}")
-
-        # Try primary provider
-        primary = role_config.primary
-        if primary in self._providers:
-            logger.debug("using_primary_provider", role=role, provider=primary)
-            return self._providers[primary]
-
-        # Try fallback providers
-        for fallback in role_config.fallback:
-            if fallback in self._providers:
-                logger.warning(
-                    "using_fallback_provider",
-                    role=role,
-                    primary=primary,
-                    fallback=fallback,
-                )
-                return self._providers[fallback]
-
-        raise AllProvidersUnavailable(role)
+        # Require explicit Web Control Panel configuration
+        role_cfg = config_store.get_role_config(role)
+        
+        if not role_cfg or not role_cfg.provider:
+            raise AllProvidersUnavailable(
+                f"Role '{role}' is not configured. "
+                f"Please configure it in the Web Control Panel at http://localhost:7990"
+            )
+        
+        provider = self._providers.get(role_cfg.provider)
+        if provider:
+            logger.debug(
+                "using_ui_configured_provider",
+                role=role,
+                provider=role_cfg.provider,
+            )
+            return provider
+        
+        # Provider configured but not available (API key not set)
+        raise AllProvidersUnavailable(
+            f"Provider '{role_cfg.provider}' for role '{role}' is not available. "
+            f"Please add an API key for {role_cfg.provider} in the Web Control Panel."
+        )
 
     async def chat_completion(
         self,
@@ -197,76 +226,6 @@ class ProviderManager:
                 yield chunk
         except Exception as e:
             raise ProviderError(str(e), provider_name) from e
-
-    async def chat_completion_with_fallback(
-        self,
-        role: str,
-        messages: list[ChatMessage],
-        model: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int | None = None,
-        **kwargs: Any,
-    ) -> ProviderResponse:
-        """
-        Execute chat completion with automatic fallback on failure.
-
-        Tries primary provider first, then falls back to configured fallbacks.
-
-        Args:
-            role: Discussion role ('arbiter', 'writer', 'reviewer')
-            messages: Chat messages
-            model: Optional model override
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens
-            **kwargs: Additional parameters
-
-        Returns:
-            ProviderResponse from successful provider
-
-        Raises:
-            AllProvidersUnavailable: If all providers fail
-        """
-        role_config = getattr(settings.discussion.roles, role, None)
-        if not role_config:
-            raise ValueError(f"Unknown role: {role}")
-
-        providers_to_try = [role_config.primary] + role_config.fallback
-        last_error: Exception | None = None
-
-        for provider_name in providers_to_try:
-            if provider_name not in self._providers:
-                continue
-
-            try:
-                provider = self._providers[provider_name]
-                result = await provider.chat_completion(
-                    messages=messages,
-                    model=model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    **kwargs,
-                )
-                logger.info(
-                    "chat_completion_success",
-                    role=role,
-                    provider=provider_name,
-                )
-                return result
-            except Exception as e:
-                logger.warning(
-                    "provider_failed",
-                    role=role,
-                    provider=provider_name,
-                    error=str(e),
-                )
-                last_error = e
-
-        logger.error(
-            "all_providers_failed",
-            role=role,
-            tried=providers_to_try,
-        )
-        raise AllProvidersUnavailable(role) from last_error
 
     @property
     def available_providers(self) -> list[str]:

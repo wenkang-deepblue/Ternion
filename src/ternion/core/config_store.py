@@ -105,9 +105,15 @@ class UserConfig(BaseModel):
     )
     roles: dict[str, RoleConfig] = Field(
         default_factory=lambda: {
-            "arbiter": RoleConfig(provider="google", model="gemini-flash-lite-latest"),
-            "writer": RoleConfig(provider="anthropic", model="claude-sonnet-4-5-20250929"),
-            "reviewer": RoleConfig(provider="openai", model="gpt-5.1-codex"),
+            # Ternion members (Divergence phase)
+            "ternion_a": RoleConfig(),
+            "ternion_b": RoleConfig(),
+            "ternion_c": RoleConfig(),
+            # Core roles (Convergence/Execution/Review phases)
+            # No defaults - user must explicitly configure all roles in Web UI
+            "arbiter": RoleConfig(),
+            "writer": RoleConfig(),
+            "reviewer": RoleConfig(),
         }
     )
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
@@ -141,9 +147,10 @@ class ConfigStore:
                 # Check if using old format (single api_key instead of api_keys list)
                 if isinstance(provider_data, dict) and "api_key" in provider_data and "api_keys" not in provider_data:
                     old_key = provider_data.get("api_key", "")
-                    old_enabled = provider_data.get("enabled", False)
                     if old_key:
                         # Migrate to new format
+                        # Note: selected_key_id is always None after migration
+                        # User must explicitly select which key to use in the Web UI
                         new_entry_id = str(uuid.uuid4())[:8]
                         data["providers"][provider_name] = {
                             "api_keys": [
@@ -153,7 +160,7 @@ class ConfigStore:
                                     "api_key": old_key,
                                 }
                             ],
-                            "selected_key_id": new_entry_id if old_enabled else None,
+                            "selected_key_id": None,  # User must select
                         }
                     else:
                         data["providers"][provider_name] = {

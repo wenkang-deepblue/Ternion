@@ -77,11 +77,11 @@ class TestProviderManager:
         """Test getting a provider that is not configured."""
         from ternion.providers.manager import ProviderManager
 
-        # Create manager with mocked settings (no API keys)
-        with patch("ternion.providers.manager.settings") as mock_settings:
-            mock_settings.providers.openai.api_key = ""
-            mock_settings.providers.anthropic.api_key = ""
-            mock_settings.providers.google.api_key = ""
+        # Create manager with mocked config_store (no API keys)
+        # settings fallback has been removed - only config_store is used
+        with patch("ternion.providers.manager.config_store") as mock_config_store:
+            # Mock config_store: no API keys
+            mock_config_store.get_provider_api_key.return_value = None
 
             manager = ProviderManager()
             assert manager.get_provider("openai") is None

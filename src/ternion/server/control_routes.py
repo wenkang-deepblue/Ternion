@@ -23,6 +23,7 @@ from ternion.core.config_store import (
     AVAILABLE_MODELS,
 )
 from ternion.core.budget import budget_manager
+from ternion.providers.manager import provider_manager
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["control-panel"])
@@ -61,6 +62,11 @@ class RoleUpdateRequest(BaseModel):
 class RolesUpdateRequest(BaseModel):
     """Request to update roles."""
 
+    # Ternion members (Divergence phase)
+    ternion_a: RoleUpdateRequest | None = None
+    ternion_b: RoleUpdateRequest | None = None
+    ternion_c: RoleUpdateRequest | None = None
+    # Core roles
     arbiter: RoleUpdateRequest | None = None
     writer: RoleUpdateRequest | None = None
     reviewer: RoleUpdateRequest | None = None
@@ -78,6 +84,14 @@ class ConfigUpdateRequest(BaseModel):
 
     roles: RolesUpdateRequest | None = None
     budget: BudgetUpdateRequest | None = None
+
+
+class RoleSelectionLogRequest(BaseModel):
+    """Request to log a role model selection without saving."""
+
+    role: str
+    provider: str
+    model: str
 
 
 class TestProviderRequest(BaseModel):
@@ -161,6 +175,9 @@ async def add_api_key(request: AddApiKeyRequest) -> dict:
     config.providers[request.provider] = provider_config
     config_store.save(config)
 
+    # Hot-reload providers to reflect new API key
+    provider_manager.reload()
+
     log_manager.emit(
         "INFO",
         "USER_ACTION",
@@ -219,6 +236,9 @@ async def delete_api_key(request: DeleteApiKeyRequest) -> dict:
     config.providers[request.provider] = provider_config
     config_store.save(config)
 
+    # Hot-reload providers to reflect deleted API key
+    provider_manager.reload()
+
     log_manager.emit(
         "WARN",
         "USER_ACTION",
@@ -258,6 +278,9 @@ async def select_api_key(request: SelectApiKeyRequest) -> dict:
     config.providers[request.provider] = provider_config
     config_store.save(config)
 
+    # Hot-reload providers to use newly selected API key
+    provider_manager.reload()
+
     log_manager.emit(
         "INFO",
         "USER_ACTION",
@@ -282,37 +305,55 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
 
     # Update roles
     if request.roles:
-        for role_name in ["arbiter", "writer", "reviewer"]:
+        all_roles = ["ternion_a", "ternion_b", "ternion_c", "arbiter", "writer", "reviewer"]
+        enabled_providers = set(config_store.get_enabled_providers())
+        validated_roles: dict[str, RoleUpdateRequest] = {}
+
+        for role_name in all_roles:
             role_update = getattr(request.roles, role_name)
-            if role_update:
-                # Validate provider is enabled
-                if role_update.provider not in config_store.get_enabled_providers():
-                    raise HTTPException(
-                        status_code=400,
-                        detail="PROVIDER_NOT_ENABLED",
-                    )
-
-                # Validate model is available
-                available = [m["id"] for m in AVAILABLE_MODELS.get(role_update.provider, [])]
-                if role_update.model not in available:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="MODEL_NOT_AVAILABLE",
-                    )
-
-                config.roles[role_name] = RoleConfig(
-                    provider=role_update.provider, model=role_update.model
+            if (
+                role_update is None
+                or not role_update.provider
+                or not role_update.model
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="ROLES_INCOMPLETE",
                 )
 
-                # Log role change
-                provider_display = _get_provider_display_name(role_update.provider)
-                model_display = _get_model_display_name(role_update.provider, role_update.model)
+            if role_update.provider not in enabled_providers:
+                raise HTTPException(
+                    status_code=400,
+                    detail="PROVIDER_NOT_ENABLED",
+                )
+
+            available = {m["id"] for m in AVAILABLE_MODELS.get(role_update.provider, [])}
+            if role_update.model not in available:
+                raise HTTPException(
+                    status_code=400,
+                    detail="MODEL_NOT_AVAILABLE",
+                )
+
+            validated_roles[role_name] = role_update
+
+        for role_name, role_update in validated_roles.items():
+            config.roles[role_name] = RoleConfig(
+                provider=role_update.provider,
+                model=role_update.model,
+            )
+
+        for role_name, role_update in validated_roles.items():
+            provider_display = _get_provider_display_name(role_update.provider)
+            model_display = _get_model_display_name(role_update.provider, role_update.model)
+            if role_name.startswith("ternion_"):
+                role_display = f"Ternion {role_name[-1].upper()}"
+            else:
                 role_display = role_name.capitalize()
-                log_manager.emit(
-                    "INFO",
-                    "USER_ACTION",
-                    f"{role_display} model set to: {provider_display} / {model_display}"
-                )
+            log_manager.emit(
+                "INFO",
+                "USER_ACTION",
+                f"{role_display} model set to: {provider_display} / {model_display}",
+            )
 
     # Update budget
     if request.budget:
@@ -351,6 +392,42 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
     return {"success": True, "config": config_store.to_safe_dict()}
 
 
+@router.post("/roles/selection")
+async def log_role_selection(request: RoleSelectionLogRequest) -> dict:
+    """
+    Log a role model selection without persisting configuration.
+
+    This is used by the Web UI to record user choices while indicating
+    the configuration has not been saved yet.
+    """
+    enabled = set(config_store.get_enabled_providers())
+    if request.provider not in enabled:
+        raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
+
+    available = {m["id"] for m in AVAILABLE_MODELS.get(request.provider, [])}
+    if request.model not in available:
+        raise HTTPException(status_code=400, detail="MODEL_NOT_AVAILABLE")
+
+    provider_display = _get_provider_display_name(request.provider)
+    model_display = _get_model_display_name(request.provider, request.model)
+    if request.role.startswith("ternion_"):
+        role_display = f"Ternion {request.role[-1].upper()}"
+    else:
+        role_display = request.role.capitalize()
+
+    log_manager.emit(
+        "INFO",
+        "USER_ACTION",
+        f"{role_display} model selected (not saved): {provider_display} / {model_display}",
+    )
+
+    return {
+        "success": True,
+        "message": "ROLE_MODEL_SELECTION_LOGGED",
+        "pending": True,
+    }
+
+
 @router.get("/usage")
 async def get_usage(month: str | None = None) -> dict:
     """Get detailed usage statistics for charts and dashboard."""
@@ -362,7 +439,10 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
     """
     Test a provider connection with the given API key.
 
-    Makes a minimal API call to verify the key works.
+    Uses lightweight models with minimal tokens for cost-effective connectivity testing:
+    - Gemini: gemini-2.0-flash-lite (list models API - no LLM call)
+    - Claude: claude-haiku-4-5-20251001 (1 token max)
+    - GPT: gpt-4.1-nano (list models API - no LLM call)
     """
     provider_display = _get_provider_display_name(request.provider)
 
@@ -377,6 +457,7 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
         if request.provider == "google":
             import google.generativeai as genai
 
+            # Use list models API - no LLM call, most cost-effective
             genai.configure(api_key=request.api_key)
             list(genai.list_models())
             log_manager.emit("INFO", "USER_ACTION", f"API Key test successful: {provider_display}")
@@ -387,11 +468,12 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
         elif request.provider == "anthropic":
             import anthropic
 
+            # Use lightweight Haiku model with minimal tokens
             client = anthropic.Anthropic(api_key=request.api_key)
             client.messages.create(
-                model="claude-3-haiku-20240307",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=1,
-                messages=[{"role": "user", "content": "Hi"}],
+                messages=[{"role": "user", "content": "hi"}],
             )
             log_manager.emit("INFO", "USER_ACTION", f"API Key test successful: {provider_display}")
             return TestProviderResponse(
@@ -401,6 +483,7 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
         elif request.provider == "openai":
             import openai
 
+            # Use list models API - no LLM call, most cost-effective
             client = openai.OpenAI(api_key=request.api_key)
             client.models.list()
             log_manager.emit("INFO", "USER_ACTION", f"API Key test successful: {provider_display}")

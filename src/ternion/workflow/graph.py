@@ -10,7 +10,7 @@ from typing import Any
 
 from langgraph.graph import StateGraph, END
 
-from ternion.core.models import ChatMessage
+from ternion.core.models import ChatMessage, MessageRole
 from ternion.router.context import TernionContext
 from ternion.workflow.state import TernionState, WorkflowPhase
 from ternion.workflow.nodes import (
@@ -137,7 +137,9 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         "conversation_history": [
             {"role": msg.role.value, "content": msg.content}
             for msg in context.conversation_history
-            if isinstance(msg.content, str)
+            # Filter out system messages to prevent phase prompt override
+            # Also preserve both str and list (multimodal) content
+            if msg.content is not None and msg.role != MessageRole.SYSTEM
         ],
         "has_images": context.has_images,
         "current_phase": WorkflowPhase.DIVERGENCE.value,

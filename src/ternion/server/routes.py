@@ -28,7 +28,7 @@ router = APIRouter()
 # Available Ternion models
 TERNION_MODELS = [
     ModelInfo(id="ternion-team", owned_by="ternion"),
-    ModelInfo(id="ternion-quick", owned_by="ternion"),
+    # ModelInfo(id="ternion-quick", owned_by="ternion"),  # Coming Soon
 ]
 
 # Message router instance
@@ -70,7 +70,7 @@ async def chat_completions(
 
     Routes requests based on the model name:
     - ternion-team: Full 4-step discussion flow
-    - ternion-quick: Skip final review step
+    - ternion-quick: Coming Soon (skip final review step)
     - gpt-*/claude-*/gemini-*: Direct passthrough to respective provider
     """
     logger.info(
@@ -104,7 +104,8 @@ async def chat_completions(
             status_code=503,
             content={
                 "error": {
-                    "message": "No LLM providers configured. Please set API keys.",
+                    "message": "No LLM providers configured. "
+                    "Please add API keys in the Web Control Panel at http://localhost:7990",
                     "type": "configuration_error",
                 }
             },
@@ -242,7 +243,7 @@ async def handle_passthrough(
             content={
                 "error": {
                     "message": f"Provider '{provider_name}' is not configured. "
-                    f"Please set the API key in environment variables.",
+                    f"Please add your API key in the Web Control Panel at http://localhost:7990",
                     "type": "provider_unavailable",
                 }
             },

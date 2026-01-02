@@ -92,8 +92,14 @@ export function StatusBar({ config, t }: StatusBarProps) {
   const writerConfigured = isRoleConfigured('writer');
   const reviewerConfigured = isRoleConfigured('reviewer');
 
+  // Check council configurations
+  const ternionAConfigured = isRoleConfigured('ternion_a');
+  const ternionBConfigured = isRoleConfigured('ternion_b');
+  const ternionCConfigured = isRoleConfigured('ternion_c');
+
   return (
     <div className="bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 py-2 px-4">
+      {/* First row - API keys and Ternion status */}
       <div className="mx-auto flex flex-wrap items-center justify-center gap-3 text-sm">
         {/* API Key Status */}
         <StatusItem
@@ -104,6 +110,34 @@ export function StatusBar({ config, t }: StatusBarProps) {
 
         <span className="text-slate-300 dark:text-slate-600">|</span>
 
+        {/* Ternion A Status */}
+        <StatusItem
+          isComplete={ternionAConfigured}
+          pendingText={t.statusConfigTernionA}
+          completeText={getRoleConfigText('ternion_a', t.statusTernionAConfigured)}
+        />
+
+        <span className="text-slate-300 dark:text-slate-600">|</span>
+
+        {/* Ternion B Status */}
+        <StatusItem
+          isComplete={ternionBConfigured}
+          pendingText={t.statusConfigTernionB}
+          completeText={getRoleConfigText('ternion_b', t.statusTernionBConfigured)}
+        />
+
+        <span className="text-slate-300 dark:text-slate-600">|</span>
+
+        {/* Ternion C Status */}
+        <StatusItem
+          isComplete={ternionCConfigured}
+          pendingText={t.statusConfigTernionC}
+          completeText={getRoleConfigText('ternion_c', t.statusTernionCConfigured)}
+        />
+      </div>
+
+      {/* Second row - Core roles status */}
+      <div className="mx-auto flex flex-wrap items-center justify-center gap-3 text-sm mt-1">
         {/* Arbiter Status */}
         <StatusItem
           isComplete={arbiterConfigured}
