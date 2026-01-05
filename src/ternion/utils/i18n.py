@@ -38,6 +38,7 @@ class MessageKey(str, Enum):
     ROLE_NOT_CONFIGURED = "role_not_configured"
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     EXECUTION_MODE_NOT_CONFIGURED = "execution_mode_not_configured"
+    UNSUPPORTED_MODEL = "unsupported_model"
 
 
 TRANSLATIONS: dict[Language, dict[str, str]] = {
@@ -70,6 +71,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
         MessageKey.PROVIDER_UNAVAILABLE: "Provider '{provider}' for role '{role}' is not available. Please add an API key for {provider} in the Web Control Panel.",
         MessageKey.EXECUTION_MODE_NOT_CONFIGURED: "Execution mode not configured. Please choose and save it in the Web Control Panel ({web_url} -> Config -> Execution Mode).",
+        MessageKey.UNSUPPORTED_MODEL: (
+            "Unsupported model: '{model}'. This Ternion gateway only supports 'ternion-team'. "
+            "If you intended to use Cursor's subscription-included GPT/Claude/Gemini models, please disable "
+            "\"OpenAI API Key\" and \"Override OpenAI Base URL\" in Cursor Settings "
+            "(Settings --> Models --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
+            "If you intended to use Ternion, switch the model to 'ternion-team'."
+        ),
     },
     "zh": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[Arbiter]**: 开始并发问题分析...\n",
@@ -100,6 +108,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_NOT_CONFIGURED: "角色 '{role}' 未配置。请在 Web 控制面板配置：{web_url}",
         MessageKey.PROVIDER_UNAVAILABLE: "角色 '{role}' 的提供商 '{provider}' 不可用。请在 Web 控制面板为 {provider} 添加 API Key。",
         MessageKey.EXECUTION_MODE_NOT_CONFIGURED: "执行模式未配置。请在 Web 控制面板选择并保存（{web_url} -> 配置 -> 推理方案选择）。",
+        MessageKey.UNSUPPORTED_MODEL: (
+            "不支持的模型：'{model}'。当前 Ternion 网关仅支持 'ternion-team'。"
+            "如果你想使用 Cursor 订阅内置的 GPT/Claude/Gemini 模型，请在 Cursor 设置中关闭 "
+            "\"OpenAI API Key\" 以及 \"Override OpenAI Base URL\" "
+            "(设置 --> Models --> \"OpenAI API Key\" & \"Override OpenAI Base URL\")。"
+            "如果你想使用 Ternion，请将模型切换为 'ternion-team'。"
+        ),
     },
     "es": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[Árbitro]**: Iniciando análisis paralelo del problema...\n",
@@ -130,6 +145,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
         MessageKey.PROVIDER_UNAVAILABLE: "Provider '{provider}' for role '{role}' is not available. Please add an API key for {provider} in the Web Control Panel.",
         MessageKey.EXECUTION_MODE_NOT_CONFIGURED: "Execution mode not configured. Please choose and save it in the Web Control Panel ({web_url} -> Config -> Execution Mode).",
+        MessageKey.UNSUPPORTED_MODEL: (
+            "Modelo no compatible: '{model}'. Esta puerta de enlace Ternion solo admite 'ternion-team'. "
+            "Si desea usar los modelos GPT/Claude/Gemini incluidos en la suscripción de Cursor, desactive "
+            "\"OpenAI API Key\" y \"Override OpenAI Base URL\" en Configuración de Cursor "
+            "(Configuración --> Modelos --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
+            "Si desea usar Ternion, cambie el modelo a 'ternion-team'."
+        ),
     },
     "fr": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[Arbitre]**: Démarrage de l'analyse parallèle du problème...\n",
@@ -160,6 +182,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
         MessageKey.PROVIDER_UNAVAILABLE: "Provider '{provider}' for role '{role}' is not available. Please add an API key for {provider} in the Web Control Panel.",
         MessageKey.EXECUTION_MODE_NOT_CONFIGURED: "Execution mode not configured. Please choose and save it in the Web Control Panel ({web_url} -> Config -> Execution Mode).",
+        MessageKey.UNSUPPORTED_MODEL: (
+            "Modèle non pris en charge : '{model}'. Cette passerelle Ternion ne prend en charge que 'ternion-team'. "
+            "Si vous souhaitez utiliser les modèles GPT/Claude/Gemini inclus dans l'abonnement Cursor, veuillez désactiver "
+            "\"OpenAI API Key\" et \"Override OpenAI Base URL\" dans les paramètres de Cursor "
+            "(Paramètres --> Modèles --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
+            "Si vous souhaitez utiliser Ternion, basculez vers le modèle 'ternion-team'."
+        ),
     },
     "de": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[Schiedsrichter]**: Starte parallele Problemanalyse...\n",
@@ -190,6 +219,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
         MessageKey.PROVIDER_UNAVAILABLE: "Provider '{provider}' for role '{role}' is not available. Please add an API key for {provider} in the Web Control Panel.",
         MessageKey.EXECUTION_MODE_NOT_CONFIGURED: "Execution mode not configured. Please choose and save it in the Web Control Panel ({web_url} -> Config -> Execution Mode).",
+        MessageKey.UNSUPPORTED_MODEL: (
+            "Nicht unterstütztes Modell: '{model}'. Dieses Ternion-Gateway unterstützt nur 'ternion-team'. "
+            "Wenn Sie die in Cursor enthaltenen GPT/Claude/Gemini-Modelle verwenden möchten, deaktivieren Sie bitte "
+            "\"OpenAI API Key\" und \"Override OpenAI Base URL\" in den Cursor-Einstellungen "
+            "(Einstellungen --> Modelle --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
+            "Wenn Sie Ternion verwenden möchten, wechseln Sie zum Modell 'ternion-team'."
+        ),
     },
     "ja": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[調停者]**: 並列問題分析を開始...\n",
@@ -220,6 +256,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
         MessageKey.PROVIDER_UNAVAILABLE: "Provider '{provider}' for role '{role}' is not available. Please add an API key for {provider} in the Web Control Panel.",
         MessageKey.EXECUTION_MODE_NOT_CONFIGURED: "Execution mode not configured. Please choose and save it in the Web Control Panel ({web_url} -> Config -> Execution Mode).",
+        MessageKey.UNSUPPORTED_MODEL: (
+            "サポートされていないモデル: '{model}'。このTernionゲートウェイは 'ternion-team' のみをサポートしています。"
+            "Cursorサブスクリプションに含まれるGPT/Claude/Geminiモデルを使用する場合は、Cursor設定で "
+            "\"OpenAI API Key\" と \"Override OpenAI Base URL\" を無効にしてください "
+            "(設定 --> モデル --> \"OpenAI API Key\" & \"Override OpenAI Base URL\")。"
+            "Ternionを使用する場合は、モデルを 'ternion-team' に切り替えてください。"
+        ),
     },
     "ko": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[중재자]**: 병렬 문제 분석 시작...\n",
@@ -250,6 +293,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
         MessageKey.PROVIDER_UNAVAILABLE: "Provider '{provider}' for role '{role}' is not available. Please add an API key for {provider} in the Web Control Panel.",
         MessageKey.EXECUTION_MODE_NOT_CONFIGURED: "Execution mode not configured. Please choose and save it in the Web Control Panel ({web_url} -> Config -> Execution Mode).",
+        MessageKey.UNSUPPORTED_MODEL: (
+            "지원되지 않는 모델: '{model}'. 이 Ternion 게이트웨이는 'ternion-team'만 지원합니다. "
+            "Cursor 구독에 포함된 GPT/Claude/Gemini 모델을 사용하려면 Cursor 설정에서 "
+            "\"OpenAI API Key\" 및 \"Override OpenAI Base URL\"을 비활성화하세요 "
+            "(설정 --> 모델 --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
+            "Ternion을 사용하려면 모델을 'ternion-team'으로 전환하세요."
+        ),
     },
 }
 

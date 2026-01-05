@@ -5,7 +5,6 @@ Implements OpenAI-compatible endpoints for chat completions and models listing.
 """
 
 import re
-from collections.abc import AsyncGenerator
 
 import structlog
 from fastapi import APIRouter
@@ -41,7 +40,7 @@ from ternion.utils.cursor_safety import sanitize_for_cursor_display
 from ternion.utils.i18n import MessageKey, get_web_base_url, t
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import parse_structured_report
-from ternion.utils.streaming import create_sse_stream, stream_sse_chunks
+from ternion.utils.streaming import create_sse_stream
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -258,21 +257,12 @@ async def health_check() -> dict[str, str]:
 @router.get("/v1/models")
 async def list_models() -> ModelsListResponse:
     """List available models (OpenAI-compatible)."""
-    # Include passthrough models from configured providers
-    models = list(TERNION_MODELS)
-
-    # Add provider models
-    if provider_manager.get_provider("openai"):
-        models.append(ModelInfo(id="gpt-4-turbo", owned_by="openai"))
-        models.append(ModelInfo(id="gpt-4o", owned_by="openai"))
-    if provider_manager.get_provider("anthropic"):
-        models.append(ModelInfo(id="claude-3-5-sonnet-latest", owned_by="anthropic"))
-        models.append(ModelInfo(id="claude-3-opus-latest", owned_by="anthropic"))
-    if provider_manager.get_provider("google"):
-        models.append(ModelInfo(id="gemini-2.0-flash", owned_by="google"))
-        models.append(ModelInfo(id="gemini-1.5-pro", owned_by="google"))
-
-    return ModelsListResponse(data=models)
+    # Intentionally expose only Ternion models.
+    #
+    # Rationale: When users enable "Override OpenAI Base URL" in Cursor to point at Ternion,
+    # exposing passthrough provider models (gpt/claude/gemini) can cause accidental BYOK
+    # usage and unexpected extra costs.
+    return ModelsListResponse(data=list(TERNION_MODELS))
 
 
 @router.post("/v1/chat/completions", response_model=None)
@@ -284,8 +274,7 @@ async def chat_completions(
 
     Routes requests based on the model name:
     - ternion-team: Full 4-step discussion flow
-    - ternion-quick: Coming Soon (skip final review step)
-    - gpt-*/claude-*/gemini-*: Direct passthrough to respective provider
+    - (All other models are rejected to avoid accidental passthrough/BYOK costs)
     """
     logger.info(
         "chat_completion_request",
@@ -296,13 +285,19 @@ async def chat_completions(
 
     model = request.model.lower()
 
-    # Check if this is a passthrough request
-    if model.startswith("gpt-") or "gpt" in model:
-        return await handle_passthrough(request, "openai")
-    elif model.startswith("claude-") or "claude" in model:
-        return await handle_passthrough(request, "anthropic")
-    elif model.startswith("gemini-") or "gemini" in model:
-        return await handle_passthrough(request, "google")
+    # Default mode: this gateway only serves the Ternion model.
+    # Any other model name is rejected with an explicit Cursor guidance message.
+    if model != "ternion-team":
+        message = t(MessageKey.UNSUPPORTED_MODEL, model=request.model)
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": message,
+                    "type": "model_not_supported",
+                }
+            },
+        )
 
     # Convert messages to dict format for parsing
     messages_as_dicts = [
@@ -524,120 +519,6 @@ async def chat_completions(
                 "error": {
                     "message": f"Discussion workflow error: {str(e)}",
                     "type": "workflow_error",
-                }
-            },
-        )
-
-
-async def handle_passthrough(
-    request: ChatCompletionRequest,
-    provider_name: str,
-) -> Response:
-    """
-    Handle direct passthrough to a specific provider.
-
-    Args:
-        request: The chat completion request
-        provider_name: Name of the provider ('openai', 'anthropic', 'google')
-
-    Returns:
-        Streaming or JSON response from the provider
-    """
-    logger.info(
-        "passthrough_request",
-        model=request.model,
-        provider=provider_name,
-    )
-
-    provider = provider_manager.get_provider(provider_name)
-    if not provider:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": {
-                    "message": f"Provider '{provider_name}' is not configured. "
-                    f"Please add your API key in the Web Control Panel at {get_control_panel_url()}",
-                    "type": "provider_unavailable",
-                }
-            },
-        )
-
-    try:
-        if request.stream:
-            # Streaming response
-            async def stream_generator() -> AsyncGenerator[str, None]:
-                async for chunk in provider.chat_completion_stream(
-                    messages=request.messages,
-                    model=request.model,
-                    temperature=request.temperature or 0.7,
-                    max_tokens=request.max_tokens,
-                ):
-                    yield chunk
-
-            return StreamingResponse(
-                stream_sse_chunks(stream_generator()),
-                media_type="text/event-stream",
-            )
-        else:
-            # Non-streaming response
-            response = await provider.chat_completion(
-                messages=request.messages,
-                model=request.model,
-                temperature=request.temperature or 0.7,
-                max_tokens=request.max_tokens,
-            )
-
-            # Track usage if available
-            if response.usage:
-                usage_data = response.usage or {}
-                prompt_tokens = (
-                    usage_data.get("prompt_tokens")
-                    or usage_data.get("input_tokens")
-                    or 0
-                )
-                completion_tokens = (
-                    usage_data.get("completion_tokens")
-                    or usage_data.get("output_tokens")
-                    or 0
-                )
-                thoughts_tokens = usage_data.get("thoughts_tokens") or usage_data.get("reasoning_tokens") or 0
-                total_tokens = usage_data.get("total_tokens", 0)
-                if provider_name == "google":
-                    output_for_cost = completion_tokens + thoughts_tokens
-                else:
-                    output_for_cost = completion_tokens
-                budget_manager.record_usage(
-                    provider=provider_name,
-                    model=request.model,
-                    input_tokens=prompt_tokens,
-                    output_tokens=output_for_cost,
-                    thoughts_tokens=thoughts_tokens,
-                    context_length=total_tokens,
-                )
-
-            return JSONResponse(
-                content=ChatCompletionResponse(
-                    model=request.model,
-                    choices=[
-                        Choice(
-                            message=ChatMessage(
-                                role=MessageRole.ASSISTANT,
-                                content=response.content,
-                            ),
-                            finish_reason=response.finish_reason or "stop",
-                        )
-                    ],
-                    usage=response.usage,
-                ).model_dump()
-            )
-    except Exception as e:
-        logger.exception("passthrough_error", provider=provider_name, error=str(e))
-        return JSONResponse(
-            status_code=502,
-            content={
-                "error": {
-                    "message": f"Provider error: {str(e)}",
-                    "type": "provider_error",
                 }
             },
         )
