@@ -2,12 +2,11 @@
 Tests for cursor safety utilities.
 """
 
-import pytest
 
 from ternion.utils.cursor_safety import (
+    ZWSP,
     sanitize_for_cursor_display,
     sanitize_for_preview,
-    ZWSP,
 )
 
 

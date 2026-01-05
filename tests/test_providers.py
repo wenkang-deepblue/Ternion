@@ -2,8 +2,7 @@
 Tests for provider adapters.
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.providers.base import BaseProvider, ProviderResponse

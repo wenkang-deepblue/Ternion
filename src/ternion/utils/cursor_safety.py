@@ -7,7 +7,6 @@ when displaying reports and handoff packages in the Cursor IDE.
 
 import re
 
-
 ZWSP = "\u200b"  # Zero-width space for breaking trigger patterns
 
 # Patterns that trigger Cursor's code/patch detection

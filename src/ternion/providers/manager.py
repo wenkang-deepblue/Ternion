@@ -6,19 +6,20 @@ All role configuration must be explicitly set via Web Control Panel.
 No automatic fallback - user must configure all roles.
 """
 
-import structlog
 from collections.abc import AsyncGenerator
 from typing import Any
+
+import structlog
 
 from ternion.core.config import settings
 from ternion.core.config_store import config_store
 from ternion.core.exceptions import AllProvidersUnavailable, ProviderError
 from ternion.core.models import ChatMessage
-from ternion.providers.base import BaseProvider, ProviderResponse
-from ternion.providers.openai import OpenAIProvider
 from ternion.providers.anthropic import AnthropicProvider
+from ternion.providers.base import BaseProvider, ProviderResponse
 from ternion.providers.google import GoogleProvider
-from ternion.utils.i18n import t, MessageKey
+from ternion.providers.openai import OpenAIProvider
+from ternion.utils.i18n import MessageKey, t
 
 logger = structlog.get_logger(__name__)
 

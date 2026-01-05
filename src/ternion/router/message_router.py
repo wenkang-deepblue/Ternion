@@ -7,14 +7,14 @@ swap prompts per discussion phase, and restore the original prompt
 for the final output to ensure format compatibility.
 """
 
+
 import structlog
-from typing import Any
 
 from ternion.core.models import (
     ChatMessage,
+    ImageContent,
     MessageContent,
     MessageRole,
-    ImageContent,
 )
 from ternion.router.context import DiscussionPhase, TernionContext
 from ternion.router.prompts import PHASE_PROMPTS

@@ -5,8 +5,9 @@ Provides a centralized logging system for SSE streaming to the Web Control Panel
 """
 
 import asyncio
+import contextlib
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 class LogManager:
@@ -26,17 +27,15 @@ class LogManager:
             message: Log message content
         """
         entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "level": level,
             "category": category,
             "message": message,
         }
         self._history.append(entry)
         for queue in self._subscribers:
-            try:
+            with contextlib.suppress(asyncio.QueueFull):
                 queue.put_nowait(entry)
-            except asyncio.QueueFull:
-                pass
 
     def emit_token_usage(
         self,

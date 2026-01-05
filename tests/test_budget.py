@@ -3,18 +3,15 @@ Tests for the budget management module.
 """
 
 import json
-import pytest
-from pathlib import Path
-from unittest.mock import patch
 from datetime import datetime
+from pathlib import Path
+
+import pytest
 
 from ternion.core.budget import (
+    DEFAULT_PRICING,
     BudgetManager,
     CostControlSettings,
-    UsageRecord,
-    MODEL_PRICING,
-    GEMINI_PRICING,
-    DEFAULT_PRICING,
 )
 
 

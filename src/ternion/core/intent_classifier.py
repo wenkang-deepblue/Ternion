@@ -7,9 +7,9 @@ clarify intents across 7 languages.
 """
 
 import re
-import structlog
 from enum import Enum
 
+import structlog
 
 logger = structlog.get_logger(__name__)
 
@@ -254,8 +254,8 @@ async def classify_intent_with_llm(text: str) -> Intent:
     Returns:
         Intent enum value from LLM classification, or UNKNOWN on failure
     """
-    from ternion.providers.manager import provider_manager
     from ternion.core.models import ChatMessage, MessageRole
+    from ternion.providers.manager import provider_manager
 
     for provider_name, model_id in INTENT_FALLBACK_MODELS:
         provider = provider_manager.get_provider(provider_name)

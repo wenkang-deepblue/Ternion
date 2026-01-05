@@ -10,7 +10,6 @@ from typing import Literal
 
 from ternion.core.config_store import config_store
 
-
 Language = Literal["en", "zh", "es", "fr", "de", "ja", "ko"]
 
 
@@ -283,7 +282,7 @@ def get_user_language() -> Language:
     return DEFAULT_LANGUAGE
 
 
-def t(key: MessageKey, **kwargs) -> str:
+def t(key: MessageKey, **kwargs: str) -> str:
     """
     Get translated string for the given key.
 

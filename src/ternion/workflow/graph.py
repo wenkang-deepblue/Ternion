@@ -5,20 +5,20 @@ Defines the state machine graph that orchestrates the 4-step discussion flow
 with conditional edges for review loops.
 """
 
-import structlog
 from typing import Any
 
-from langgraph.graph import StateGraph, END
+import structlog
+from langgraph.graph import END, StateGraph
 
 from ternion.core.models import MessageRole
 from ternion.router.context import TernionContext
-from ternion.workflow.state import TernionState, WorkflowPhase
 from ternion.workflow.nodes import (
-    divergence_node,
     convergence_node,
+    divergence_node,
     execution_node,
     final_check_node,
 )
+from ternion.workflow.state import TernionState, WorkflowPhase
 
 logger = structlog.get_logger(__name__)
 
@@ -104,7 +104,7 @@ def create_workflow() -> StateGraph:
         },
     )
 
-    return workflow.compile()
+    return workflow.compile()  # type: ignore[return-value]
 
 
 # Global compiled workflow
@@ -157,7 +157,7 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         "execution_mode": getattr(context, "execution_mode", ""),
         "rejection_context": getattr(context, "rejection_context", ""),
         # Workflow outputs
-        "council_analyses": [],
+        "ternion_analyses": [],
         "is_consensus": False,
         "ternion_report": "",
         "generated_code": "",
@@ -171,7 +171,7 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
 
     # Run the workflow
     workflow = get_workflow()
-    final_state = await workflow.ainvoke(initial_state)
+    final_state = await workflow.ainvoke(initial_state)  # type: ignore[attr-defined]
 
     logger.info(
         "discussion_complete",

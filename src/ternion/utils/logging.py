@@ -6,7 +6,6 @@ Sets up structured logging using structlog with optional file output.
 
 import logging
 import sys
-from typing import Literal
 
 import structlog
 from rich.console import Console

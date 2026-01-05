@@ -1,20 +1,21 @@
 """
 Google Gemini provider adapter.
 
-Implements chat completion using the Google Generative AI API with multimodal support.
+Implements chat completion using the Google Generative AI API (new SDK) with multimodal support.
 """
 
-import structlog
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import structlog
+
 try:
-    import google.generativeai as genai  # type: ignore
-    from google.generativeai.types import GenerationConfig  # type: ignore
-except Exception:  # pragma: no cover
+    from google import genai
+    from google.genai import types
+except ImportError:  # pragma: no cover
     # Optional dependency. Keep module importable even if Google SDK is not installed.
-    genai = None  # type: ignore
-    GenerationConfig = None  # type: ignore
+    genai = None  # type: ignore[assignment]
+    types = None  # type: ignore[assignment]
 
 from ternion.core.budget import budget_manager
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
@@ -30,6 +31,7 @@ class GoogleProvider(BaseProvider):
     Google Generative AI (Gemini) provider adapter.
 
     Supports Gemini models with full multimodal (image) support.
+    Uses the modern `google-genai` SDK (v1.0+).
     """
 
     def __init__(
@@ -51,9 +53,10 @@ class GoogleProvider(BaseProvider):
         if genai is None:
             raise ImportError(
                 "Google provider optional dependency missing. "
-                "Please install the Google Generative AI SDK (google-generativeai) to use Gemini."
+                "Please install the Google GenAI SDK (google-genai) to use Gemini."
             )
-        genai.configure(api_key=api_key)
+        # Initialize the unified client
+        self._client = genai.Client(api_key=api_key)
 
     @property
     def name(self) -> str:
@@ -87,7 +90,7 @@ class GoogleProvider(BaseProvider):
             ProviderResponse with the generated content
         """
         model_name = model or self._default_model
-        system_instruction, history, last_message = self._convert_messages(messages)
+        system_instruction, contents = self._convert_messages(messages)
 
         logger.debug(
             "google_chat_completion",
@@ -95,32 +98,35 @@ class GoogleProvider(BaseProvider):
             message_count=len(messages),
         )
 
-        # Create model with system instruction
-        gen_model = genai.GenerativeModel(
-            model_name=model_name,
+        # Create config
+        config = types.GenerateContentConfig(
             system_instruction=system_instruction if system_instruction else None,
-        )
-
-        # Start chat with history
-        chat = gen_model.start_chat(history=history)
-
-        # Generate response
-        config = GenerationConfig(
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
 
-        response = await chat.send_message_async(
-            last_message,
-            generation_config=config,
+        # Generate response using new SDK async method
+        # Note: contents contains the full history + last message in order
+        response = await self._client.aio.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config,
         )
 
-        # Extract token counts from usage_metadata
+        # Extract token counts
+        # New SDK usage_metadata structure might slightly differ, checking docs
+        # usually usage_metadata is pydantic object
         usage_metadata = response.usage_metadata
-        prompt_tokens = usage_metadata.prompt_token_count if usage_metadata else 0
-        candidates_tokens = usage_metadata.candidates_token_count if usage_metadata else 0
-        thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
-        total_tokens = usage_metadata.total_token_count if usage_metadata else 0
+        prompt_tokens = (usage_metadata.prompt_token_count or 0) if usage_metadata else 0
+        candidates_tokens = (usage_metadata.candidates_token_count or 0) if usage_metadata else 0
+        # thoughts_tokens might be available in future or specialized models
+        # For now, check if it exists or default to 0
+        thoughts_tokens = 0  # New SDK standardization pending on this field
+        if usage_metadata:
+             # Try getting it safely if it exists in schema
+             thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
+
+        total_tokens = (usage_metadata.total_token_count or 0) if usage_metadata else 0
         output_tokens = candidates_tokens + thoughts_tokens
 
         logger.info(
@@ -142,8 +148,10 @@ class GoogleProvider(BaseProvider):
             total_tokens=total_tokens,
         )
 
+        text_content = response.text or ""
+
         return ProviderResponse(
-            content=response.text,
+            content=text_content,
             finish_reason="stop",
             usage={
                 "prompt_tokens": prompt_tokens,
@@ -176,7 +184,7 @@ class GoogleProvider(BaseProvider):
             Content chunks as they are generated
         """
         model_name = model or self._default_model
-        system_instruction, history, last_message = self._convert_messages(messages)
+        system_instruction, contents = self._convert_messages(messages)
 
         logger.debug(
             "google_chat_completion_stream",
@@ -184,30 +192,24 @@ class GoogleProvider(BaseProvider):
             message_count=len(messages),
         )
 
-        # Create model with system instruction
-        gen_model = genai.GenerativeModel(
-            model_name=model_name,
+        # Create config
+        config = types.GenerateContentConfig(
             system_instruction=system_instruction if system_instruction else None,
-        )
-
-        # Start chat with history
-        chat = gen_model.start_chat(history=history)
-
-        # Generate streaming response
-        config = GenerationConfig(
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
 
-        response = await chat.send_message_async(
-            last_message,
-            generation_config=config,
-            stream=True,
+        # Generate streaming response
+        response_stream = await self._client.aio.models.generate_content_stream(
+            model=model_name,
+            contents=contents,
+            config=config,
         )
 
         last_chunk = None
         received_text = ""
-        async for chunk in response:
+
+        async for chunk in response_stream:
             last_chunk = chunk
             if chunk.text:
                 received_text += chunk.text
@@ -216,10 +218,10 @@ class GoogleProvider(BaseProvider):
         # Log token usage from the final chunk
         if last_chunk and hasattr(last_chunk, "usage_metadata") and last_chunk.usage_metadata:
             usage_metadata = last_chunk.usage_metadata
-            prompt_tokens = usage_metadata.prompt_token_count if usage_metadata else 0
-            candidates_tokens = usage_metadata.candidates_token_count if usage_metadata else 0
+            prompt_tokens = (usage_metadata.prompt_token_count or 0) if usage_metadata else 0
+            candidates_tokens = (usage_metadata.candidates_token_count or 0) if usage_metadata else 0
             thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
-            total_tokens = usage_metadata.total_token_count if usage_metadata else 0
+            total_tokens = (usage_metadata.total_token_count or 0) if usage_metadata else 0
             output_tokens = candidates_tokens + thoughts_tokens
 
             logger.info(
@@ -285,35 +287,38 @@ class GoogleProvider(BaseProvider):
             return False
 
         try:
-            # List models to check availability
-            models = genai.list_models()
-            return len(list(models)) > 0
+            # List models to check availability using new SDK
+            # returns a specific iterable object, need to check if empty
+            pager = await self._client.aio.models.list()
+            # Just awaiting the first page/item is enough
+            # Async pager logic:
+            async for _ in pager:
+                return True
+            return False # Empty list
         except Exception as e:
             logger.warning("google_unavailable", error=str(e))
             return False
 
     def _convert_messages(
         self, messages: list[ChatMessage]
-    ) -> tuple[str, list[dict[str, Any]], Any]:
+    ) -> tuple[str, list[dict[str, Any]]]:
         """
-        Convert ChatMessage objects to Google Gemini format.
+        Convert ChatMessage objects to Google Gemini format (new SDK).
 
-        Gemini uses a different format:
-        - System instruction is separate
-        - History is a list of {"role": "user"|"model", "parts": [...]}
-        - Last message is passed separately
+        New SDK Format:
+        - contents: List[types.Content] or List[dict]
+        - Each dict: {"role": "user"|"model", "parts": [...]}
 
         Args:
             messages: List of ChatMessage objects
 
         Returns:
-            Tuple of (system_instruction, history, last_message_parts)
+            Tuple of (system_instruction, contents_list)
         """
         system_instruction = ""
-        history = []
-        last_message = None
+        contents = []
 
-        for i, msg in enumerate(messages):
+        for msg in messages:
             # Extract system instruction
             if msg.role == MessageRole.SYSTEM:
                 if isinstance(msg.content, str):
@@ -321,19 +326,17 @@ class GoogleProvider(BaseProvider):
                 continue
 
             # Convert role names
+            # 'user' -> 'user'
+            # 'assistant' -> 'model'
             role = "user" if msg.role == MessageRole.USER else "model"
             parts = self._convert_content_to_parts(msg.content)
 
-            if i == len(messages) - 1:
-                # Last message - will be sent as the current message
-                last_message = parts
-            else:
-                history.append({
-                    "role": role,
-                    "parts": parts,
-                })
+            contents.append({
+                "role": role,
+                "parts": parts,
+            })
 
-        return system_instruction, history, last_message or ""
+        return system_instruction, contents
 
     def _convert_content_to_parts(self, content: Any) -> list[Any]:
         """
@@ -343,16 +346,17 @@ class GoogleProvider(BaseProvider):
             content: Message content (string or list of content parts)
 
         Returns:
-            List of parts for Gemini API
+            List of parts (dicts or strings)
         """
         if isinstance(content, str):
-            return [content]
+            # Text part
+            return [{"text": content}]
 
         if isinstance(content, list):
             parts = []
             for part in content:
                 if isinstance(part, TextContent):
-                    parts.append(part.text)
+                    parts.append({"text": part.text})
                 elif isinstance(part, ImageContent):
                     image_data = self._extract_image_data(part.image_url.url)
                     if image_data:
@@ -364,7 +368,7 @@ class GoogleProvider(BaseProvider):
                         })
             return parts
 
-        return [str(content) if content else ""]
+        return [{"text": str(content) if content else ""}]
 
     def _extract_image_data(self, url: str) -> dict[str, str] | None:
         """

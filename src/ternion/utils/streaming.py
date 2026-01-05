@@ -9,7 +9,6 @@ import json
 import time
 import uuid
 from collections.abc import AsyncGenerator, Generator
-from typing import Any
 
 import structlog
 

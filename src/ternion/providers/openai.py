@@ -4,10 +4,10 @@ OpenAI provider adapter.
 Implements chat completion using the OpenAI API with full multimodal support.
 """
 
-import structlog
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import structlog
 from openai import AsyncOpenAI
 
 from ternion.core.models import ChatMessage, ImageContent, TextContent

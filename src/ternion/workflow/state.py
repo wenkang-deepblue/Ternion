@@ -71,7 +71,7 @@ class TernionState(TypedDict, total=False):
     rejection_context: str  # User's rejection feedback for re-analysis
 
     # Step 1: Divergence outputs
-    council_analyses: list[dict[str, Any]]  # List of CouncilAnalysis as dicts
+    ternion_analyses: list[dict[str, Any]]  # List of analysis results as dicts
 
     # Step 2: Convergence outputs
     is_consensus: bool

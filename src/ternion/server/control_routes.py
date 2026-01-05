@@ -8,19 +8,25 @@ Provides REST API endpoints for the Web Control Panel to manage:
 - Usage statistics
 """
 
+import asyncio
+from collections.abc import AsyncGenerator
+from datetime import UTC
+
 import structlog
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ternion.core.budget import budget_manager
 from ternion.core.config_store import (
-    ProviderConfig,
+    AVAILABLE_MODELS,
     ApiKeyEntry,
+    ProviderConfig,
     RoleConfig,
     config_store,
-    AVAILABLE_MODELS,
 )
-from ternion.core.budget import budget_manager
 from ternion.providers.manager import provider_manager
+from ternion.utils.log_manager import log_manager
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["control-panel"])
@@ -530,11 +536,11 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
 
     try:
         if request.provider == "google":
-            import google.generativeai as genai
+            from google import genai
 
             # Use list models API - no LLM call, most cost-effective
-            genai.configure(api_key=request.api_key)
-            list(genai.list_models())
+            google_client = genai.Client(api_key=request.api_key)
+            list(google_client.models.list())
             log_manager.emit("INFO", "USER_ACTION", f"API Key test successful: {provider_display}")
             return TestProviderResponse(
                 success=True, message="Google API connected", code="SUCCESS"
@@ -559,8 +565,8 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
             import openai
 
             # Use list models API - no LLM call, most cost-effective
-            client = openai.OpenAI(api_key=request.api_key)
-            client.models.list()
+            openai_client = openai.OpenAI(api_key=request.api_key)
+            openai_client.models.list()
             log_manager.emit("INFO", "USER_ACTION", f"API Key test successful: {provider_display}")
             return TestProviderResponse(
                 success=True, message="OpenAI API connected", code="SUCCESS"
@@ -652,10 +658,7 @@ async def get_available_models() -> dict:
     """Get available models for each provider."""
     enabled = config_store.get_enabled_providers()
     return {
-        "models": {
-            provider: models
-            for provider, models in AVAILABLE_MODELS.items()
-        },
+        "models": dict(AVAILABLE_MODELS.items()),
         "enabled_providers": enabled,
     }
 
@@ -730,8 +733,8 @@ async def download_logs() -> DownloadLogsResponse:
     Exports all logs from the current session to a JSON file for offline analysis.
     """
     import json as json_lib
+    from datetime import datetime
     from pathlib import Path
-    from datetime import datetime, timezone
 
     logs = log_manager.get_history()
     file_path = Path.home() / ".ternion" / "log.json"
@@ -741,8 +744,8 @@ async def download_logs() -> DownloadLogsResponse:
 
     # Build export data
     export_data = {
-        "session_start": logs[0]["timestamp"] if logs else datetime.now(timezone.utc).isoformat(),
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "session_start": logs[0]["timestamp"] if logs else datetime.now(UTC).isoformat(),
+        "exported_at": datetime.now(UTC).isoformat(),
         "log_count": len(logs),
         "logs": logs,
     }
@@ -752,7 +755,7 @@ async def download_logs() -> DownloadLogsResponse:
         with open(file_path, "w", encoding="utf-8") as f:
             json_lib.dump(export_data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"WRITE_ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"WRITE_ERROR: {str(e)}") from e
 
     # Emit log entry about the download
     log_manager.emit(
@@ -777,9 +780,9 @@ class RevealFileRequest(BaseModel):
 @router.post("/reveal-file")
 async def reveal_file(request: RevealFileRequest) -> dict:
     """Reveal a file in the system file manager (Finder on macOS, Explorer on Windows)."""
-    import subprocess
-    import platform
     import os
+    import platform
+    import subprocess
 
     path = os.path.expanduser(request.path)
 
@@ -799,15 +802,10 @@ async def reveal_file(request: RevealFileRequest) -> dict:
 
         return {"success": True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # Log streaming for observability
-import asyncio
-from typing import AsyncGenerator
-from fastapi.responses import StreamingResponse
-
-from ternion.utils.log_manager import log_manager
 
 
 async def _log_event_generator(queue: asyncio.Queue) -> AsyncGenerator[str, None]:
@@ -823,7 +821,7 @@ async def _log_event_generator(queue: asyncio.Queue) -> AsyncGenerator[str, None
             try:
                 entry = await asyncio.wait_for(queue.get(), timeout=30.0)
                 yield f"data: {json.dumps(entry)}\n\n"
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Send keepalive
                 yield ": keepalive\n\n"
     except asyncio.CancelledError:
@@ -835,7 +833,7 @@ async def stream_logs() -> StreamingResponse:
     """SSE endpoint for real-time log streaming."""
     queue = log_manager.subscribe()
 
-    async def cleanup_generator():
+    async def cleanup_generator() -> AsyncGenerator[str, None]:
         try:
             async for event in _log_event_generator(queue):
                 yield event

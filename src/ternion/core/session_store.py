@@ -9,16 +9,16 @@ Provides persistent session management for the confirmation gate workflow:
 Sessions are stored as individual JSON files in ~/.ternion/sessions/
 """
 
-import json
 import hashlib
-import structlog
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+import json
+import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
-import uuid
 
+import structlog
 
 logger = structlog.get_logger(__name__)
 
@@ -46,11 +46,11 @@ class Session:
     A Ternion session representing one analysis case.
 
     Tracks the lifecycle from report generation through optional implementation.
-    
+
     Report Storage Strategy:
     - ternion_report_raw: Original report content for internal use (Writer/Reviewer)
     - ternion_report_safe: Sanitized report for user-visible output (handoff, clarify, display)
-    
+
     The safe version is generated once at session creation using sanitize_for_cursor_display()
     to ensure Cursor auto-apply triggers are broken.
     """
@@ -73,7 +73,7 @@ class Session:
     def ternion_report(self) -> str:
         """
         Backward compatibility property.
-        
+
         Returns raw report for internal use. For user-visible output,
         always use ternion_report_safe explicitly.
         """
@@ -91,14 +91,14 @@ class Session:
         """Create session from dictionary with backward compatibility."""
         data["stage"] = SessionStage(data["stage"])
         data["execution_mode"] = ExecutionMode(data["execution_mode"])
-        
+
         # Backward compatibility: migrate old single-field format to dual-field
         if "ternion_report_raw" not in data and "ternion_report" in data:
             from ternion.utils.cursor_safety import sanitize_for_cursor_display
             raw_report = data.pop("ternion_report")
             data["ternion_report_raw"] = raw_report
             data["ternion_report_safe"] = sanitize_for_cursor_display(raw_report)
-        
+
         return cls(**data)
 
 
@@ -155,12 +155,12 @@ class SessionStore:
             The created Session object
         """
         from ternion.utils.cursor_safety import sanitize_for_cursor_display
-        
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        
+
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
         # Generate safe version once at creation time
         safe_report = sanitize_for_cursor_display(ternion_report)
-        
+
         session = Session(
             session_id=generate_session_id(),
             stage=SessionStage.AWAITING_CONFIRMATION,
@@ -203,7 +203,7 @@ class SessionStore:
             return None
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             return Session.from_dict(data)
         except (json.JSONDecodeError, KeyError, ValueError) as e:
@@ -248,7 +248,7 @@ class SessionStore:
         if hash_verified is not None:
             session.hash_verified = hash_verified
 
-        session.updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        session.updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         self._save_session(session)
 
         logger.info(
@@ -288,9 +288,8 @@ class SessionStore:
         sessions = []
         for path in self.sessions_dir.glob("*.json"):
             session = self.load_session(path.stem)
-            if session is not None:
-                if stage is None or session.stage == stage:
-                    sessions.append(session)
+            if session is not None and (stage is None or session.stage == stage):
+                sessions.append(session)
 
         # Sort by creation time, newest first
         sessions.sort(key=lambda s: s.created_at, reverse=True)

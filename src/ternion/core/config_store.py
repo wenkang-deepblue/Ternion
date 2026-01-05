@@ -8,12 +8,12 @@ Provides persistent storage for user configuration including:
 """
 
 import json
-import structlog
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-from datetime import datetime
-import uuid
 
+import structlog
 from pydantic import BaseModel, Field
 
 logger = structlog.get_logger(__name__)

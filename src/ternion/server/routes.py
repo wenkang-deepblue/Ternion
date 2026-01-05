@@ -5,6 +5,7 @@ Implements OpenAI-compatible endpoints for chat completions and models listing.
 """
 
 import re
+from collections.abc import AsyncGenerator
 
 import structlog
 from fastapi import APIRouter
@@ -564,7 +565,7 @@ async def handle_passthrough(
     try:
         if request.stream:
             # Streaming response
-            async def stream_generator():
+            async def stream_generator() -> AsyncGenerator[str, None]:
                 async for chunk in provider.chat_completion_stream(
                     messages=request.messages,
                     model=request.model,

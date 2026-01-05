@@ -11,8 +11,7 @@ from typing import Any
 import structlog
 
 from ternion.workflow.nodes import execution_node, final_check_node
-from ternion.workflow.state import WorkflowPhase, TernionState
-
+from ternion.workflow.state import TernionState, WorkflowPhase
 
 logger = structlog.get_logger(__name__)
 
@@ -33,13 +32,13 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
     """
     # Input validation: Check for required fields
     missing_fields = []
-    
+
     if not state.get("ternion_report"):
         missing_fields.append("ternion_report")
-    
+
     if not state.get("conversation_history"):
         missing_fields.append("conversation_history")
-    
+
     if missing_fields:
         error_msg = f"[Ternion] Implementation stage cannot proceed: missing required fields: {', '.join(missing_fields)}"
         logger.error(
@@ -52,7 +51,7 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
         state["errors"] = state.get("errors", []) + [error_msg]
         state["final_output"] = error_msg
         return state
-    
+
     # Ensure the state is positioned at EXECUTION phase.
     state["current_phase"] = WorkflowPhase.EXECUTION.value
 

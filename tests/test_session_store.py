@@ -2,17 +2,18 @@
 Tests for the session store module.
 """
 
-import pytest
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from ternion.core.session_store import (
+    ExecutionMode,
     Session,
     SessionStage,
-    ExecutionMode,
     SessionStore,
-    generate_session_id,
     compute_report_hash,
+    generate_session_id,
 )
 
 

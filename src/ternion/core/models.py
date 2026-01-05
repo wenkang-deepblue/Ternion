@@ -12,7 +12,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-
 # ============================================================================
 # Message Content Types (for multimodal support)
 # ============================================================================

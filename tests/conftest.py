@@ -2,8 +2,8 @@
 Test configuration and fixtures.
 """
 
+
 import pytest
-from typing import Any
 
 from ternion.core.models import ChatMessage, MessageRole
 

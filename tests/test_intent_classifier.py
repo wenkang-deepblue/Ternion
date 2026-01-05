@@ -7,8 +7,8 @@ import pytest
 from ternion.core.intent_classifier import (
     Intent,
     classify_intent,
-    parse_session_marker,
     get_latest_user_message,
+    parse_session_marker,
 )
 
 

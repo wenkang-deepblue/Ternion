@@ -90,7 +90,7 @@ class BaseProvider(ABC):
         ...
 
     @abstractmethod
-    async def chat_completion_stream(
+    def chat_completion_stream(
         self,
         messages: list[ChatMessage],
         model: str | None = None,
@@ -100,6 +100,9 @@ class BaseProvider(ABC):
     ) -> AsyncGenerator[str, None]:
         """
         Generate a streaming chat completion.
+
+        This method returns an async generator that yields content chunks.
+        Implementations should be async generators (async def with yield).
 
         Args:
             messages: List of chat messages
@@ -123,18 +126,22 @@ class BaseProvider(ABC):
         """
         ...
 
-    def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    def _convert_messages(self, messages: list[ChatMessage]) -> Any:
         """
         Convert ChatMessage objects to provider-specific format.
 
         Override this method in subclasses to handle provider-specific
         message format requirements (especially for multimodal content).
+        The return type varies by provider:
+        - OpenAI: list[dict[str, Any]]
+        - Anthropic: tuple[str, list[dict[str, Any]]] (system_prompt, messages)
+        - Google: tuple[str, list[dict[str, Any]], Any] (system, history, last_msg)
 
         Args:
             messages: List of ChatMessage objects
 
         Returns:
-            List of dictionaries in provider's expected format
+            Provider-specific message format
         """
         result = []
         for msg in messages:

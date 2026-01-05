@@ -2,12 +2,13 @@
 Tests for the FastAPI server.
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 
-from ternion.server.app import app
 from ternion.core.config_store import RoleConfig
+from ternion.server.app import app
 
 
 @pytest.fixture

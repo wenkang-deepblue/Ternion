@@ -5,29 +5,30 @@ Each node represents a step in the 4-step discussion flow.
 """
 
 import asyncio
-import structlog
 from typing import Any
 
+import structlog
+
+from ternion.core.budget import budget_manager
 from ternion.core.config import settings
 from ternion.core.config_store import config_store
-from ternion.core.budget import budget_manager
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.core.session_store import (
-    session_store,
     ExecutionMode,
+    session_store,
 )
 from ternion.providers.manager import provider_manager
 from ternion.router.prompts import (
-    DIVERGENCE_PROMPT,
     CONVERGENCE_PROMPT,
+    DIVERGENCE_PROMPT,
     EXECUTION_PROMPT,
     FINAL_CHECK_PROMPT,
     GLOBAL_SECURITY_RULES,
 )
 from ternion.utils.cursor_safety import sanitize_for_preview
-from ternion.utils.i18n import t, MessageKey
+from ternion.utils.i18n import MessageKey, t
 from ternion.utils.log_manager import log_manager
-from ternion.workflow.state import TernionState, WorkflowPhase, ReviewResult
+from ternion.workflow.state import ReviewResult, TernionState, WorkflowPhase
 
 logger = structlog.get_logger(__name__)
 

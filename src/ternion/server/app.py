@@ -4,6 +4,9 @@ FastAPI application for Ternion gateway.
 Provides the main application instance with middleware and exception handlers.
 """
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,18 +15,43 @@ from fastapi.responses import JSONResponse
 from ternion import __version__
 from ternion.core.exceptions import TernionError
 from ternion.core.models import ErrorDetail, ErrorResponse
+from ternion.server.control_routes import router as control_router
 from ternion.server.routes import router
-from ternion.server.control_routes import router as control_router, log_manager
+from ternion.utils.log_manager import log_manager
 
 logger = structlog.get_logger(__name__)
 
-# Create FastAPI application
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    """
+    Application lifespan context manager.
+
+    Handles startup and shutdown events using the modern FastAPI lifespan pattern.
+    This replaces the deprecated @app.on_event decorators (CR-003).
+    """
+    # Startup
+    logger.info(
+        "ternion_starting",
+        version=__version__,
+    )
+    log_manager.emit("INFO", "LIFECYCLE", f"Server started (version {__version__})")
+
+    yield  # Application runs here
+
+    # Shutdown
+    logger.info("ternion_shutting_down")
+    log_manager.emit("INFO", "LIFECYCLE", "Server shutting down")
+
+
+# Create FastAPI application with lifespan
 app = FastAPI(
     title="Ternion",
     description="A local LLM proxy gateway for multi-model technical discussions",
     version=__version__,
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # Add CORS middleware for local development
@@ -79,21 +107,3 @@ async def general_error_handler(request: Request, exc: Exception) -> JSONRespons
             )
         ).model_dump(),
     )
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    """Initialize resources on startup."""
-    logger.info(
-        "ternion_starting",
-        version=__version__,
-    )
-    log_manager.emit("INFO", "LIFECYCLE", f"Server started (version {__version__})")
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    """Cleanup resources on shutdown."""
-    logger.info("ternion_shutting_down")
-    log_manager.emit("INFO", "LIFECYCLE", "Server shutting down")
-

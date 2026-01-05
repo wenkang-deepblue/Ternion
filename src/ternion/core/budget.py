@@ -6,11 +6,11 @@ to a local file. Provides alerts when approaching budget thresholds.
 """
 
 import json
-import structlog
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import structlog
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -675,7 +675,7 @@ class BudgetManager:
                         prov_input_cost = total_cost * prov_data.get("input_tokens", 0) / total_tokens
                         prov_output_cost = total_cost * prov_data.get("output_tokens", 0) / total_tokens
                         prov_thoughts_cost = total_cost * prov_data.get("thoughts_tokens", 0) / total_tokens
-                
+
                 providers[prov] = {
                     "input_tokens": prov_data.get("input_tokens", 0),
                     "output_tokens": prov_data.get("output_tokens", 0),
@@ -687,7 +687,7 @@ class BudgetManager:
                 day_input_cost += prov_input_cost
                 day_output_cost += prov_output_cost
                 day_thoughts_cost += prov_thoughts_cost
-            
+
             daily_data.append({
                 "date": summary.get("date"),
                 "cost": round(summary.get("total_cost", 0), 4),

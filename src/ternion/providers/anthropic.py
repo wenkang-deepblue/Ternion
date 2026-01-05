@@ -4,12 +4,11 @@ Anthropic provider adapter.
 Implements chat completion using the Anthropic API with full multimodal support.
 """
 
-import base64
-import httpx
-import structlog
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import httpx
+import structlog
 from anthropic import AsyncAnthropic
 
 from ternion.core.budget import budget_manager
@@ -199,9 +198,12 @@ class AnthropicProvider(BaseProvider):
                 thinking_tokens = 0
                 if final_message.content:
                     for block in final_message.content:
-                        if hasattr(block, "type") and block.type == "thinking":
-                            if hasattr(block, "thinking"):
-                                thinking_tokens += len(block.thinking.encode("utf-8")) // 4
+                        if (
+                            hasattr(block, "type")
+                            and block.type == "thinking"
+                            and hasattr(block, "thinking")
+                        ):
+                            thinking_tokens += len(block.thinking.encode("utf-8")) // 4
 
                 logger.info(
                     "anthropic_token_usage",
@@ -222,7 +224,6 @@ class AnthropicProvider(BaseProvider):
                 )
 
                 # Record usage for cost tracking
-                from ternion.core.budget import budget_manager
                 budget_manager.record_usage(
                     provider="anthropic",
                     model=model,
