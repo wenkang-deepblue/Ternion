@@ -27,6 +27,7 @@ interface LogEntry {
 interface ObservabilityPanelProps {
   t: Translations;
   isDarkMode: boolean;
+  isVisible?: boolean;
 }
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
@@ -45,7 +46,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   ERROR: 'text-red-400',
 };
 
-export function ObservabilityPanel({ t, isDarkMode }: ObservabilityPanelProps) {
+export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: ObservabilityPanelProps) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [autoScroll, setAutoScroll] = useState(true);
@@ -56,6 +57,7 @@ export function ObservabilityPanel({ t, isDarkMode }: ObservabilityPanelProps) {
     timestamp: string;
   } | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const connectToLogStream = useCallback(() => {
@@ -96,10 +98,15 @@ export function ObservabilityPanel({ t, isDarkMode }: ObservabilityPanelProps) {
   }, [connectToLogStream]);
 
   useEffect(() => {
-    if (autoScroll && logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-    }
-  }, [logs, autoScroll]);
+    if (!autoScroll || !isVisible) return;
+    const id = requestAnimationFrame(() => {
+      // Use scrollTop for reliable scrolling (works even after display:none -> block)
+      if (logContainerRef.current) {
+        logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [logs, autoScroll, isVisible]);
 
   const handleClear = () => {
     setLogs([]);
@@ -165,7 +172,7 @@ export function ObservabilityPanel({ t, isDarkMode }: ObservabilityPanelProps) {
           key={match.index}
           onClick={() => handleRevealFile(filePath)}
           className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2 cursor-pointer transition-colors"
-          title="Click to reveal in file manager"
+          title={t.logsOpenFile}
         >
           {filePath}
         </button>
@@ -272,6 +279,7 @@ export function ObservabilityPanel({ t, isDarkMode }: ObservabilityPanelProps) {
               </div>
             ))
           )}
+          <div ref={bottomRef} />
         </div>
         {/* Download success notification */}
         {lastDownload && (

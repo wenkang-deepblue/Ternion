@@ -122,3 +122,6 @@ reference/
 # CSS
 App.css
 *backup*.css
+
+# Development backup
+*backup*.*

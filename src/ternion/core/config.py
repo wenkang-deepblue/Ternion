@@ -18,7 +18,7 @@ class ServerSettings(BaseSettings):
     """Server configuration."""
 
     host: str = "127.0.0.1"
-    port: int = 8000
+    port: int = 9110
     log_level: str = "info"
 
 

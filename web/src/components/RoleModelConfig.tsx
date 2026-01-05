@@ -37,6 +37,7 @@ interface RoleModelConfigProps {
   onConfigUpdate: (config: Config) => void;
   t: Translations;
   isDarkMode: boolean;
+  executionMode?: string;
 }
 
 const PROVIDER_NAMES: Record<string, string> = {
@@ -59,13 +60,39 @@ const MODEL_NAMES: Record<string, string> = {
 };
 
 const DRAFT_STORAGE_KEY = 'ternion_role_model_draft';
+const CONFIG_NONEMPTY_MARKER_KEY = 'ternion_config_nonempty';
 
-export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleModelConfigProps) {
+export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executionMode }: RoleModelConfigProps) {
   const { showToast } = useToast();
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
   const [selectedRoles, setSelectedRoles] = useState<Record<string, RoleConfig>>({});
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+
+  // Check if role is disabled based on execution mode
+  const isRoleDisabled = (role: string) => {
+    if (executionMode === 'cursor_handoff') {
+      return role === 'writer' || role === 'reviewer';
+    }
+    return false;
+  };
+
+  const isPersistedConfigEmpty = (cfg: Config): boolean => {
+    const hasExecutionMode = Boolean(cfg.execution_mode);
+    const hasAnyRoleConfigured = Object.values(cfg.roles || {}).some(
+      (r) => Boolean(r?.provider || r?.model)
+    );
+    const hasAnyApiKeyConfigured = Object.values(cfg.providers || {}).some(
+      (p) =>
+        Boolean(
+          (p as any)?.has_keys ||
+            (p as any)?.enabled ||
+            (p as any)?.selected_key_id ||
+            ((p as any)?.keys?.length ?? 0) > 0
+        )
+    );
+    return !hasExecutionMode && !hasAnyRoleConfigured && !hasAnyApiKeyConfigured;
+  };
 
   // Get role icon based on role type
   const getRoleIcon = (role: string) => {
@@ -135,9 +162,23 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
   }, [config]);
 
   useEffect(() => {
-    if (hasChanges) {
-      return;
+    if (!config) return;
+
+    // If backend config is empty but we *previously* had non-empty persisted config,
+    // this indicates a fresh start (e.g., ~/.ternion/config.json deleted/empty) -> clear stale drafts.
+    if (typeof window !== 'undefined') {
+      const persistedEmpty = isPersistedConfigEmpty(config);
+      window.localStorage.setItem(CONFIG_NONEMPTY_MARKER_KEY, persistedEmpty ? '0' : '1');
+      if (persistedEmpty) {
+        window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+        setSelectedRoles(config.roles || {});
+        setHasChanges(false);
+        return;
+      }
     }
+
+    // Normal behavior: restore draft within the current browser tab/session.
+    if (hasChanges) return;
     const draftRaw = typeof window !== 'undefined' ? window.sessionStorage.getItem(DRAFT_STORAGE_KEY) : null;
     if (draftRaw) {
       try {
@@ -149,7 +190,7 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
         // ignore corrupted draft
       }
     }
-    if (config?.roles) {
+    if (config.roles) {
       setSelectedRoles(config.roles);
     }
   }, [config, hasChanges]);
@@ -164,8 +205,6 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
   };
 
   const handleProviderChange = (role: string, provider: string) => {
-    // Clear model when provider changes - user must explicitly select model
-    // No auto-selection to prevent unintended cost from expensive models
     setSelectedRoles(prev => {
       const next = {
         ...prev,
@@ -208,10 +247,20 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
   const handleSave = async () => {
     setSaving(true);
     try {
-      const result = await api.updateConfig({
-        roles: selectedRoles,
+      // Only submit roles that are required (skip disabled roles under cursor_handoff)
+      const rolesToSave: Record<string, RoleConfig> = {};
+      for (const role of ROLE_KEYS) {
+        if (isRoleDisabled(role)) continue;
+        const roleConfig = selectedRoles[role];
+        if (roleConfig?.provider && roleConfig?.model) {
+          rolesToSave[role] = roleConfig;
+        }
+      }
+
+      const updatedConfig = await api.updateConfig({
+        roles: rolesToSave,
       });
-      onConfigUpdate(result.config);
+      onConfigUpdate(updatedConfig);
       setHasChanges(false);
       if (typeof window !== 'undefined') {
         window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
@@ -222,6 +271,10 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
       const enabledProviders = modelsData?.enabled_providers || [];
 
       for (const [role, name] of Object.entries(ROLE_DISPLAY_NAMES)) {
+        if (isRoleDisabled(role)) {
+          lines.push(`${name}: ${t.execModeDisabledHint}`);
+          continue;
+        }
         const roleConfig = selectedRoles[role];
         if (roleConfig && enabledProviders.includes(roleConfig.provider)) {
           const providerName = PROVIDER_NAMES[roleConfig.provider] || roleConfig.provider;
@@ -245,6 +298,10 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
   const enabledProviders = modelsData?.enabled_providers || [];
   const allProviders = Object.keys(modelsData?.models || {});
   const allRolesConfigured = ROLE_KEYS.every(role => {
+    if (isRoleDisabled(role)) {
+      // cursor_handoff: writer/reviewer are disabled and should not block saving.
+      return true;
+    }
     const roleConfig = selectedRoles[role];
     if (!roleConfig?.provider || !roleConfig?.model) {
       return false;
@@ -281,7 +338,7 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
                 <span className="text-slate-400 dark:text-slate-500">（</span>
                 <span className="inline-block w-2 h-2 rounded-full bg-green-500"></span>
                 <span className="text-green-600 dark:text-green-400">
-                  {t.apiKeyAdded || '已添加 API Key'}: {enabledProviders.map(p => PROVIDER_NAMES[p] || p).join(', ')}
+                  {t.apiKeyAdded}: {enabledProviders.map(p => PROVIDER_NAMES[p] || p).join(', ')}
                 </span>
                 <span className="text-slate-400 dark:text-slate-500">）</span>
               </span>
@@ -306,6 +363,7 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
           const selectedProvider = roleConfig?.provider;
           const selectedModel = roleConfig?.model;
           const availableModels = modelsData?.models[selectedProvider] || [];
+          const disabled = isRoleDisabled(role);
 
           return (
             <div
@@ -325,9 +383,10 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
                 <div>
                   <label className="label">{t.modelSeries}</label>
                   <select
-                    className="select"
+                    className={`select ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                     value={selectedProvider || ''}
                     onChange={(e) => handleProviderChange(role, e.target.value)}
+                    disabled={disabled}
                   >
                     <option value="" disabled>
                       {t.selectSeries}
@@ -352,10 +411,10 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
                 <div>
                   <label className="label">{t.modelName}</label>
                   <select
-                    className="select"
+                    className={`select ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                     value={selectedModel || ''}
                     onChange={(e) => handleModelChange(role, e.target.value)}
-                    disabled={!selectedProvider}
+                    disabled={disabled || !selectedProvider}
                   >
                     <option value="" disabled>
                       {t.selectModel}
@@ -372,18 +431,25 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode }: RoleM
               {/* Current Config Display */}
               <div className="mt-3 text-sm text-slate-500">
                 {t.currentConfig}:{' '}
-                <code className="px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded">
-                  {roleConfig && enabledProviders.includes(roleConfig.provider)
-                    ? `${PROVIDER_NAMES[roleConfig.provider]} / ${
-                        availableModels.find(m => m.id === selectedModel)?.name || selectedModel
-                      }`
-                    : '--/----'}
-                </code>
-                {(!config?.roles?.[role] ||
-                  config?.roles?.[role]?.provider !== roleConfig?.provider ||
-                  config?.roles?.[role]?.model !== roleConfig?.model)
-                  ? `，${t.unsavedLabel}`
-                  : ''}
+                {disabled ? (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    {t.execModeDisabledHint}
+                  </span>
+                ) : (
+                  <>
+                    <code className="px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded">
+                      {roleConfig && enabledProviders.includes(roleConfig.provider)
+                        ? `${PROVIDER_NAMES[roleConfig.provider]} / ${availableModels.find(m => m.id === selectedModel)?.name || selectedModel
+                        }`
+                        : '--/----'}
+                    </code>
+                    {(!config?.roles?.[role] ||
+                      config?.roles?.[role]?.provider !== roleConfig?.provider ||
+                      config?.roles?.[role]?.model !== roleConfig?.model)
+                      ? `，${t.unsavedLabel}`
+                      : ''}
+                  </>
+                )}
               </div>
             </div>
           );

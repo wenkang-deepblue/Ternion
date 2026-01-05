@@ -89,8 +89,8 @@ class BudgetConfig(BaseModel):
 class PortsConfig(BaseModel):
     """Server port configuration."""
 
-    backend: int = 8000  # Ternion API server port
-    web: int = 7990      # Web control panel port
+    backend: int = 9110  # Ternion API server port
+    web: int = 9120      # Web control panel port
 
 
 class UserConfig(BaseModel):
@@ -120,7 +120,13 @@ class UserConfig(BaseModel):
     ports: PortsConfig = Field(default_factory=PortsConfig)
     theme: str = "system"  # "light", "dark", "system"
     language: str = "auto"  # "auto", "en", "zh"
+    # Execution mode is intentionally empty by default.
+    # Users MUST explicitly choose and save it in the Web Control Panel.
+    execution_mode: str = ""  # "cursor_handoff" | "ternion_full" | ""
     hide_usage_disclaimer: bool = False  # Hide usage disclaimer warning
+    # Control whether thinking logs are prepended to final output.
+    # Set to False for strict system prompts that require only patch/diff output.
+    show_thinking_logs: bool = True
     updated_at: str = ""
 
 
@@ -279,7 +285,9 @@ class ConfigStore:
                 "theme": config.theme,
                 "language": config.language,
                 "hide_usage_disclaimer": config.hide_usage_disclaimer,
+                "show_thinking_logs": config.show_thinking_logs,
             },
+            "execution_mode": config.execution_mode,
             "updated_at": config.updated_at,
         }
 

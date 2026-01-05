@@ -151,7 +151,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
     }
     setBudgetSaving(true);
     try {
-      const result = await api.updateConfig({ budget: { monthly_limit_usd: newLimit } });
+      const updatedConfig = await api.updateConfig({ budget: { monthly_limit_usd: newLimit } });
       
       // Update local usage state immediately for better UX
       if (usage) {
@@ -164,8 +164,8 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
       }
       
       // Notify parent to refresh config
-      if (onConfigUpdate && result.config) {
-        onConfigUpdate(result.config);
+      if (onConfigUpdate) {
+        onConfigUpdate(updatedConfig);
       }
       
       // Reload usage data to get canonical data from server

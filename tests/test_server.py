@@ -72,10 +72,14 @@ class TestChatCompletions:
             "thinking_logs": ["[Ternion] Starting discussion..."],
             "errors": [],
         }
-        
+
         # Create mock user config with all roles configured
         mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
         mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
             "arbiter": RoleConfig(provider="openai", model="gpt-4"),
             "writer": RoleConfig(provider="openai", model="gpt-4"),
             "reviewer": RoleConfig(provider="openai", model="gpt-4"),
@@ -86,16 +90,16 @@ class TestChatCompletions:
         mock_user_config.providers = {
             "openai": mock_provider_config,
         }
-        
+
         with (
-            patch("ternion.core.config_store.config_store") as mock_config_store,
+            patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
         ):
             mock_config_store.load.return_value = mock_user_config
             mock_provider_mgr.has_providers = True
             mock_run.return_value = mock_result
-            
+
             response = client.post(
                 "/v1/chat/completions",
                 json={
@@ -121,10 +125,14 @@ class TestChatCompletions:
             "thinking_logs": ["[Ternion] Starting discussion..."],
             "errors": [],
         }
-        
+
         # Create mock user config with all roles configured
         mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
         mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
             "arbiter": RoleConfig(provider="openai", model="gpt-4"),
             "writer": RoleConfig(provider="openai", model="gpt-4"),
             "reviewer": RoleConfig(provider="openai", model="gpt-4"),
@@ -135,16 +143,16 @@ class TestChatCompletions:
         mock_user_config.providers = {
             "openai": mock_provider_config,
         }
-        
+
         with (
-            patch("ternion.core.config_store.config_store") as mock_config_store,
+            patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
         ):
             mock_config_store.load.return_value = mock_user_config
             mock_provider_mgr.has_providers = True
             mock_run.return_value = mock_result
-            
+
             with client.stream(
                 "POST",
                 "/v1/chat/completions",

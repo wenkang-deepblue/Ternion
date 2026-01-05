@@ -204,6 +204,32 @@ export interface Translations {
   settingsThemeSystem: string;
   settingsLanguage: string;
   settingsLanguageAuto: string;
+
+  // Execution Mode Selector
+  execModeTitle: string;
+  execModeDescription: string;
+  execModeRecommended: string;
+  execModeCursorTitle: string;
+  execModeTernionTitle: string;
+  execModePros: string;
+  execModeCons: string;
+  execModeCursorPro1: string;
+  execModeCursorPro2: string;
+  execModeCursorPro3: string;
+  execModeCursorCon1: string;
+  execModeCursorCon2: string;
+  execModeTernionPro1: string;
+  execModeTernionPro2: string;
+  execModeTernionPro3: string;
+  execModeTernionCon1: string;
+  execModeTernionCon2: string;
+  execModeSave: string;
+  execModeSaving: string;
+  execModeDisabledHint: string;
+
+  // Status Bar (Execution Mode)
+  statusExecModeNotSelected: string;
+  statusExecModeSelected: string;
 }
 
 const EN: Translations = {
@@ -223,6 +249,8 @@ const EN: Translations = {
   // Status Bar
   statusAddApiKey: 'Please add at least one API Key',
   statusApiKeyAdded: 'API Key added',
+  statusExecModeNotSelected: 'Execution mode not selected',
+  statusExecModeSelected: 'Execution mode',
   statusConfigArbiter: 'Please configure Arbiter model',
   statusConfigWriter: 'Please configure Writer model',
   statusConfigReviewer: 'Please configure Reviewer model',
@@ -404,6 +432,28 @@ const EN: Translations = {
   settingsThemeSystem: 'System',
   settingsLanguage: 'Language',
   settingsLanguageAuto: 'Auto',
+
+  // Execution Mode Selector
+  execModeTitle: 'Execution Mode',
+  execModeDescription: 'Select execution mode after Ternion analysis is confirmed',
+  execModeRecommended: 'Recommended',
+  execModeCursorTitle: 'Ternion Root Cause Analysis + Cursor Implementation',
+  execModeTernionTitle: 'Ternion Root Cause Analysis + Code Implementation',
+  execModePros: '✓ Pros',
+  execModeCons: '✗ Cons',
+  execModeCursorPro1: 'Lower cost, only analysis phase tokens consumed',
+  execModeCursorPro2: 'Native Cursor code implementation experience',
+  execModeCursorPro3: 'Switch to other Cursor models anytime',
+  execModeCursorCon1: 'No code usability and security review',
+  execModeCursorCon2: 'Code quality depends on Cursor model',
+  execModeTernionPro1: 'Complete workflow with Ternion Agent code writing and review',
+  execModeTernionPro2: 'Reviewer performs code usability and security review',
+  execModeTernionPro3: 'Higher code quality',
+  execModeTernionCon1: 'Higher cost, full workflow needs more tokens',
+  execModeTernionCon2: 'Longer response time',
+  execModeSave: 'Save',
+  execModeSaving: 'Saving...',
+  execModeDisabledHint: 'Cursor handles code generation, no configuration needed',
 };
 
 const ZH: Translations = {
@@ -423,6 +473,8 @@ const ZH: Translations = {
   // Status Bar
   statusAddApiKey: '请添加至少一个 API Key',
   statusApiKeyAdded: '已添加 API Key',
+  statusExecModeNotSelected: '推理方案未选择',
+  statusExecModeSelected: '推理方案',
   statusConfigArbiter: '请配置主持人模型',
   statusConfigWriter: '请配置执笔人模型',
   statusConfigReviewer: '请配置审稿人模型',
@@ -604,6 +656,28 @@ const ZH: Translations = {
   settingsThemeSystem: '跟随系统',
   settingsLanguage: '语言',
   settingsLanguageAuto: '自动',
+
+  // Execution Mode Selector
+  execModeTitle: '推理方案选择',
+  execModeDescription: '选择 Ternion 分析报告确认后的执行方式',
+  execModeRecommended: '推荐',
+  execModeCursorTitle: 'Ternion 问题归因 + Cursor 代码实现',
+  execModeTernionTitle: 'Ternion 问题归因 + 代码实现',
+  execModePros: '✓ 优势',
+  execModeCons: '✗ 劣势',
+  execModeCursorPro1: '成本更低，仅消耗问题归因阶段的 token',
+  execModeCursorPro2: 'Cursor 原生代码实现体验',
+  execModeCursorPro3: '可随时切换至其他 Cursor 模型',
+  execModeCursorCon1: '无代码可用性及安全性审查',
+  execModeCursorCon2: '代码质量取决于 Cursor 模型',
+  execModeTernionPro1: 'Ternion Agent 实现代码编写及代码审查完整工作流',
+  execModeTernionPro2: '审稿人做代码可用性及安全性审查',
+  execModeTernionPro3: '更高的代码质量',
+  execModeTernionCon1: '成本更高，完整流程消耗更多 token',
+  execModeTernionCon2: '响应时间更长',
+  execModeSave: '保存',
+  execModeSaving: '保存中...',
+  execModeDisabledHint: 'Cursor 实现代码，无需配置此角色',
 };
 
 const ES: Translations = {
@@ -804,6 +878,30 @@ const ES: Translations = {
   settingsThemeSystem: 'Sistema',
   settingsLanguage: 'Idioma',
   settingsLanguageAuto: 'Auto',
+
+  // Execution Mode Selector
+  execModeTitle: 'Modo de Ejecución',
+  execModeDescription: 'Seleccione el modo de ejecución después de confirmar el análisis de Ternion',
+  execModeRecommended: 'Recomendado',
+  execModeCursorTitle: 'Análisis de Causa Raíz Ternion + Implementación Cursor',
+  execModeTernionTitle: 'Análisis de Causa Raíz Ternion + Implementación de Código',
+  execModePros: '✓ Ventajas',
+  execModeCons: '✗ Desventajas',
+  execModeCursorPro1: 'Menor costo, solo tokens de fase de análisis consumidos',
+  execModeCursorPro2: 'Experiencia nativa de implementación de código Cursor',
+  execModeCursorPro3: 'Cambiar a otros modelos Cursor en cualquier momento',
+  execModeCursorCon1: 'Sin revisión de usabilidad y seguridad del código',
+  execModeCursorCon2: 'Calidad del código depende del modelo Cursor',
+  execModeTernionPro1: 'Flujo completo con escritura y revisión de código por Ternion Agent',
+  execModeTernionPro2: 'Revisor realiza revisión de usabilidad y seguridad del código',
+  execModeTernionPro3: 'Mayor calidad del código',
+  execModeTernionCon1: 'Mayor costo, flujo completo necesita más tokens',
+  execModeTernionCon2: 'Mayor tiempo de respuesta',
+  execModeSave: 'Guardar',
+  execModeSaving: 'Guardando...',
+  execModeDisabledHint: 'Cursor genera el código, no se necesita configuración',
+  statusExecModeNotSelected: 'Modo de ejecución no seleccionado',
+  statusExecModeSelected: 'Modo de ejecución',
 };
 
 const FR: Translations = {
@@ -1004,6 +1102,30 @@ const FR: Translations = {
   settingsThemeSystem: 'Système',
   settingsLanguage: 'Langue',
   settingsLanguageAuto: 'Auto',
+
+  // Execution Mode Selector
+  execModeTitle: 'Mode d\'Exécution',
+  execModeDescription: 'Sélectionnez le mode d\'exécution après confirmation de l\'analyse Ternion',
+  execModeRecommended: 'Recommandé',
+  execModeCursorTitle: 'Analyse des Causes Racines Ternion + Implémentation Cursor',
+  execModeTernionTitle: 'Analyse des Causes Racines Ternion + Implémentation de Code',
+  execModePros: '✓ Avantages',
+  execModeCons: '✗ Inconvénients',
+  execModeCursorPro1: 'Coût réduit, seuls les tokens de phase d\'analyse consommés',
+  execModeCursorPro2: 'Expérience native d\'implémentation de code Cursor',
+  execModeCursorPro3: 'Changer vers d\'autres modèles Cursor à tout moment',
+  execModeCursorCon1: 'Pas de révision d\'utilisabilité et de sécurité du code',
+  execModeCursorCon2: 'Qualité du code dépend du modèle Cursor',
+  execModeTernionPro1: 'Flux complet avec écriture et révision de code par Ternion Agent',
+  execModeTernionPro2: 'Le Réviseur effectue la révision d\'utilisabilité et de sécurité du code',
+  execModeTernionPro3: 'Meilleure qualité du code',
+  execModeTernionCon1: 'Coût plus élevé, flux complet nécessite plus de tokens',
+  execModeTernionCon2: 'Temps de réponse plus long',
+  execModeSave: 'Enregistrer',
+  execModeSaving: 'Enregistrement...',
+  execModeDisabledHint: 'Cursor génère le code, aucune configuration nécessaire',
+  statusExecModeNotSelected: 'Mode d\'exécution non sélectionné',
+  statusExecModeSelected: 'Mode d\'exécution',
 };
 
 const DE: Translations = {
@@ -1204,6 +1326,30 @@ const DE: Translations = {
   settingsThemeSystem: 'System',
   settingsLanguage: 'Sprache',
   settingsLanguageAuto: 'Auto',
+
+  // Execution Mode Selector
+  execModeTitle: 'Ausführungsmodus',
+  execModeDescription: 'Wählen Sie den Ausführungsmodus nach Bestätigung der Ternion-Analyse',
+  execModeRecommended: 'Empfohlen',
+  execModeCursorTitle: 'Ternion Ursachenanalyse + Cursor Implementierung',
+  execModeTernionTitle: 'Ternion Ursachenanalyse + Code-Implementierung',
+  execModePros: '✓ Vorteile',
+  execModeCons: '✗ Nachteile',
+  execModeCursorPro1: 'Geringere Kosten, nur Analysephase-Token verbraucht',
+  execModeCursorPro2: 'Native Cursor-Code-Implementierungserfahrung',
+  execModeCursorPro3: 'Jederzeit zu anderen Cursor-Modellen wechseln',
+  execModeCursorCon1: 'Keine Code-Usability- und Sicherheitsprüfung',
+  execModeCursorCon2: 'Codequalität hängt vom Cursor-Modell ab',
+  execModeTernionPro1: 'Vollständiger Workflow mit Ternion Agent Code-Schreiben und -Prüfung',
+  execModeTernionPro2: 'Reviewer führt Code-Usability- und Sicherheitsprüfung durch',
+  execModeTernionPro3: 'Höhere Codequalität',
+  execModeTernionCon1: 'Höhere Kosten, vollständiger Workflow benötigt mehr Token',
+  execModeTernionCon2: 'Längere Antwortzeit',
+  execModeSave: 'Speichern',
+  execModeSaving: 'Speichern...',
+  execModeDisabledHint: 'Cursor generiert den Code, keine Konfiguration erforderlich',
+  statusExecModeNotSelected: 'Ausführungsmodus nicht ausgewählt',
+  statusExecModeSelected: 'Ausführungsmodus',
 };
 
 const JA: Translations = {
@@ -1404,6 +1550,30 @@ const JA: Translations = {
   settingsThemeSystem: 'システム',
   settingsLanguage: '言語',
   settingsLanguageAuto: '自動',
+
+  // Execution Mode Selector
+  execModeTitle: '実行モード',
+  execModeDescription: 'Ternion分析確認後の実行モードを選択',
+  execModeRecommended: '推奨',
+  execModeCursorTitle: 'Ternion根本原因分析 + Cursor実装',
+  execModeTernionTitle: 'Ternion根本原因分析 + コード実装',
+  execModePros: '✓ メリット',
+  execModeCons: '✗ デメリット',
+  execModeCursorPro1: '低コスト、分析フェーズのトークンのみ消費',
+  execModeCursorPro2: 'ネイティブCursorコード実装体験',
+  execModeCursorPro3: 'いつでも他のCursorモデルに切り替え可能',
+  execModeCursorCon1: 'コードの使用性とセキュリティレビューなし',
+  execModeCursorCon2: 'コード品質はCursorモデルに依存',
+  execModeTernionPro1: 'Ternion Agentによるコード作成とレビューの完全なワークフロー',
+  execModeTernionPro2: 'レビューアーがコードの使用性とセキュリティレビューを実施',
+  execModeTernionPro3: 'より高いコード品質',
+  execModeTernionCon1: '高コスト、完全なワークフローはより多くのトークンが必要',
+  execModeTernionCon2: '応答時間が長い',
+  execModeSave: '保存',
+  execModeSaving: '保存中...',
+  execModeDisabledHint: 'Cursorがコード生成を担当、設定不要',
+  statusExecModeNotSelected: '実行モード未選択',
+  statusExecModeSelected: '実行モード',
 };
 
 const KO: Translations = {
@@ -1604,6 +1774,30 @@ const KO: Translations = {
   settingsThemeSystem: '시스템',
   settingsLanguage: '언어',
   settingsLanguageAuto: '자동',
+
+  // Execution Mode Selector
+  execModeTitle: '실행 모드',
+  execModeDescription: 'Ternion 분석 확인 후 실행 모드를 선택하세요',
+  execModeRecommended: '추천',
+  execModeCursorTitle: 'Ternion 근본 원인 분석 + Cursor 구현',
+  execModeTernionTitle: 'Ternion 근본 원인 분석 + 코드 구현',
+  execModePros: '✓ 장점',
+  execModeCons: '✗ 단점',
+  execModeCursorPro1: '저비용, 분석 단계 토큰만 소비',
+  execModeCursorPro2: '네이티브 Cursor 코드 구현 경험',
+  execModeCursorPro3: '언제든지 다른 Cursor 모델로 전환 가능',
+  execModeCursorCon1: '코드 사용성 및 보안 리뷰 없음',
+  execModeCursorCon2: '코드 품질은 Cursor 모델에 의존',
+  execModeTernionPro1: 'Ternion Agent의 코드 작성 및 리뷰 완전한 워크플로우',
+  execModeTernionPro2: '리뷰어가 코드 사용성 및 보안 리뷰 수행',
+  execModeTernionPro3: '더 높은 코드 품질',
+  execModeTernionCon1: '고비용, 전체 워크플로우에 더 많은 토큰 필요',
+  execModeTernionCon2: '응답 시간이 더 김',
+  execModeSave: '저장',
+  execModeSaving: '저장 중...',
+  execModeDisabledHint: 'Cursor가 코드 생성 담당, 구성 불필요',
+  statusExecModeNotSelected: '실행 모드 미선택',
+  statusExecModeSelected: '실행 모드',
 };
 
 export const translations: Record<Language, Translations> = {
@@ -1656,6 +1850,36 @@ export function getTranslations(lang: Language): Translations {
  * Falls back to the code itself if no translation exists.
  */
 export function getErrorMessage(t: Translations, errorCode: string): string {
+  // Special handling: include missing roles for ROLES_INCOMPLETE
+  // Backend may return: "ROLES_INCOMPLETE:ternion_a,arbiter,writer"
+  if (errorCode.startsWith('ROLES_INCOMPLETE:')) {
+    const raw = errorCode.slice('ROLES_INCOMPLETE:'.length);
+    const missingRoles = raw
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    const roleNameMap: Record<string, string> = {
+      ternion_a: t.ternionAName,
+      ternion_b: t.ternionBName,
+      ternion_c: t.ternionCName,
+      arbiter: t.arbiterName,
+      writer: t.writerName,
+      reviewer: t.reviewerName,
+    };
+
+    const isZh = t.tabConfig === '配置';
+    const sep = isZh ? '、' : ', ';
+    const missingDisplay = missingRoles.map(r => roleNameMap[r] || r).join(sep);
+
+    const baseKey = `code_ROLES_INCOMPLETE` as keyof Translations;
+    const base = (t[baseKey] as unknown as string) || 'ROLES_INCOMPLETE';
+    const suffix = missingDisplay
+      ? (isZh ? `（缺少：${missingDisplay}）` : ` (missing: ${missingDisplay})`)
+      : '';
+    return `${base}${suffix}`;
+  }
+
   // Try to find translation with code_ prefix
   const key = `code_${errorCode}` as keyof Translations;
   if (t[key]) {

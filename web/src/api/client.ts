@@ -37,6 +37,7 @@ export interface Config {
   roles: Record<string, RoleConfig>;
   budget: BudgetConfig;
   ports?: PortsConfig;
+  execution_mode?: string;
   preferences?: {
     theme: string;
     language: string;
@@ -177,16 +178,18 @@ class ApiClient {
   async updateConfig(config: Partial<{
     roles?: Record<string, RoleConfig>;
     budget?: Partial<BudgetConfig>;
+    execution_mode?: string;
     preferences?: {
       theme?: string;
       language?: string;
       hide_usage_disclaimer?: boolean;
     };
-  }>): Promise<{ success: boolean; config: Config }> {
-    return this.request('/config', {
+  }>): Promise<Config> {
+    const result = await this.request<{ success: boolean; config: Config }>('/config', {
       method: 'POST',
       body: JSON.stringify(config),
     });
+    return result.config;
   }
 
   async logRoleSelection(
@@ -197,6 +200,15 @@ class ApiClient {
     return this.request('/roles/selection', {
       method: 'POST',
       body: JSON.stringify({ role, provider, model }),
+    });
+  }
+
+  async logExecutionModeSelection(
+    execution_mode: string
+  ): Promise<{ success: boolean; pending: boolean }> {
+    return this.request('/execution-mode/selection', {
+      method: 'POST',
+      body: JSON.stringify({ execution_mode }),
     });
   }
 

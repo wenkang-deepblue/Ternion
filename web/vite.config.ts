@@ -15,8 +15,8 @@ import path from 'path'
 import os from 'os'
 
 // Default port values
-const DEFAULT_WEB_PORT = 7990
-const DEFAULT_BACKEND_PORT = 8000
+const DEFAULT_WEB_PORT = 9120
+const DEFAULT_BACKEND_PORT = 9110
 
 /**
  * Read port configuration from user config file.

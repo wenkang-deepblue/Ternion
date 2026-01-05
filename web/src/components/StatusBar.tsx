@@ -32,6 +32,11 @@ const MODEL_NAMES: Record<string, string> = {
   'gpt-5.1-codex': 'GPT 5.1 Codex',
 };
 
+const EXEC_MODE_DISPLAY: Record<string, (t: Translations) => string> = {
+  cursor_handoff: (t) => t.execModeCursorTitle,
+  ternion_full: (t) => t.execModeTernionTitle,
+};
+
 interface StatusItemProps {
   isComplete: boolean;
   pendingText: string;
@@ -97,6 +102,14 @@ export function StatusBar({ config, t }: StatusBarProps) {
   const ternionBConfigured = isRoleConfigured('ternion_b');
   const ternionCConfigured = isRoleConfigured('ternion_c');
 
+  // Execution mode status
+  const executionMode = config?.execution_mode || '';
+  const hasExecutionMode = executionMode === 'cursor_handoff' || executionMode === 'ternion_full';
+  const execModeDisplay = hasExecutionMode ? EXEC_MODE_DISPLAY[executionMode]?.(t) || executionMode : '';
+
+  const writerEffectiveComplete = executionMode === 'cursor_handoff' ? true : writerConfigured;
+  const reviewerEffectiveComplete = executionMode === 'cursor_handoff' ? true : reviewerConfigured;
+
   return (
     <div className="bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 py-2 px-4">
       {/* First row - API keys and Ternion status */}
@@ -138,6 +151,15 @@ export function StatusBar({ config, t }: StatusBarProps) {
 
       {/* Second row - Core roles status */}
       <div className="mx-auto flex flex-wrap items-center justify-center gap-3 text-sm mt-1">
+        {/* Execution Mode Status */}
+        <StatusItem
+          isComplete={hasExecutionMode}
+          pendingText={t.statusExecModeNotSelected}
+          completeText={`${t.statusExecModeSelected}: ${execModeDisplay}`}
+        />
+
+        <span className="text-slate-300 dark:text-slate-600">|</span>
+
         {/* Arbiter Status */}
         <StatusItem
           isComplete={arbiterConfigured}
@@ -149,18 +171,26 @@ export function StatusBar({ config, t }: StatusBarProps) {
 
         {/* Writer Status */}
         <StatusItem
-          isComplete={writerConfigured}
+          isComplete={writerEffectiveComplete}
           pendingText={t.statusConfigWriter}
-          completeText={getRoleConfigText('writer', t.statusWriterConfigured)}
+          completeText={
+            executionMode === 'cursor_handoff'
+              ? `${t.statusWriterConfigured}: ${t.execModeDisabledHint}`
+              : getRoleConfigText('writer', t.statusWriterConfigured)
+          }
         />
 
         <span className="text-slate-300 dark:text-slate-600">|</span>
 
         {/* Reviewer Status */}
         <StatusItem
-          isComplete={reviewerConfigured}
+          isComplete={reviewerEffectiveComplete}
           pendingText={t.statusConfigReviewer}
-          completeText={getRoleConfigText('reviewer', t.statusReviewerConfigured)}
+          completeText={
+            executionMode === 'cursor_handoff'
+              ? `${t.statusReviewerConfigured}: ${t.execModeDisabledHint}`
+              : getRoleConfigText('reviewer', t.statusReviewerConfigured)
+          }
         />
       </div>
     </div>

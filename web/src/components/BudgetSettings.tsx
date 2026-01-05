@@ -66,8 +66,8 @@ export function BudgetSettings({ config, onConfigUpdate, t, isDarkMode }: Budget
   const handleSave = async () => {
     setSaving(true);
     try {
-      const result = await api.updateConfig({ budget });
-      onConfigUpdate(result.config);
+      const updatedConfig = await api.updateConfig({ budget });
+      onConfigUpdate(updatedConfig);
       setHasChanges(false);
 
       // Show toast with saved settings

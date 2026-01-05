@@ -4,8 +4,8 @@ State definitions for the Ternion LangGraph workflow.
 Defines the TypedDict state that flows through the discussion graph.
 """
 
-from dataclasses import dataclass, field
-from enum import Enum, auto
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, TypedDict
 
 
@@ -64,6 +64,12 @@ class TernionState(TypedDict, total=False):
     # Current phase
     current_phase: str
 
+    # Session management (Human-in-the-Loop)
+    session_id: str  # Unique session identifier
+    await_confirmation: bool  # If True, stop after convergence for user confirmation
+    execution_mode: str  # "ternion_full" or "cursor_handoff"
+    rejection_context: str  # User's rejection feedback for re-analysis
+
     # Step 1: Divergence outputs
     council_analyses: list[dict[str, Any]]  # List of CouncilAnalysis as dicts
 
@@ -87,3 +93,4 @@ class TernionState(TypedDict, total=False):
 
     # Final result
     final_output: str
+

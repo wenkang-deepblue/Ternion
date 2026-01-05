@@ -10,15 +10,12 @@ Provides REST API endpoints for the Web Control Panel to manage:
 
 import structlog
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ternion.core.config_store import (
-    UserConfig,
     ProviderConfig,
     ApiKeyEntry,
     RoleConfig,
-    BudgetConfig,
-    PortsConfig,
     config_store,
     AVAILABLE_MODELS,
 )
@@ -27,6 +24,18 @@ from ternion.providers.manager import provider_manager
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["control-panel"])
+
+# Sync budget settings from config_store to budget_manager on module load
+# This ensures user-configured budget persists across server restarts
+_init_config = config_store.load()
+if _init_config and _init_config.budget:
+    budget_manager.settings.monthly_limit_usd = _init_config.budget.monthly_limit_usd
+    budget_manager.settings.alert_threshold = _init_config.budget.alert_threshold
+    logger.info(
+        "budget_settings_loaded",
+        monthly_limit_usd=_init_config.budget.monthly_limit_usd,
+        alert_threshold=_init_config.budget.alert_threshold,
+    )
 
 
 # Request/Response Models
@@ -84,6 +93,7 @@ class ConfigUpdateRequest(BaseModel):
 
     roles: RolesUpdateRequest | None = None
     budget: BudgetUpdateRequest | None = None
+    execution_mode: str | None = None  # "cursor_handoff" or "ternion_full"
 
 
 class RoleSelectionLogRequest(BaseModel):
@@ -92,6 +102,12 @@ class RoleSelectionLogRequest(BaseModel):
     role: str
     provider: str
     model: str
+
+
+class ExecutionModeSelectionLogRequest(BaseModel):
+    """Request to log an execution mode selection without saving."""
+
+    execution_mode: str  # "cursor_handoff" | "ternion_full"
 
 
 class TestProviderRequest(BaseModel):
@@ -307,40 +323,56 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
     if request.roles:
         all_roles = ["ternion_a", "ternion_b", "ternion_c", "arbiter", "writer", "reviewer"]
         enabled_providers = set(config_store.get_enabled_providers())
+
+        # Determine required roles based on execution mode.
+        # cursor_handoff: writer/reviewer are not required.
+        effective_mode = request.execution_mode or config.execution_mode
+        required_roles = ["ternion_a", "ternion_b", "ternion_c", "arbiter"]
+        if effective_mode != "cursor_handoff":
+            required_roles += ["writer", "reviewer"]
+
+        # Validate only provided role updates (partial update supported)
         validated_roles: dict[str, RoleUpdateRequest] = {}
+        next_roles = dict(config.roles)
 
         for role_name in all_roles:
             role_update = getattr(request.roles, role_name)
-            if (
-                role_update is None
-                or not role_update.provider
-                or not role_update.model
-            ):
-                raise HTTPException(
-                    status_code=400,
-                    detail="ROLES_INCOMPLETE",
-                )
-
+            if role_update is None:
+                continue
+            if not role_update.provider or not role_update.model:
+                raise HTTPException(status_code=400, detail=f"ROLES_INCOMPLETE:{role_name}")
             if role_update.provider not in enabled_providers:
-                raise HTTPException(
-                    status_code=400,
-                    detail="PROVIDER_NOT_ENABLED",
-                )
-
+                raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
             available = {m["id"] for m in AVAILABLE_MODELS.get(role_update.provider, [])}
             if role_update.model not in available:
-                raise HTTPException(
-                    status_code=400,
-                    detail="MODEL_NOT_AVAILABLE",
-                )
-
+                raise HTTPException(status_code=400, detail="MODEL_NOT_AVAILABLE")
             validated_roles[role_name] = role_update
-
-        for role_name, role_update in validated_roles.items():
-            config.roles[role_name] = RoleConfig(
+            next_roles[role_name] = RoleConfig(
                 provider=role_update.provider,
                 model=role_update.model,
             )
+
+        # Enforce that all required roles are fully configured after applying updates
+        missing_roles: list[str] = []
+        for role_name in required_roles:
+            role_cfg = next_roles.get(role_name)
+            if not role_cfg or not role_cfg.provider or not role_cfg.model:
+                missing_roles.append(role_name)
+                continue
+            if role_cfg.provider not in enabled_providers:
+                raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
+            available = {m["id"] for m in AVAILABLE_MODELS.get(role_cfg.provider, [])}
+            if role_cfg.model not in available:
+                raise HTTPException(status_code=400, detail="MODEL_NOT_AVAILABLE")
+
+        if missing_roles:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ROLES_INCOMPLETE:{','.join(missing_roles)}",
+            )
+
+        # Commit updates only after validation succeeds
+        config.roles = next_roles
 
         for role_name, role_update in validated_roles.items():
             provider_display = _get_provider_display_name(role_update.provider)
@@ -386,6 +418,20 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
             budget_manager.settings.monthly_limit_usd = config.budget.monthly_limit_usd
             budget_manager.settings.alert_threshold = config.budget.alert_threshold
 
+    # Update execution mode
+    if request.execution_mode is not None:
+        if request.execution_mode not in ("cursor_handoff", "ternion_full"):
+            raise HTTPException(status_code=400, detail="INVALID_EXECUTION_MODE")
+        old_mode = config.execution_mode
+        config.execution_mode = request.execution_mode
+        if old_mode != request.execution_mode:
+            mode_display = "Ternion + Cursor" if request.execution_mode == "cursor_handoff" else "All in Ternion"
+            log_manager.emit(
+                "INFO",
+                "USER_ACTION",
+                f"Execution mode saved: {mode_display}",
+            )
+
     config_store.save(config)
     logger.info("config_updated")
 
@@ -424,6 +470,35 @@ async def log_role_selection(request: RoleSelectionLogRequest) -> dict:
     return {
         "success": True,
         "message": "ROLE_MODEL_SELECTION_LOGGED",
+        "pending": True,
+    }
+
+
+@router.post("/execution-mode/selection")
+async def log_execution_mode_selection(request: ExecutionModeSelectionLogRequest) -> dict:
+    """
+    Log an execution mode selection without persisting configuration.
+
+    This is used by the Web UI to record user choice while indicating
+    the configuration has not been saved yet.
+    """
+    if request.execution_mode not in ("cursor_handoff", "ternion_full"):
+        raise HTTPException(status_code=400, detail="INVALID_EXECUTION_MODE")
+
+    mode_display = (
+        "Ternion + Cursor"
+        if request.execution_mode == "cursor_handoff"
+        else "All in Ternion"
+    )
+    log_manager.emit(
+        "INFO",
+        "USER_ACTION",
+        f"Execution mode selected: {mode_display}, not saved yet",
+    )
+
+    return {
+        "success": True,
+        "message": "EXECUTION_MODE_SELECTION_LOGGED",
         "pending": True,
     }
 
@@ -742,7 +817,7 @@ async def _log_event_generator(queue: asyncio.Queue) -> AsyncGenerator[str, None
         # Send initial history
         for entry in log_manager.get_history():
             yield f"data: {json.dumps(entry)}\n\n"
-        
+
         # Stream new logs
         while True:
             try:

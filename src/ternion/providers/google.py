@@ -4,13 +4,17 @@ Google Gemini provider adapter.
 Implements chat completion using the Google Generative AI API with multimodal support.
 """
 
-import base64
 import structlog
 from collections.abc import AsyncGenerator
 from typing import Any
 
-import google.generativeai as genai
-from google.generativeai.types import GenerationConfig
+try:
+    import google.generativeai as genai  # type: ignore
+    from google.generativeai.types import GenerationConfig  # type: ignore
+except Exception:  # pragma: no cover
+    # Optional dependency. Keep module importable even if Google SDK is not installed.
+    genai = None  # type: ignore
+    GenerationConfig = None  # type: ignore
 
 from ternion.core.budget import budget_manager
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
@@ -44,6 +48,11 @@ class GoogleProvider(BaseProvider):
         """
         super().__init__(api_key, **kwargs)
         self._default_model = default_model
+        if genai is None:
+            raise ImportError(
+                "Google provider optional dependency missing. "
+                "Please install the Google Generative AI SDK (google-generativeai) to use Gemini."
+            )
         genai.configure(api_key=api_key)
 
     @property

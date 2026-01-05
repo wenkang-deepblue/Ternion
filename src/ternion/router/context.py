@@ -44,6 +44,13 @@ class TernionContext:
     # Flag indicating if multimodal content is present
     has_images: bool = False
 
+    # Session management (Human-in-the-Loop)
+    session_id: str = ""  # Existing session ID for follow-up requests
+    await_confirmation: bool = True  # If True, stop after convergence for confirmation
+    # Execution mode is intentionally empty by default. Must be explicitly configured in Web UI.
+    execution_mode: str = ""  # "ternion_full" | "cursor_handoff" | ""
+    rejection_context: str = ""  # User's rejection feedback for re-analysis
+
     @property
     def is_empty(self) -> bool:
         """Check if context has no meaningful content."""

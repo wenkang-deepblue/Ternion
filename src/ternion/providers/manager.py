@@ -18,6 +18,7 @@ from ternion.providers.base import BaseProvider, ProviderResponse
 from ternion.providers.openai import OpenAIProvider
 from ternion.providers.anthropic import AnthropicProvider
 from ternion.providers.google import GoogleProvider
+from ternion.utils.i18n import t, MessageKey
 
 logger = structlog.get_logger(__name__)
 
@@ -55,7 +56,7 @@ class ProviderManager:
         if not self._providers:
             logger.warning(
                 "no_providers_configured",
-                hint="Please add API keys in the Web Control Panel at http://localhost:7990",
+                hint=t(MessageKey.NO_PROVIDERS_CONFIGURED),
             )
 
     def _create_provider(self, name: str, api_key: str) -> None:
@@ -120,13 +121,12 @@ class ProviderManager:
         """
         # Require explicit Web Control Panel configuration
         role_cfg = config_store.get_role_config(role)
-        
+
         if not role_cfg or not role_cfg.provider:
             raise AllProvidersUnavailable(
-                f"Role '{role}' is not configured. "
-                f"Please configure it in the Web Control Panel at http://localhost:7990"
+                t(MessageKey.ROLE_NOT_CONFIGURED, role=role)
             )
-        
+
         provider = self._providers.get(role_cfg.provider)
         if provider:
             logger.debug(
@@ -135,11 +135,14 @@ class ProviderManager:
                 provider=role_cfg.provider,
             )
             return provider
-        
+
         # Provider configured but not available (API key not set)
         raise AllProvidersUnavailable(
-            f"Provider '{role_cfg.provider}' for role '{role}' is not available. "
-            f"Please add an API key for {role_cfg.provider} in the Web Control Panel."
+            t(
+                MessageKey.PROVIDER_UNAVAILABLE,
+                role=role,
+                provider=role_cfg.provider,
+            )
         )
 
     async def chat_completion(

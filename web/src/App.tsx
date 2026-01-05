@@ -8,7 +8,7 @@
  * - Tab navigation
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import api from './api/client';
 import type { Config, ServerStatus } from './api/client';
 import { ToastProvider } from './components/Toast';
@@ -19,6 +19,7 @@ import BudgetSettings from './components/BudgetSettings';
 import PortsSettings from './components/PortsSettings';
 import UsageDashboard from './components/UsageDashboard';
 import ObservabilityPanel from './components/ObservabilityPanel';
+import ExecutionModeSelector from './components/ExecutionModeSelector';
 import SettingsDropdown from './components/SettingsDropdown';
 import type { ThemeMode, LanguageMode } from './components/SettingsDropdown';
 import { detectBrowserLanguage, getTranslations } from './i18n';
@@ -41,6 +42,26 @@ function AppContent() {
   const [config, setConfig] = useState<Config | null>(null);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [activeTab, setActiveTab] = useState<'config' | 'ports' | 'usage' | 'logs'>('config');
+
+  // Store scroll positions for each tab
+  const scrollPositions = useRef<Record<string, number>>({
+    config: 0,
+    ports: 0,
+    usage: 0,
+    logs: 0,
+  });
+
+  // Custom tab change handler that saves/restores scroll positions
+  const handleTabChange = useCallback((newTab: 'config' | 'ports' | 'usage' | 'logs') => {
+    // Save current scroll position
+    scrollPositions.current[activeTab] = window.scrollY;
+    // Switch tab
+    setActiveTab(newTab);
+    // Restore scroll position after render
+    requestAnimationFrame(() => {
+      window.scrollTo(0, scrollPositions.current[newTab]);
+    });
+  }, [activeTab]);
 
   // Preference states
   const [themeMode, setThemeMode] = useState<ThemeMode>('system');
@@ -183,7 +204,7 @@ function AppContent() {
                   ? 'text-blue-600 border-blue-600 dark:text-[#88b2f6] dark:border-[#88b2f6]'
                   : 'text-slate-500 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
               }`}
-              onClick={() => setActiveTab('config')}
+              onClick={() => handleTabChange('config')}
             >
               <img src={isDarkMode ? configIconDark : configIconLight} alt="" className="w-5 h-5" />
               {t.tabConfig}
@@ -194,7 +215,7 @@ function AppContent() {
                   ? 'text-blue-600 border-blue-600 dark:text-[#88b2f6] dark:border-[#88b2f6]'
                   : 'text-slate-500 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
               }`}
-              onClick={() => setActiveTab('ports')}
+              onClick={() => handleTabChange('ports')}
             >
               <img src={isDarkMode ? portIconDark : portIconLight} alt="" className="w-5 h-5" />
               {t.tabPorts}
@@ -205,7 +226,7 @@ function AppContent() {
                   ? 'text-blue-600 border-blue-600 dark:text-[#88b2f6] dark:border-[#88b2f6]'
                   : 'text-slate-500 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
               }`}
-              onClick={() => setActiveTab('usage')}
+              onClick={() => handleTabChange('usage')}
             >
               <img src={isDarkMode ? usageIconDark : usageIconLight} alt="" className="w-5 h-5" />
               {t.tabUsage}
@@ -216,7 +237,7 @@ function AppContent() {
                   ? 'text-blue-600 border-blue-600 dark:text-[#88b2f6] dark:border-[#88b2f6]'
                   : 'text-slate-500 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
               }`}
-              onClick={() => setActiveTab('logs')}
+              onClick={() => handleTabChange('logs')}
             >
               <img src={isDarkMode ? logIconDark : logIconLight} alt="" className="w-5 h-5" />
               {t.tabLogs}
@@ -227,16 +248,23 @@ function AppContent() {
 
       {/* Main Content */}
       <main className="max-w-5xl mx-auto px-4 py-8">
-        {activeTab === 'config' && (
+        <div style={{ display: activeTab === 'config' ? 'block' : 'none' }}>
           <div className="space-y-6">
             <ApiKeyManager config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} />
-            <RoleModelConfig config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} />
+            <ExecutionModeSelector config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} />
+            <RoleModelConfig config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} executionMode={config?.execution_mode} />
             <BudgetSettings config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} />
           </div>
-        )}
-        {activeTab === 'ports' && <PortsSettings t={t} isDarkMode={isDarkMode} />}
-        {activeTab === 'usage' && <UsageDashboard t={t} isDarkMode={isDarkMode} onConfigUpdate={handleConfigUpdate} />}
-        {activeTab === 'logs' && <ObservabilityPanel t={t} isDarkMode={isDarkMode} />}
+        </div>
+        <div style={{ display: activeTab === 'ports' ? 'block' : 'none' }}>
+          <PortsSettings t={t} isDarkMode={isDarkMode} />
+        </div>
+        <div style={{ display: activeTab === 'usage' ? 'block' : 'none' }}>
+          <UsageDashboard t={t} isDarkMode={isDarkMode} onConfigUpdate={handleConfigUpdate} />
+        </div>
+        <div style={{ display: activeTab === 'logs' ? 'block' : 'none' }}>
+          <ObservabilityPanel t={t} isDarkMode={isDarkMode} isVisible={activeTab === 'logs'} />
+        </div>
       </main>
 
       {/* Footer */}
@@ -245,7 +273,7 @@ function AppContent() {
           <p>
             Ternion v0.4.8 • {t.appSubtitle} •{' '}
             <a
-              href="http://localhost:8000/docs"
+              href="http://localhost:9110/docs"
               target="_blank"
               rel="noopener noreferrer"
               className="text-blue-600 hover:underline"

@@ -2,8 +2,8 @@
  * Ports Settings component for Ternion Control Panel.
  *
  * Allows users to view and modify server port configuration:
- * - Backend API port (default: 8000)
- * - Web control panel port (default: 7990)
+ * - Backend API port (default: 9110)
+ * - Web control panel port (default: 9120)
  *
  * Port changes are saved to config but require manual server restart.
  */
@@ -28,12 +28,12 @@ interface PortsSettingsProps {
 export function PortsSettings({ t, isDarkMode }: PortsSettingsProps) {
   const { showToast } = useToast();
   const [ports, setPorts] = useState<PortsConfig>({
-    backend: 8000,
-    web: 7990,
+    backend: 9110,
+    web: 9120,
   });
   const [originalPorts, setOriginalPorts] = useState<PortsConfig>({
-    backend: 8000,
-    web: 7990,
+    backend: 9110,
+    web: 9120,
   });
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);

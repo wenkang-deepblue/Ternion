@@ -10,7 +10,7 @@ from typing import Any
 
 from langgraph.graph import StateGraph, END
 
-from ternion.core.models import ChatMessage, MessageRole
+from ternion.core.models import MessageRole
 from ternion.router.context import TernionContext
 from ternion.workflow.state import TernionState, WorkflowPhase
 from ternion.workflow.nodes import (
@@ -23,12 +23,19 @@ from ternion.workflow.nodes import (
 logger = structlog.get_logger(__name__)
 
 
-def should_continue_to_execution(state: TernionState) -> str:
+def should_continue_or_await_confirmation(state: TernionState) -> str:
     """
     Determine next step after convergence.
 
-    Always proceeds to execution if we have a report.
+    If await_confirmation is True, stop workflow and return report to user.
+    Otherwise, proceed to execution if we have a report.
     """
+    # Human-in-the-loop: stop for user confirmation
+    if state.get("await_confirmation"):
+        logger.info("workflow_awaiting_confirmation", session_id=state.get("session_id"))
+        return "await_confirmation"
+
+    # Legacy behavior: proceed if we have a report
     if state.get("ternion_report"):
         return "execution"
     return END
@@ -80,9 +87,10 @@ def create_workflow() -> StateGraph:
     workflow.add_edge("divergence", "convergence")
     workflow.add_conditional_edges(
         "convergence",
-        should_continue_to_execution,
+        should_continue_or_await_confirmation,
         {
             "execution": "execution",
+            "await_confirmation": END,  # Stop for user confirmation
             END: END,
         },
     )
@@ -143,6 +151,12 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         ],
         "has_images": context.has_images,
         "current_phase": WorkflowPhase.DIVERGENCE.value,
+        # Session management (Human-in-the-Loop)
+        "session_id": getattr(context, "session_id", ""),
+        "await_confirmation": getattr(context, "await_confirmation", True),  # Default: require confirmation
+        "execution_mode": getattr(context, "execution_mode", ""),
+        "rejection_context": getattr(context, "rejection_context", ""),
+        # Workflow outputs
         "council_analyses": [],
         "is_consensus": False,
         "ternion_report": "",

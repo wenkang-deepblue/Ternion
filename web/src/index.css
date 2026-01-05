@@ -49,6 +49,23 @@
   --text-primary: #1e293b;
   --text-secondary: #64748b;
   --border-color: #e2e8f0;
+
+  /* Rainbow glow tuning knobs (global) */
+  --rainbow-glow-inset: -2px;
+  --rainbow-glow-radius: 0.5rem;
+  --rainbow-glow-stroke: 8px;
+  --rainbow-glow-blur: 6px;
+  --rainbow-glow-duration: 6s;
+
+  /* Input glow intensity */
+  --rainbow-glow-input-opacity: 0.7;
+  --rainbow-glow-input-opacity-dark: 0.8;
+
+  /* Card glow intensity */
+  --rainbow-glow-card-active-opacity: 0.7;
+  --rainbow-glow-card-active-opacity-dark: 0.9;
+  --rainbow-glow-card-saved-opacity: 0.55;
+  --rainbow-glow-card-saved-opacity-dark: 0.7;
 }
 
 .dark {
@@ -68,6 +85,44 @@ body {
   color: var(--text-primary);
   transition: background-color 0.2s, color 0.2s;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Static rainbow border ring (used for "saved" execution mode cards) */
+.rainbow-border-static {
+  border-color: transparent !important;
+  background:
+    linear-gradient(#ffffff, #ffffff) padding-box,
+    linear-gradient(
+      135deg,
+      #e84133,
+      #f87915,
+      #f9ba02,
+      #32a651,
+      #22bfde,
+      #4083f2,
+      #9f40f2,
+      #f2379e,
+      #e84133
+    ) border-box;
+  background-clip: padding-box, border-box;
+}
+
+.dark .rainbow-border-static {
+  background:
+    linear-gradient(#1e293b, #1e293b) padding-box,
+    linear-gradient(
+      135deg,
+      #e84133,
+      #f87915,
+      #f9ba02,
+      #32a651,
+      #22bfde,
+      #4083f2,
+      #9f40f2,
+      #f2379e,
+      #e84133
+    ) border-box;
+  background-clip: padding-box, border-box;
 }
 
 /* Card styles */
@@ -189,102 +244,52 @@ body {
 .input-rainbow-glow::before {
   content: '';
   position: absolute;
-  inset: -2px;
-  border-radius: 1rem;
+  inset: var(--rainbow-glow-inset);
+  border-radius: var(--rainbow-glow-radius);
   background: 
-    /* Top edge: starts at red, ends near cyan */
     linear-gradient(90deg,
       #e84133, #f87915, #f9ba02, #32a651, #22bfde, #4083f2, #9f40f2, #f2379e, #e84133
     ),
-    /* Right edge: starts at cyan (where top ended) */
     linear-gradient(180deg,
       #22bfde, #4083f2, #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651, #22bfde
     ),
-    /* Bottom edge: starts at purple, reversed direction */
     linear-gradient(270deg,
       #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651, #22bfde, #4083f2, #9f40f2
     ),
-    /* Left edge: starts at green (where bottom ended) */
     linear-gradient(0deg,
       #32a651, #22bfde, #4083f2, #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651
     );
   background-size:
-    200% 8px,
-    8px 200%,
-    200% 8px,
-    8px 200%;
+    200% var(--rainbow-glow-stroke),
+    var(--rainbow-glow-stroke) 200%,
+    200% var(--rainbow-glow-stroke),
+    var(--rainbow-glow-stroke) 200%;
   background-position:
     calc(100% - var(--rainbow-offset) * 2) 0,
     100% calc(100% - var(--rainbow-offset) * 2),
     calc(var(--rainbow-offset) * 2) 100%,
     0 calc(var(--rainbow-offset) * 2);
   background-repeat: repeat-x, repeat-y, repeat-x, repeat-y;
-  filter: blur(6px);
+  filter: blur(var(--rainbow-glow-blur));
   opacity: 0;
   transition: opacity 0.3s;
   z-index: 0;
   pointer-events: none;
+  will-change: background-position, opacity;
 }
 
-/* Border layer - sharp rainbow gradient ring */
+/* Border ring intentionally disabled: we only want outer glow */
 .input-rainbow-glow::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 0.5rem;
-  /* Same 4-edge gradient approach with offset colors for seamless corners */
-  background: 
-    /* Top edge: starts at red */
-    linear-gradient(90deg,
-      #e84133, #f87915, #f9ba02, #32a651, #22bfde, #4083f2, #9f40f2, #f2379e, #e84133
-    ),
-    /* Right edge: starts at cyan */
-    linear-gradient(180deg,
-      #22bfde, #4083f2, #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651, #22bfde
-    ),
-    /* Bottom edge: starts at purple, reversed direction */
-    linear-gradient(270deg,
-      #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651, #22bfde, #4083f2, #9f40f2
-    ),
-    /* Left edge: starts at green, reversed direction */
-    linear-gradient(0deg,
-      #32a651, #22bfde, #4083f2, #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651
-    );
-  background-size:
-    200% 1.5px,
-    1.5px 200%,
-    200% 1.5px,
-    1.5px 200%;
-  /* Clockwise rotation: same direction as ::before */
-  background-position:
-    calc(100% - var(--rainbow-offset) * 2) 0,
-    100% calc(100% - var(--rainbow-offset) * 2),
-    calc(var(--rainbow-offset) * 2) 100%,
-    0 calc(var(--rainbow-offset) * 2);
-  background-repeat: repeat-x, repeat-y, repeat-x, repeat-y;
-  -webkit-mask: 
-    linear-gradient(#fff 0 0) content-box, 
-    linear-gradient(#fff 0 0);
-  mask: 
-    linear-gradient(#fff 0 0) content-box, 
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  padding: 1.5px;
-  opacity: 0;
-  transition: opacity 0.3s;
-  z-index: 2;
-  pointer-events: none;
+  content: none;
 }
 
 .input-rainbow-glow:has(.input:focus)::before {
-  opacity: 0.7;
-  animation: rainbow-march 6s linear infinite;
+  opacity: var(--rainbow-glow-input-opacity);
+  animation: rainbow-march var(--rainbow-glow-duration) linear infinite;
 }
 
 .input-rainbow-glow:has(.input:focus)::after {
-  opacity: 1;
-  animation: rainbow-march 6s linear infinite;
+  content: none;
 }
 
 /* Hide default border when rainbow is active */
@@ -294,11 +299,11 @@ body {
 }
 
 .dark .input-rainbow-glow:has(.input:focus)::before {
-  opacity: 0.7;
+  opacity: var(--rainbow-glow-input-opacity-dark);
 }
 
 .dark .input-rainbow-glow:has(.input:focus)::after {
-  opacity: 1;
+  content: none;
 }
 
 /* Button styles */
@@ -466,4 +471,81 @@ body {
 
 .dark .label {
   color: #cbd5e1;
+}
+
+/* Rainbow glow for cards - uses same effect as input-rainbow-glow */
+.card-rainbow-glow {
+  position: relative;
+}
+
+/* Outer glow layer - blurred rainbow effect extending outward */
+.card-rainbow-glow::before {
+  content: '';
+  position: absolute;
+  inset: var(--rainbow-glow-inset);
+  border-radius: var(--rainbow-glow-radius);
+  background: 
+    linear-gradient(90deg,
+      #e84133, #f87915, #f9ba02, #32a651, #22bfde, #4083f2, #9f40f2, #f2379e, #e84133
+    ),
+    linear-gradient(180deg,
+      #22bfde, #4083f2, #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651, #22bfde
+    ),
+    linear-gradient(270deg,
+      #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651, #22bfde, #4083f2, #9f40f2
+    ),
+    linear-gradient(0deg,
+      #32a651, #22bfde, #4083f2, #9f40f2, #f2379e, #e84133, #f87915, #f9ba02, #32a651
+    );
+  background-size:
+    200% var(--rainbow-glow-stroke),
+    var(--rainbow-glow-stroke) 200%,
+    200% var(--rainbow-glow-stroke),
+    var(--rainbow-glow-stroke) 200%;
+  background-position:
+    calc(100% - var(--rainbow-offset) * 2) 0,
+    100% calc(100% - var(--rainbow-offset) * 2),
+    calc(var(--rainbow-offset) * 2) 100%,
+    0 calc(var(--rainbow-offset) * 2);
+  background-repeat: repeat-x, repeat-y, repeat-x, repeat-y;
+  filter: blur(var(--rainbow-glow-blur));
+  opacity: 0;
+  transition: opacity 0.3s;
+  z-index: 0;
+  pointer-events: none;
+  will-change: background-position, opacity;
+}
+
+/* Border ring intentionally disabled: we only want outer glow */
+.card-rainbow-glow::after {
+  content: none;
+}
+
+/* Active state - show rainbow effect (animated) */
+.card-rainbow-glow.active::before {
+  opacity: var(--rainbow-glow-card-active-opacity);
+  animation: rainbow-march var(--rainbow-glow-duration) linear infinite;
+}
+
+.card-rainbow-glow.active::after {
+  content: none;
+}
+
+/* Saved state - show subtle rainbow glow (no animation) */
+.card-rainbow-glow.saved::before {
+  opacity: 0;
+  animation: none;
+}
+
+.card-rainbow-glow.saved::after {
+  content: none;
+}
+
+/* Dark mode adjustments */
+.dark .card-rainbow-glow.active::before {
+  opacity: var(--rainbow-glow-card-active-opacity-dark);
+}
+
+.dark .card-rainbow-glow.saved::before {
+  opacity: 0;
 }

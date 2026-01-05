@@ -148,7 +148,7 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyM
       }
 
       setSaving(true);
-      const result = await api.addApiKey(provider, name || 'Unnamed', key);
+      const result = await api.addApiKey(provider, name || t.unnamed, key);
       onConfigUpdate(result.config);
 
       setNewKeys(prev => ({
@@ -174,7 +174,7 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyM
     try {
       const result = await api.selectApiKey(provider, keyId);
       onConfigUpdate(result.config);
-      showToast(`${t.apiKeySelected}: ${result.key_name || 'Unnamed'}`, 'info');
+      showToast(`${t.apiKeySelected}: ${result.key_name || t.unnamed}`, 'info');
     } catch (error) {
       const errorCode = error instanceof Error ? error.message : String(error);
       showToast(getErrorMessage(t, errorCode), 'error');

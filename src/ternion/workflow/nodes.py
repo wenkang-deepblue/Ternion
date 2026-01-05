@@ -12,6 +12,10 @@ from ternion.core.config import settings
 from ternion.core.config_store import config_store
 from ternion.core.budget import budget_manager
 from ternion.core.models import ChatMessage, MessageRole
+from ternion.core.session_store import (
+    session_store,
+    ExecutionMode,
+)
 from ternion.providers.manager import provider_manager
 from ternion.router.prompts import (
     DIVERGENCE_PROMPT,
@@ -20,7 +24,8 @@ from ternion.router.prompts import (
     FINAL_CHECK_PROMPT,
     GLOBAL_SECURITY_RULES,
 )
-from ternion.utils.i18n import t, ThinkingLogKey
+from ternion.utils.cursor_safety import sanitize_for_preview
+from ternion.utils.i18n import t, MessageKey
 from ternion.utils.log_manager import log_manager
 from ternion.workflow.state import TernionState, WorkflowPhase, ReviewResult
 
@@ -87,36 +92,9 @@ def _parse_review_status(review_content: str) -> ReviewResult:
     return ReviewResult.REVISION_NEEDED
 
 
-def _sanitize_preview(text: str, max_length: int = 100) -> str:
-    """
-    Sanitize preview text to prevent triggering Cursor's apply logic.
-
-    Breaks potential trigger patterns like code fences (```) that could
-    cause unintended behavior when displayed in thinking logs.
-
-    Args:
-        text: Raw text to sanitize
-        max_length: Maximum length of preview
-
-    Returns:
-        Sanitized preview string safe for display
-    """
-    if not text:
-        return ""
-    
-    # Truncate and replace newlines
-    preview = text[:max_length].replace("\n", " ")
-    if len(text) > max_length:
-        preview += "..."
-    
-    # Break code fence triggers by inserting zero-width space
-    # This prevents Cursor from interpreting ``` as code block markers
-    preview = preview.replace("```", "`\u200b`\u200b`")
-    
-    # Also break common markdown triggers that might cause issues
-    preview = preview.replace("~~~", "~\u200b~\u200b~")
-    
-    return preview
+# Note: sanitize_for_preview and sanitize_for_cursor_display are imported from
+# ternion.utils.cursor_safety. Use sanitize_for_preview for short previews in
+# thinking logs, and sanitize_for_cursor_display for full report/handoff output.
 
 
 async def divergence_node(state: TernionState) -> TernionState:
@@ -133,9 +111,9 @@ async def divergence_node(state: TernionState) -> TernionState:
         Updated state with ternion analyses
     """
     logger.info("workflow_divergence_start")
-    
+
     thinking_logs = list(state.get("thinking_logs", []))
-    thinking_logs.append(t(ThinkingLogKey.DIVERGENCE_START))
+    thinking_logs.append(t(MessageKey.DIVERGENCE_START))
 
     # Build messages for ternion - use Ternion RCA prompt, not Cursor's
     history = state.get("conversation_history", [])
@@ -152,7 +130,7 @@ async def divergence_node(state: TernionState) -> TernionState:
     ternion_ids = ["ternion_a", "ternion_b", "ternion_c"]
     ternion_configs = []
     unconfigured = []
-    
+
     for ternion_id in ternion_ids:
         cfg = config_store.get_role_config(ternion_id)
         if cfg and cfg.provider and cfg.model:
@@ -163,7 +141,7 @@ async def divergence_node(state: TernionState) -> TernionState:
             })
         else:
             unconfigured.append(ternion_id)
-    
+
     # Check if any ternions are not configured
     if unconfigured:
         error_msg = f"Ternion models not configured: {', '.join(unconfigured)}. Please configure in Web Control Panel."
@@ -261,11 +239,11 @@ async def divergence_node(state: TernionState) -> TernionState:
         successful_count=len(successful),
         total_count=len(analyses),
     )
-    
+
     # Add thinking logs for each analysis
     for a in successful:
-        preview = _sanitize_preview(a["analysis"])
-        thinking_logs.append(t(ThinkingLogKey.DIVERGENCE_ANALYSIS, ternion_id=a['ternion_id'], preview=preview))
+        preview = sanitize_for_preview(a["analysis"], max_length=100)
+        thinking_logs.append(t(MessageKey.DIVERGENCE_ANALYSIS, ternion_id=a['ternion_id'], preview=preview))
 
     return {
         **state,
@@ -289,9 +267,9 @@ async def convergence_node(state: TernionState) -> TernionState:
         Updated state with synthesized report
     """
     logger.info("workflow_convergence_start")
-    
+
     thinking_logs = list(state.get("thinking_logs", []))
-    thinking_logs.append(t(ThinkingLogKey.CONVERGENCE_START))
+    thinking_logs.append(t(MessageKey.CONVERGENCE_START))
 
     analyses = state.get("ternion_analyses", [])
     successful_analyses = [a for a in analyses if not a.get("error")]
@@ -323,11 +301,11 @@ async def convergence_node(state: TernionState) -> TernionState:
     # Use Arbiter (Gemini with fallback)
     try:
         provider = provider_manager.get_provider_for_role("arbiter")
-        
+
         # Get user-configured model from config_store
         role_cfg = config_store.get_role_config("arbiter")
         model = role_cfg.model if role_cfg and role_cfg.model else None
-        
+
         # Hard validation: model must be explicitly configured
         if not model:
             logger.error("arbiter_model_not_configured")
@@ -337,10 +315,10 @@ async def convergence_node(state: TernionState) -> TernionState:
                     "Arbiter model not configured. Please configure it in the Web Control Panel."
                 ],
                 "thinking_logs": thinking_logs + [
-                    t(ThinkingLogKey.CONVERGENCE_ERROR, error="Arbiter model not configured")
+                    t(MessageKey.CONVERGENCE_ERROR, error="Arbiter model not configured")
                 ],
             }
-        
+
         response = await provider.chat_completion(
             messages=messages,
             model=model,
@@ -379,16 +357,97 @@ async def convergence_node(state: TernionState) -> TernionState:
                 ),
             )
 
-        preview = _sanitize_preview(response.content, max_length=80)
-        thinking_logs.append(t(ThinkingLogKey.CONVERGENCE_COMPLETE, preview=preview))
+        preview = sanitize_for_preview(response.content, max_length=80)
+        thinking_logs.append(t(MessageKey.CONVERGENCE_COMPLETE, preview=preview))
 
-        return {
-            **state,
-            "current_phase": WorkflowPhase.EXECUTION.value,
-            "ternion_report": response.content,
-            "is_consensus": len(successful_analyses) > 1,
-            "thinking_logs": thinking_logs,
-        }
+        # Determine execution mode from state or config (must be explicitly set)
+        execution_mode_str = state.get("execution_mode", "") or config_store.load().execution_mode
+        if execution_mode_str not in ("cursor_handoff", "ternion_full"):
+            error_msg = t(MessageKey.EXECUTION_MODE_NOT_CONFIGURED)
+            logger.error("execution_mode_not_configured")
+            return {
+                **state,
+                "current_phase": WorkflowPhase.COMPLETE.value,
+                "errors": state.get("errors", []) + [error_msg],
+                "thinking_logs": thinking_logs + [t(MessageKey.CONVERGENCE_ERROR, error=error_msg)],
+            }
+
+        execution_mode = ExecutionMode(execution_mode_str)
+
+        # Check if we should await user confirmation (Human-in-the-Loop)
+        await_confirmation = state.get("await_confirmation", True)
+
+        if await_confirmation:
+            # Create a session for tracking
+            session = session_store.create_session(
+                ternion_report=response.content,
+                execution_mode=execution_mode,
+                original_context={
+                    "conversation_history": state.get("conversation_history", []),
+                    "cursor_system_prompt": state.get("cursor_system_prompt"),
+                },
+            )
+
+            # Log session info and report
+            log_manager.emit(
+                level="INFO",
+                category="SESSION",
+                message=f"Session created: {session.session_id} | Mode: {execution_mode.value} | Status: AWAITING_CONFIRMATION"
+            )
+            log_manager.emit(
+                level="INFO",
+                category="REPORT",
+                message=f"Ternion Report generated (Len: {len(response.content)} chars). Content Preview: {response.content[:200].replace(chr(10), ' ')}..."
+            )
+
+            # Use pre-sanitized report from session (generated at session creation)
+            # This ensures consistency with the session-level Cursor safety guarantee
+            sanitized_report = session.ternion_report_safe
+
+            # Build output with session markers (NO CODE FENCES)
+            mode_description = (
+                "code implementation by Ternion"
+                if execution_mode == ExecutionMode.TERNION_FULL
+                else "implementation handoff to Cursor"
+            )
+
+            final_output = f"""{sanitized_report}
+
+---
+
+TERNION_SESSION_ID={session.session_id}
+TERNION_SESSION_STAGE=AWAITING_CONFIRMATION
+TERNION_EXECUTION_MODE={execution_mode.value}
+TERNION_REPORT_HASH={session.report_hash}
+
+Please review the analysis above. If correct, reply with your confirmation to proceed with {mode_description}.
+If you disagree or need adjustments, describe the issues and I will re-analyze."""
+
+            logger.info(
+                "convergence_awaiting_confirmation",
+                session_id=session.session_id,
+                execution_mode=execution_mode.value,
+            )
+
+            return {
+                **state,
+                "current_phase": WorkflowPhase.CONVERGENCE.value,  # Stay in convergence
+                "ternion_report": response.content,
+                "is_consensus": len(successful_analyses) > 1,
+                "thinking_logs": thinking_logs,
+                "session_id": session.session_id,
+                "await_confirmation": True,
+                "final_output": final_output,  # This will be returned to user
+            }
+        else:
+            # Direct execution mode (no confirmation required)
+            return {
+                **state,
+                "current_phase": WorkflowPhase.EXECUTION.value,
+                "ternion_report": response.content,
+                "is_consensus": len(successful_analyses) > 1,
+                "thinking_logs": thinking_logs,
+            }
     except Exception as e:
         logger.error("convergence_failed", error=str(e))
         # Use best available analysis as fallback
@@ -416,9 +475,9 @@ async def execution_node(state: TernionState) -> TernionState:
         Updated state with generated code
     """
     logger.info("workflow_execution_start")
-    
+
     thinking_logs = list(state.get("thinking_logs", []))
-    thinking_logs.append(t(ThinkingLogKey.EXECUTION_START))
+    thinking_logs.append(t(MessageKey.EXECUTION_START))
 
     # Build messages with Cursor's system prompt (for format compliance)
     cursor_prompt = state.get("cursor_system_prompt")
@@ -497,11 +556,11 @@ async def execution_node(state: TernionState) -> TernionState:
     # Use Writer (Claude with fallback)
     try:
         provider = provider_manager.get_provider_for_role("writer")
-        
+
         # Get user-configured model from config_store
         role_cfg = config_store.get_role_config("writer")
         model = role_cfg.model if role_cfg and role_cfg.model else None
-        
+
         # Hard validation: model must be explicitly configured
         if not model:
             logger.error("writer_model_not_configured")
@@ -511,10 +570,10 @@ async def execution_node(state: TernionState) -> TernionState:
                     "Writer model not configured. Please configure it in the Web Control Panel."
                 ],
                 "thinking_logs": thinking_logs + [
-                    t(ThinkingLogKey.EXECUTION_ERROR, error="Writer model not configured")
+                    t(MessageKey.EXECUTION_ERROR, error="Writer model not configured")
                 ],
             }
-        
+
         response = await provider.chat_completion(
             messages=messages,
             model=model,
@@ -553,7 +612,7 @@ async def execution_node(state: TernionState) -> TernionState:
                 ),
             )
 
-        thinking_logs.append(t(ThinkingLogKey.EXECUTION_COMPLETE))
+        thinking_logs.append(t(MessageKey.EXECUTION_COMPLETE))
 
         return {
             **state,
@@ -585,9 +644,9 @@ async def final_check_node(state: TernionState) -> TernionState:
         Updated state with review result
     """
     logger.info("workflow_final_check_start")
-    
+
     thinking_logs = list(state.get("thinking_logs", []))
-    thinking_logs.append(t(ThinkingLogKey.REVIEW_START))
+    thinking_logs.append(t(MessageKey.REVIEW_START))
 
     generated_code = state.get("generated_code", "")
     revision_count = state.get("revision_count", 0)
@@ -606,7 +665,7 @@ async def final_check_node(state: TernionState) -> TernionState:
 
     # Build review messages with analysis context
     ternion_report = state.get("ternion_report", "")
-    
+
     # Build review content with analysis context for proper validation
     review_content_parts = [
         "[TERNION ANALYSIS REPORT]\n\n",
@@ -618,7 +677,7 @@ async def final_check_node(state: TernionState) -> TernionState:
         "2. Security: Are there any security vulnerabilities?\n",
         "3. Logic: Are there any logical errors or edge cases not handled?\n",
     ]
-    
+
     messages = [
         ChatMessage(
             role=MessageRole.SYSTEM,
@@ -633,11 +692,11 @@ async def final_check_node(state: TernionState) -> TernionState:
     # Use Reviewer (GPT with fallback)
     try:
         provider = provider_manager.get_provider_for_role("reviewer")
-        
+
         # Get user-configured model from config_store
         role_cfg = config_store.get_role_config("reviewer")
         model = role_cfg.model if role_cfg and role_cfg.model else None
-        
+
         # Hard validation: model must be explicitly configured
         if not model:
             logger.error("reviewer_model_not_configured")
@@ -647,10 +706,10 @@ async def final_check_node(state: TernionState) -> TernionState:
                     "Reviewer model not configured. Please configure it in the Web Control Panel."
                 ],
                 "thinking_logs": thinking_logs + [
-                    t(ThinkingLogKey.FINAL_CHECK_ERROR, error="Reviewer model not configured")
+                    t(MessageKey.FINAL_CHECK_ERROR, error="Reviewer model not configured")
                 ],
             }
-        
+
         response = await provider.chat_completion(
             messages=messages,
             model=model,
@@ -692,7 +751,7 @@ async def final_check_node(state: TernionState) -> TernionState:
         review_status = _parse_review_status(response.content)
 
         if review_status == ReviewResult.APPROVED:
-            thinking_logs.append(t(ThinkingLogKey.REVIEW_APPROVED))
+            thinking_logs.append(t(MessageKey.REVIEW_APPROVED))
             return {
                 **state,
                 "current_phase": WorkflowPhase.COMPLETE.value,
@@ -703,7 +762,7 @@ async def final_check_node(state: TernionState) -> TernionState:
             }
         else:
             # Revision needed - will loop back to execution
-            thinking_logs.append(t(ThinkingLogKey.REVIEW_REVISION))
+            thinking_logs.append(t(MessageKey.REVIEW_REVISION))
             return {
                 **state,
                 "current_phase": WorkflowPhase.EXECUTION.value,
