@@ -403,6 +403,12 @@ async def chat_completions(
                         marker_hash=marker_hash,
                         stored_hash=session.report_hash,
                     )
+                    # Emit to Logs panel for observability (CR-015)
+                    log_manager.emit(
+                        level="WARN",
+                        category="SECURITY",
+                        message=f"Report hash mismatch | session_id={session_id} | marker_hash={marker_hash[:8]}... | stored_hash={session.report_hash[:8]}...",
+                    )
                     # Continue anyway but log the mismatch for monitoring
 
                 # Classify user intent from latest message (heuristic + LLM fallback)
@@ -421,6 +427,13 @@ async def chat_completions(
                     message_preview=latest_message[:50],
                     hash_verified=hash_verified,
                 )
+                # Emit to Logs panel for observability (CR-015)
+                hash_status = f"hash_verified={hash_verified}" if hash_verified is not None else "hash_not_checked"
+                log_manager.emit(
+                    level="INFO",
+                    category="SESSION",
+                    message=f"Session follow-up | session_id={session_id} | stage={session.stage.value} | intent={intent.value} | {hash_status}",
+                )
 
                 return await handle_session_followup(session, intent, latest_message, request)
 
@@ -432,6 +445,12 @@ async def chat_completions(
                     stage=session.stage.value,
                     execution_mode=session.execution_mode.value,
                 )
+                # Emit to Logs panel for observability (CR-015)
+                log_manager.emit(
+                    level="INFO",
+                    category="SESSION",
+                    message=f"Post-execution follow-up | session_id={session_id} | stage={session.stage.value} | mode={session.execution_mode.value}",
+                )
 
                 return await handle_post_execution_followup(session, latest_message, request)
 
@@ -442,8 +461,30 @@ async def chat_completions(
                     session_id=session_id,
                     has_feedback=bool(session.last_user_feedback),
                 )
+                # Emit to Logs panel for observability (CR-015)
+                log_manager.emit(
+                    level="INFO",
+                    category="SESSION",
+                    message=f"Rejected session follow-up | session_id={session_id} | has_feedback={bool(session.last_user_feedback)}",
+                )
 
                 return await handle_rejected_session_followup(session, latest_message, request)
+
+        else:
+            # CR-016: Session marker found but session not loadable (corrupted/deleted)
+            # Log warning and emit to Logs panel for observability
+            logger.warning(
+                "session_unavailable",
+                session_id=session_id,
+                reason="not_found_or_corrupted",
+            )
+            log_manager.emit(
+                level="WARN",
+                category="SESSION",
+                message=f"Session unavailable (not found or corrupted) | session_id={session_id} | Starting new analysis",
+            )
+            # Fall through to create a new RCA session
+            # The warning in the Logs panel provides observability
 
     # Extract context using MessageRouter
     context = message_router.extract_context(request.messages)
@@ -671,6 +712,12 @@ async def handle_confirmed_session(
             execution_mode="cursor_handoff",
             action="generating_handoff_package",
         )
+        # Emit to Logs panel for observability (CR-015)
+        log_manager.emit(
+            level="INFO",
+            category="USER_ACTION",
+            message=f"Session confirmed | session_id={session.session_id} | mode=cursor_handoff | action=generating_handoff_package",
+        )
 
         # Return handoff package (no code generation)
         # Use ternion_report_safe for user-visible output
@@ -711,6 +758,12 @@ async def handle_confirmed_session(
             execution_mode="ternion_full",
             action="starting_implementation_stage",
             show_thinking_logs=config.show_thinking_logs,
+        )
+        # Emit to Logs panel for observability (CR-015)
+        log_manager.emit(
+            level="INFO",
+            category="USER_ACTION",
+            message=f"Session confirmed | session_id={session.session_id} | mode=ternion_full | action=starting_implementation_stage",
         )
 
         # Build initial state for implementation stage using session's confirmed report
@@ -753,6 +806,13 @@ async def handle_confirmed_session(
             revision_count=final_revision_count,
             has_output=bool(final_code),
             errors=final_state.get("errors", []),
+        )
+        # Emit to Logs panel for observability (CR-015)
+        error_count = len(final_state.get("errors", []))
+        log_manager.emit(
+            level="INFO",
+            category="SESSION",
+            message=f"Implementation stage completed | session_id={session.session_id} | revisions={final_revision_count} | has_output={bool(final_code)} | errors={error_count}",
         )
 
         # Build output using the already-loaded config
@@ -833,6 +893,12 @@ async def handle_rejected_session(
         "session_rejected_reanalyze",
         session_id=session.session_id,
         feedback_preview=feedback[:100],
+    )
+    # Emit to Logs panel for observability (CR-015)
+    log_manager.emit(
+        level="INFO",
+        category="USER_ACTION",
+        message=f"Session rejected - re-analyzing | session_id={session.session_id} | feedback_preview={feedback[:50]}...",
     )
 
     final_state = await run_discussion(context)
@@ -949,6 +1015,12 @@ TERNION_REPORT_HASH={session.report_hash}"""
         "clarify_request_handled",
         session_id=session.session_id,
         question_preview=question[:50],
+    )
+    # Emit to Logs panel for observability (CR-015)
+    log_manager.emit(
+        level="INFO",
+        category="SESSION",
+        message=f"Clarification request handled | session_id={session.session_id} | question_preview={question[:50]}...",
     )
 
     if request.stream:

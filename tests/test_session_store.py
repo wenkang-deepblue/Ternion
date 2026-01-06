@@ -285,3 +285,86 @@ class TestSessionStore:
 
         assert len(pending) == 1
         assert pending[0].session_id == s2.session_id
+
+
+class TestSessionStoreRobustness:
+    """Tests for CR-016: Session persistence robustness."""
+
+    @pytest.fixture
+    def temp_sessions_dir(self):
+        """Create a temporary directory for session storage."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def store(self, temp_sessions_dir):
+        """Create a SessionStore with temporary directory."""
+        return SessionStore(sessions_dir=temp_sessions_dir)
+
+    def test_load_corrupted_session_returns_none(self, store, temp_sessions_dir):
+        """Loading a corrupted session file should return None."""
+        # Create a valid session first
+        session = store.create_session("Test report", ExecutionMode.CURSOR_HANDOFF)
+        session_path = temp_sessions_dir / f"{session.session_id}.json"
+
+        # Corrupt the session file
+        with open(session_path, "w", encoding="utf-8") as f:
+            f.write("{ invalid json content")
+
+        # Load should return None
+        loaded = store.load_session(session.session_id)
+        assert loaded is None
+
+    def test_load_corrupted_session_emits_log(self, store, temp_sessions_dir):
+        """Loading a corrupted session should emit a warning to log_manager."""
+        from unittest.mock import patch
+
+        # Create a valid session first
+        session = store.create_session("Test report", ExecutionMode.CURSOR_HANDOFF)
+        session_path = temp_sessions_dir / f"{session.session_id}.json"
+
+        # Corrupt the session file
+        with open(session_path, "w", encoding="utf-8") as f:
+            f.write("not valid json")
+
+        # Mock log_manager.emit and verify it's called
+        with patch("ternion.core.session_store.log_manager") as mock_log_manager:
+            loaded = store.load_session(session.session_id)
+            assert loaded is None
+            mock_log_manager.emit.assert_called_once()
+            call_args = mock_log_manager.emit.call_args
+            assert call_args.kwargs["level"] == "WARN"
+            assert call_args.kwargs["category"] == "SESSION"
+            assert session.session_id in call_args.kwargs["message"]
+
+    def test_atomic_write_creates_valid_file(self, store, temp_sessions_dir):
+        """Atomic write should create a valid JSON session file."""
+        session = store.create_session(
+            ternion_report="Test atomic write",
+            execution_mode=ExecutionMode.TERNION_FULL,
+        )
+
+        session_path = temp_sessions_dir / f"{session.session_id}.json"
+        assert session_path.exists()
+
+        # Verify file contains valid JSON
+        import json
+        with open(session_path, encoding="utf-8") as f:
+            data = json.load(f)
+
+        assert data["session_id"] == session.session_id
+        assert data["ternion_report_raw"] == "Test atomic write"
+
+    def test_atomic_write_no_temp_files_left(self, store, temp_sessions_dir):
+        """Atomic write should not leave temp files after successful save."""
+        store.create_session("Test 1", ExecutionMode.CURSOR_HANDOFF)
+        store.create_session("Test 2", ExecutionMode.TERNION_FULL)
+
+        # Check no .tmp files remain
+        tmp_files = list(temp_sessions_dir.glob("*.tmp"))
+        assert len(tmp_files) == 0
+
+        # But session files exist
+        session_files = list(temp_sessions_dir.glob("*.json"))
+        assert len(session_files) == 2
+

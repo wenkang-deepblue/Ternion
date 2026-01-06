@@ -11,6 +11,8 @@ Sessions are stored as individual JSON files in ~/.ternion/sessions/
 
 import hashlib
 import json
+import os
+import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -19,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+
+from ternion.utils.log_manager import log_manager
 
 logger = structlog.get_logger(__name__)
 
@@ -182,10 +186,27 @@ class SessionStore:
         return session
 
     def _save_session(self, session: Session) -> None:
-        """Save session to disk."""
+        """Save session to disk using atomic write (tmp + replace).
+
+        Uses a temporary file + os.replace pattern to ensure atomicity:
+        - Write completes fully to temp file first
+        - os.replace is atomic on POSIX systems
+        - If interrupted, only temp file is corrupted (cleaned up)
+
+        CR-016: Prevents session corruption from interrupted writes.
+        """
         path = self._get_session_path(session.session_id)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(session.to_dict(), f, indent=2, ensure_ascii=False)
+        # Create temp file in same directory (required for atomic rename on same filesystem)
+        fd, tmp_path = tempfile.mkstemp(dir=self.sessions_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(session.to_dict(), f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, path)  # Atomic on POSIX
+        except Exception:
+            # Clean up temp file on failure
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
     def load_session(self, session_id: str) -> Session | None:
         """
@@ -208,6 +229,12 @@ class SessionStore:
             return Session.from_dict(data)
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             logger.error("session_load_failed", session_id=session_id, error=str(e))
+            # CR-016: Emit to Logs panel for observability
+            log_manager.emit(
+                level="WARN",
+                category="SESSION",
+                message=f"Session load failed (corrupted or invalid) | session_id={session_id} | error={str(e)[:100]}",
+            )
             return None
 
     def update_session(
