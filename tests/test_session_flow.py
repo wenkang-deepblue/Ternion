@@ -539,7 +539,7 @@ class TestReportHashVerification:
 
 
 class TestRoleConfigValidation:
-    """Test role configuration validation (CR-011)."""
+    """Test role configuration validation."""
 
     def test_empty_model_config_returns_503(self, client: TestClient) -> None:
         """Request with empty model config should return 503."""

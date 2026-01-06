@@ -58,14 +58,14 @@ class TestSanitizeForCursorDisplay:
         assert f"**{ZWSP}* End Patch" in result
 
     def test_breaks_update_file(self) -> None:
-        """*** Update File: trigger is broken (CR-012)."""
+        """*** Update File: trigger is broken."""
         text = "*** Update File: /path/to/file.py"
         result = sanitize_for_cursor_display(text)
         assert "*** Update File:" not in result
         assert f"**{ZWSP}* Update File:" in result
 
     def test_breaks_add_file(self) -> None:
-        """*** Add File: trigger is broken (CR-012)."""
+        """*** Add File: trigger is broken."""
         text = "*** Add File: /path/to/newfile.py"
         result = sanitize_for_cursor_display(text)
         assert "*** Add File:" not in result

@@ -40,6 +40,14 @@ class MessageKey(str, Enum):
     EXECUTION_MODE_NOT_CONFIGURED = "execution_mode_not_configured"
     UNSUPPORTED_MODEL = "unsupported_model"
 
+    # Budget Alerts
+    BUDGET_WARNING = "budget_warning"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    BUDGET_EXCEEDED_ERROR = "budget_exceeded_error"
+    LOG_BUDGET_WARNING = "log_budget_warning"
+    LOG_BUDGET_EXCEEDED = "log_budget_exceeded"
+    LOG_BUDGET_IMPL_BLOCKED = "log_budget_impl_blocked"
+
 
 TRANSLATIONS: dict[Language, dict[str, str]] = {
     "en": {
@@ -78,6 +86,21 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(Settings --> Models --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
             "If you intended to use Ternion, switch the model to 'ternion-team'."
         ),
+
+        # Budget Alerts
+        MessageKey.BUDGET_WARNING: (
+            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "approaching budget limit. This request may exceed monthly budget.\n"
+            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED: (
+            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
+        MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
+        MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
     },
     "zh": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[Arbiter]**: 开始并发问题分析...\n",
@@ -115,6 +138,21 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(设置 --> Models --> \"OpenAI API Key\" & \"Override OpenAI Base URL\")。"
             "如果你想使用 Ternion，请将模型切换为 'ternion-team'。"
         ),
+
+        # Budget Alerts
+        MessageKey.BUDGET_WARNING: (
+            "\n> ⚠️ **[Ternion 预算警报]**：当前月度用量已达 **{usage_pct}%**，"
+            "接近预算上限。此次请求可能导致超出月度预算。\n"
+            "> 📊 可在 Control Panel 的「用量」页面查看详细用量日志。\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED: (
+            "\n> 🚫 **[Ternion 预算超限]**：月度预算已耗尽，请求已被拦截。\n"
+            "> 📊 请在 Control Panel 的「配置」页面调整预算设置。\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED_ERROR: "月度预算已耗尽，请求已被拦截。请在 Control Panel 的「配置」页面调整预算设置。",
+        MessageKey.LOG_BUDGET_WARNING: "预算警告 | 用量={usage_pct}% | 接近月度上限",
+        MessageKey.LOG_BUDGET_EXCEEDED: "预算超限 | 请求已拦截 | 月度上限已达",
+        MessageKey.LOG_BUDGET_IMPL_BLOCKED: "预算超限 | 实现阶段已阻止 | session_id={session_id}",
     },
     "es": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[Árbitro]**: Iniciando análisis paralelo del problema...\n",
@@ -152,6 +190,21 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(Configuración --> Modelos --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
             "Si desea usar Ternion, cambie el modelo a 'ternion-team'."
         ),
+
+        # Budget Alerts (Fallback to English)
+        MessageKey.BUDGET_WARNING: (
+            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "approaching budget limit. This request may exceed monthly budget.\n"
+            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED: (
+            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
+        MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
+        MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
     },
     "fr": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[Arbitre]**: Démarrage de l'analyse parallèle du problème...\n",
@@ -189,6 +242,21 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(Paramètres --> Modèles --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
             "Si vous souhaitez utiliser Ternion, basculez vers le modèle 'ternion-team'."
         ),
+
+        # Budget Alerts (Fallback to English)
+        MessageKey.BUDGET_WARNING: (
+            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "approaching budget limit. This request may exceed monthly budget.\n"
+            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED: (
+            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
+        MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
+        MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
     },
     "de": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[Schiedsrichter]**: Starte parallele Problemanalyse...\n",
@@ -226,6 +294,21 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(Einstellungen --> Modelle --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
             "Wenn Sie Ternion verwenden möchten, wechseln Sie zum Modell 'ternion-team'."
         ),
+
+        # Budget Alerts (Fallback to English)
+        MessageKey.BUDGET_WARNING: (
+            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "approaching budget limit. This request may exceed monthly budget.\n"
+            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED: (
+            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
+        MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
+        MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
     },
     "ja": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[調停者]**: 並列問題分析を開始...\n",
@@ -263,6 +346,21 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(設定 --> モデル --> \"OpenAI API Key\" & \"Override OpenAI Base URL\")。"
             "Ternionを使用する場合は、モデルを 'ternion-team' に切り替えてください。"
         ),
+
+        # Budget Alerts (Fallback to English)
+        MessageKey.BUDGET_WARNING: (
+            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "approaching budget limit. This request may exceed monthly budget.\n"
+            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED: (
+            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
+        MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
+        MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
     },
     "ko": {
         MessageKey.DIVERGENCE_START: "> 🟢 **[중재자]**: 병렬 문제 분석 시작...\n",
@@ -300,6 +398,21 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(설정 --> 모델 --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
             "Ternion을 사용하려면 모델을 'ternion-team'으로 전환하세요."
         ),
+
+        # Budget Alerts (Fallback to English)
+        MessageKey.BUDGET_WARNING: (
+            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "approaching budget limit. This request may exceed monthly budget.\n"
+            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED: (
+            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+        ),
+        MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
+        MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
+        MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
     },
 }
 

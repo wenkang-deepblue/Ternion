@@ -403,7 +403,6 @@ async def chat_completions(
                         marker_hash=marker_hash,
                         stored_hash=session.report_hash,
                     )
-                    # Emit to Logs panel for observability (CR-015)
                     log_manager.emit(
                         level="WARN",
                         category="SECURITY",
@@ -427,7 +426,6 @@ async def chat_completions(
                     message_preview=latest_message[:50],
                     hash_verified=hash_verified,
                 )
-                # Emit to Logs panel for observability (CR-015)
                 hash_status = f"hash_verified={hash_verified}" if hash_verified is not None else "hash_not_checked"
                 log_manager.emit(
                     level="INFO",
@@ -445,7 +443,6 @@ async def chat_completions(
                     stage=session.stage.value,
                     execution_mode=session.execution_mode.value,
                 )
-                # Emit to Logs panel for observability (CR-015)
                 log_manager.emit(
                     level="INFO",
                     category="SESSION",
@@ -461,7 +458,6 @@ async def chat_completions(
                     session_id=session_id,
                     has_feedback=bool(session.last_user_feedback),
                 )
-                # Emit to Logs panel for observability (CR-015)
                 log_manager.emit(
                     level="INFO",
                     category="SESSION",
@@ -471,8 +467,7 @@ async def chat_completions(
                 return await handle_rejected_session_followup(session, latest_message, request)
 
         else:
-            # CR-016: Session marker found but session not loadable (corrupted/deleted)
-            # Log warning and emit to Logs panel for observability
+            # Session marker found but session not loadable (e.g. corrupted/deleted)
             logger.warning(
                 "session_unavailable",
                 session_id=session_id,
@@ -567,16 +562,29 @@ async def chat_completions(
         )
 
     # Check budget before proceeding
-    budget_ok, budget_warning = budget_manager.check_budget(estimated_cost=0.15)
+    budget_ok, budget_warning = budget_manager.check_budget()
     if not budget_ok:
+        log_manager.emit(
+            level="WARN",
+            category="BUDGET",
+            message=t(MessageKey.LOG_BUDGET_EXCEEDED),
+        )
         return JSONResponse(
             status_code=429,
             content={
                 "error": {
-                    "message": budget_warning or "Budget exceeded",
+                    "message": t(MessageKey.BUDGET_EXCEEDED_ERROR),
                     "type": "budget_exceeded",
                 }
             },
+        )
+
+    if budget_warning == "BUDGET_WARNING":
+        usage_summary = budget_manager.get_usage_summary()
+        log_manager.emit(
+            level="WARN",
+            category="BUDGET",
+            message=t(MessageKey.LOG_BUDGET_WARNING, usage_pct=str(usage_summary.get('usage_pct', 0))),
         )
 
     # Run the Ternion discussion workflow
@@ -599,7 +607,6 @@ async def chat_completions(
         # Combine thinking stream with final output
         output_parts = []
 
-        # Add budget warning if approaching limit
         if budget_warning:
             output_parts.append(budget_manager.format_budget_warning(budget_warning))
 
@@ -712,7 +719,6 @@ async def handle_confirmed_session(
             execution_mode="cursor_handoff",
             action="generating_handoff_package",
         )
-        # Emit to Logs panel for observability (CR-015)
         log_manager.emit(
             level="INFO",
             category="USER_ACTION",
@@ -759,12 +765,41 @@ async def handle_confirmed_session(
             action="starting_implementation_stage",
             show_thinking_logs=config.show_thinking_logs,
         )
-        # Emit to Logs panel for observability (CR-015)
         log_manager.emit(
             level="INFO",
             category="USER_ACTION",
             message=f"Session confirmed | session_id={session.session_id} | mode=ternion_full | action=starting_implementation_stage",
         )
+
+        budget_ok, budget_warning = budget_manager.check_budget()
+        impl_budget_prefix = ""
+        if not budget_ok:
+            log_manager.emit(
+                level="WARN",
+                category="BUDGET",
+                message=t(MessageKey.LOG_BUDGET_IMPL_BLOCKED, session_id=session.session_id),
+            )
+            error_msg = budget_manager.format_budget_warning("BUDGET_EXCEEDED")
+            if request.stream:
+                return StreamingResponse(
+                    create_sse_stream(model=request.model, content=error_msg),
+                    media_type="text/event-stream",
+                )
+            else:
+                return JSONResponse(
+                    content=ChatCompletionResponse(
+                        model=request.model,
+                        choices=[Choice(message=ChatMessage(role=MessageRole.ASSISTANT, content=error_msg))],
+                    ).model_dump()
+                )
+        if budget_warning == "BUDGET_WARNING":
+            usage_summary = budget_manager.get_usage_summary()
+            log_manager.emit(
+                level="WARN",
+                category="BUDGET",
+                message=t(MessageKey.LOG_BUDGET_WARNING, usage_pct=str(usage_summary.get('usage_pct', 0))),
+            )
+            impl_budget_prefix = budget_manager.format_budget_warning(budget_warning)
 
         # Build initial state for implementation stage using session's confirmed report
         context = message_router.extract_context(request.messages)
@@ -807,7 +842,6 @@ async def handle_confirmed_session(
             has_output=bool(final_code),
             errors=final_state.get("errors", []),
         )
-        # Emit to Logs panel for observability (CR-015)
         error_count = len(final_state.get("errors", []))
         log_manager.emit(
             level="INFO",
@@ -817,6 +851,8 @@ async def handle_confirmed_session(
 
         # Build output using the already-loaded config
         output_parts = []
+        if impl_budget_prefix:
+            output_parts.append(impl_budget_prefix)
         is_patch_output = _is_patch_or_diff_output(final_code)
         _emit_thinking_logs_to_observability(
             thinking_logs,
@@ -894,7 +930,6 @@ async def handle_rejected_session(
         session_id=session.session_id,
         feedback_preview=feedback[:100],
     )
-    # Emit to Logs panel for observability (CR-015)
     log_manager.emit(
         level="INFO",
         category="USER_ACTION",
@@ -1016,7 +1051,6 @@ TERNION_REPORT_HASH={session.report_hash}"""
         session_id=session.session_id,
         question_preview=question[:50],
     )
-    # Emit to Logs panel for observability (CR-015)
     log_manager.emit(
         level="INFO",
         category="SESSION",

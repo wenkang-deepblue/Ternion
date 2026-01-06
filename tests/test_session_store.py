@@ -288,7 +288,7 @@ class TestSessionStore:
 
 
 class TestSessionStoreRobustness:
-    """Tests for CR-016: Session persistence robustness."""
+    """Tests for session persistence robustness."""
 
     @pytest.fixture
     def temp_sessions_dir(self):

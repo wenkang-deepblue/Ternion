@@ -192,8 +192,6 @@ class SessionStore:
         - Write completes fully to temp file first
         - os.replace is atomic on POSIX systems
         - If interrupted, only temp file is corrupted (cleaned up)
-
-        CR-016: Prevents session corruption from interrupted writes.
         """
         path = self._get_session_path(session.session_id)
         # Create temp file in same directory (required for atomic rename on same filesystem)
@@ -229,7 +227,6 @@ class SessionStore:
             return Session.from_dict(data)
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             logger.error("session_load_failed", session_id=session_id, error=str(e))
-            # CR-016: Emit to Logs panel for observability
             log_manager.emit(
                 level="WARN",
                 category="SESSION",

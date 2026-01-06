@@ -14,6 +14,8 @@ import structlog
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
+from ternion.utils.i18n import MessageKey, t
+
 logger = structlog.get_logger(__name__)
 
 # Token pricing per model (USD per 1K tokens) - updated 2025-12
@@ -81,9 +83,7 @@ DEFAULT_PRICING = {
 class CostControlSettings(BaseSettings):
     """Cost control configuration."""
 
-    daily_limit_usd: float = 5.0
     monthly_limit_usd: float = 50.0
-    request_limit_usd: float = 1.0
     alert_threshold: float = 0.9  # 90% threshold for warnings
 
 
@@ -360,39 +360,39 @@ class BudgetManager:
 
         return input_cost + output_cost
 
-    def check_budget(self, estimated_cost: float = 0.1) -> tuple[bool, str | None]:
+    def check_budget(self) -> tuple[bool, str | None]:
         """
         Check if budget allows for a request.
 
-        Args:
-            estimated_cost: Estimated cost of the request in USD
-
         Returns:
             Tuple of (allowed, warning_message)
-            - allowed: True if request can proceed
-            - warning_message: Warning if approaching limit, None otherwise
+            - allowed: True if request can proceed, False if budget exceeded
+            - warning_message: Warning/error key if applicable, None otherwise
         """
         if self._store is None:
             self._load_usage()
 
         current_cost = self._get_monthly_total()
-        projected_cost = current_cost + estimated_cost
         monthly_limit = self.settings.monthly_limit_usd
 
-        # Check if over limit
-        if projected_cost > monthly_limit:
+        if current_cost >= monthly_limit:
             logger.warning(
                 "budget_exceeded",
                 current=current_cost,
-                estimated=estimated_cost,
                 limit=monthly_limit,
             )
             return False, "BUDGET_EXCEEDED"
 
-        # Check if approaching limit
         if monthly_limit > 0:
-            usage_ratio = projected_cost / monthly_limit
+            usage_ratio = current_cost / monthly_limit
             if usage_ratio >= self.settings.alert_threshold:
+                logger.info(
+                    "budget_warning",
+                    current=current_cost,
+                    limit=monthly_limit,
+                    threshold=self.settings.alert_threshold,
+                    usage_pct=round(usage_ratio * 100, 1),
+                )
                 return True, "BUDGET_WARNING"
 
         return True, None
@@ -566,7 +566,15 @@ class BudgetManager:
         for summary in self._store.daily_summaries:
             if summary.get("date", "").startswith(current_month):
                 for prov, data in summary.get("providers", {}).items():
-                    provider_costs[prov] = provider_costs.get(prov, 0) + data.get("cost", 0)
+                    # Aggregate using separate cost fields with fallback for legacy data
+                    prov_cost = (
+                        data.get("input_cost", 0)
+                        + data.get("output_cost", 0)
+                        + data.get("thoughts_cost", 0)
+                    )
+                    if prov_cost == 0:
+                        prov_cost = data.get("cost", 0)
+                    provider_costs[prov] = provider_costs.get(prov, 0) + prov_cost
 
         return {
             "month": current_month,
@@ -606,9 +614,33 @@ class BudgetManager:
         output_tokens = 0
         thoughts_tokens = 0
         provider_details: dict[str, dict] = {
-            "google": {"cost": 0.0, "input_tokens": 0, "output_tokens": 0},
-            "anthropic": {"cost": 0.0, "input_tokens": 0, "output_tokens": 0},
-            "openai": {"cost": 0.0, "input_tokens": 0, "output_tokens": 0},
+            "google": {
+                "cost": 0.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "thoughts_tokens": 0,
+                "input_cost": 0.0,
+                "output_cost": 0.0,
+                "thoughts_cost": 0.0,
+            },
+            "anthropic": {
+                "cost": 0.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "thoughts_tokens": 0,
+                "input_cost": 0.0,
+                "output_cost": 0.0,
+                "thoughts_cost": 0.0,
+            },
+            "openai": {
+                "cost": 0.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "thoughts_tokens": 0,
+                "input_cost": 0.0,
+                "output_cost": 0.0,
+                "thoughts_cost": 0.0,
+            },
         }
 
         # From today's records (if target is current month)
@@ -622,10 +654,15 @@ class BudgetManager:
                 if prov in provider_details:
                     provider_details[prov]["input_tokens"] += record.get("input_tokens", 0)
                     provider_details[prov]["output_tokens"] += record.get("output_tokens", 0)
+                    provider_details[prov]["thoughts_tokens"] += record.get("thoughts_tokens", 0)
+                    record_input_cost = record.get("input_cost", 0)
+                    record_output_cost = record.get("output_cost", 0)
+                    record_thoughts_cost = record.get("thoughts_cost", 0)
+                    provider_details[prov]["input_cost"] += record_input_cost
+                    provider_details[prov]["output_cost"] += record_output_cost
+                    provider_details[prov]["thoughts_cost"] += record_thoughts_cost
                     provider_details[prov]["cost"] += (
-                        record.get("input_cost", 0) +
-                        record.get("output_cost", 0) +
-                        record.get("thoughts_cost", 0)
+                        record_input_cost + record_output_cost + record_thoughts_cost
                     )
 
         # From daily summaries for target month
@@ -639,7 +676,18 @@ class BudgetManager:
                     if prov in provider_details:
                         provider_details[prov]["input_tokens"] += prov_data.get("input_tokens", 0)
                         provider_details[prov]["output_tokens"] += prov_data.get("output_tokens", 0)
-                        provider_details[prov]["cost"] += prov_data.get("cost", 0)
+                        provider_details[prov]["thoughts_tokens"] += prov_data.get("thoughts_tokens", 0)
+                        # Aggregate cost fields with fallback for legacy data
+                        prov_input_cost = prov_data.get("input_cost", 0)
+                        prov_output_cost = prov_data.get("output_cost", 0)
+                        prov_thoughts_cost = prov_data.get("thoughts_cost", 0)
+                        prov_total_cost = prov_input_cost + prov_output_cost + prov_thoughts_cost
+                        if prov_total_cost == 0:
+                            prov_total_cost = prov_data.get("cost", 0)
+                        provider_details[prov]["input_cost"] += prov_input_cost
+                        provider_details[prov]["output_cost"] += prov_output_cost
+                        provider_details[prov]["thoughts_cost"] += prov_thoughts_cost
+                        provider_details[prov]["cost"] += prov_total_cost
 
         # Build daily_data for charts (ALL data, frontend will filter)
         daily_data = []
@@ -797,6 +845,10 @@ class BudgetManager:
                     "cost": round(v["cost"], 4),
                     "input_tokens": v["input_tokens"],
                     "output_tokens": v["output_tokens"],
+                    "thoughts_tokens": v.get("thoughts_tokens", 0),
+                    "input_cost": round(v.get("input_cost", 0), 4),
+                    "output_cost": round(v.get("output_cost", 0), 4),
+                    "thoughts_cost": round(v.get("thoughts_cost", 0), 4),
                 }
                 for k, v in provider_details.items()
             },
@@ -813,13 +865,19 @@ class BudgetManager:
         Format budget warning for Cursor display.
 
         Args:
-            warning: Warning message or None
+            warning: Warning message key or None
 
         Returns:
             Formatted markdown string for Cursor thinking display
         """
         if warning is None:
             return ""
+        if warning == "BUDGET_WARNING":
+            usage_summary = self.get_usage_summary()
+            usage_pct = str(usage_summary.get("usage_pct", 0))
+            return t(MessageKey.BUDGET_WARNING, usage_pct=usage_pct)
+        if warning == "BUDGET_EXCEEDED":
+            return t(MessageKey.BUDGET_EXCEEDED)
         return f"\n> ⚠️ **[Ternion]**: {warning}\n\n"
 
 

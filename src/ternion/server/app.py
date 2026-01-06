@@ -28,7 +28,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     Application lifespan context manager.
 
     Handles startup and shutdown events using the modern FastAPI lifespan pattern.
-    This replaces the deprecated @app.on_event decorators (CR-003).
     """
     # Startup
     logger.info(
