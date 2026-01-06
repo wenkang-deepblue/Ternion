@@ -208,10 +208,90 @@ def _extract_structured_excerpt(
     prefer: list[str] = []
     if any(k in q for k in ["scope", "non-goal", "non goal", "范围", "不要改", "不改", "不需要改", "out of scope"]):
         prefer = ["scope"]
-    elif any(k in q for k in ["verify", "verification", "test", "验证", "测试", "怎么确认", "如何确认"]):
+    elif any(k in q for k in ["verify", "verification", "test", "acceptance", "criteria", "验收", "验收标准", "验证", "测试", "怎么确认", "如何确认"]):
         prefer = ["verification"]
     elif any(k in q for k in ["rollback", "risk", "risks", "回滚", "风险"]):
         prefer = ["risks"]
+    elif any(
+        k in q
+        for k in [
+            "requirement",
+            "requirements",
+            "constraint",
+            "constraints",
+            "assumption",
+            "assumptions",
+            "需求",
+            "约束",
+            "前提",
+            "限制",
+            "成功标准",
+        ]
+    ):
+        # For Design/Feature tasks, \"Evidence / Logs\" often contains requirements/constraints.
+        prefer = ["evidence", "scope"]
+    elif any(
+        k in q
+        for k in [
+            "trade-off",
+            "tradeoff",
+            "trade-offs",
+            "pros and cons",
+            "rationale",
+            "why choose",
+            "why this",
+            "优缺点",
+            "利弊",
+            "取舍",
+            "权衡",
+            "为什么选",
+            "为何选",
+        ]
+    ):
+        # For Design/Feature tasks, \"Root Cause\" is the architecture thesis / decision rationale.
+        prefer = ["root_cause", "risks"]
+    elif any(
+        k in q
+        for k in [
+            "architecture",
+            "design",
+            "system design",
+            "ui",
+            "ux",
+            "interaction",
+            "frontend",
+            "front-end",
+            "roadmap",
+            "milestone",
+            "module",
+            "modules",
+            "interface",
+            "interfaces",
+            "api",
+            "data flow",
+            "state machine",
+            "架构",
+            "设计",
+            "系统设计",
+            "界面",
+            "交互",
+            "前端",
+            "动效",
+            "动画",
+            "样式",
+            "布局",
+            "组件",
+            "实现路径",
+            "路线图",
+            "里程碑",
+            "模块",
+            "接口",
+            "数据流",
+            "状态机",
+        ]
+    ):
+        # Prefer the actionable roadmap for design/feature questions to reduce excerpt noise.
+        prefer = ["fix_plan"]
     elif any(k in q for k in ["plan", "fix", "recommendation", "steps", "怎么修", "如何修", "修复", "方案", "计划"]):
         prefer = ["fix_plan"]
     elif any(k in q for k in ["evidence", "log", "logs", "trace", "stack", "日志", "证据", "报错", "堆栈"]):
@@ -424,6 +504,10 @@ async def chat_completions(
         role_config = user_config.roles.get(role)
         if not role_config:
             missing_roles.append(display_name)
+            continue
+        # Check if provider and model are explicitly configured (must be non-empty)
+        if not role_config.provider or not role_config.model:
+            missing_roles.append(f"{display_name} (provider/model not selected)")
             continue
         # Check if the provider for this role is enabled
         provider_config = user_config.providers.get(role_config.provider)

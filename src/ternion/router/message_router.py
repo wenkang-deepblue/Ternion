@@ -1,10 +1,11 @@
 """
-Message Router - The Critical Layer.
+Message Router - Context Extraction Layer.
 
-Handles message decomposition and reconstruction for the Ternion workflow.
-This is NOT blind pass-through - we must decompose the Cursor request,
-swap prompts per discussion phase, and restore the original prompt
-for the final output to ensure format compatibility.
+Handles message decomposition from the Cursor request.
+Extracts system prompt and conversation history for use by workflow nodes.
+
+Note: Message assembly (phase-specific prompt injection) is handled by
+workflow/nodes.py, which is the authoritative implementation.
 """
 
 
@@ -16,21 +17,21 @@ from ternion.core.models import (
     MessageContent,
     MessageRole,
 )
-from ternion.router.context import DiscussionPhase, TernionContext
-from ternion.router.prompts import PHASE_PROMPTS
+from ternion.router.context import TernionContext
 
 logger = structlog.get_logger(__name__)
 
 
 class MessageRouter:
     """
-    Routes and transforms messages for different discussion phases.
+    Routes and transforms messages for the Ternion workflow.
 
     Key responsibilities:
     1. Extract and store Cursor's system prompt
     2. Extract conversation history
-    3. Build phase-specific message lists with Ternion prompts
-    4. Restore Cursor prompt for final output format compliance
+    3. Detect multimodal content (images)
+
+    Note: Phase-specific message assembly is handled by workflow nodes.
     """
 
     def __init__(self) -> None:
@@ -95,104 +96,6 @@ class MessageRouter:
         )
 
         return context
-
-    def build_phase_messages(
-        self,
-        phase: DiscussionPhase,
-        context: TernionContext | None = None,
-        additional_context: str | None = None,
-    ) -> list[ChatMessage]:
-        """
-        Build messages for a specific discussion phase.
-
-        For DIVERGENCE phase: Replace system prompt with analysis-focused prompt
-        For EXECUTION phase: Restore Cursor's system prompt for output format
-
-        Args:
-            phase: The current discussion phase
-            context: Optional context (uses stored context if not provided)
-            additional_context: Additional context to inject (e.g., analysis report)
-
-        Returns:
-            List of messages configured for the specified phase
-        """
-        ctx = context or self._current_context
-        if not ctx:
-            raise ValueError("No context available. Call extract_context first.")
-
-        messages: list[ChatMessage] = []
-
-        # Get the appropriate system prompt for this phase
-        if phase == DiscussionPhase.EXECUTION and ctx.cursor_system_prompt:
-            # Restore Cursor's system prompt for proper output formatting
-            messages.append(ctx.cursor_system_prompt)
-            logger.debug("restored_cursor_prompt", phase=phase.name)
-        else:
-            # Use Ternion's phase-specific prompt
-            phase_prompt = PHASE_PROMPTS.get(phase, PHASE_PROMPTS[DiscussionPhase.DIVERGENCE])
-            messages.append(
-                ChatMessage(
-                    role=MessageRole.SYSTEM,
-                    content=phase_prompt,
-                )
-            )
-            logger.debug("injected_ternion_prompt", phase=phase.name)
-
-        # Add conversation history
-        messages.extend(ctx.conversation_history)
-
-        # Add additional context if provided (e.g., Ternion Analysis Report)
-        if additional_context:
-            messages.append(
-                ChatMessage(
-                    role=MessageRole.USER,
-                    content=f"[Ternion Analysis Report]\n{additional_context}",
-                )
-            )
-
-        return messages
-
-    def build_council_messages(
-        self,
-        context: TernionContext | None = None,
-    ) -> list[ChatMessage]:
-        """
-        Build messages for the Council members during DIVERGENCE phase.
-
-        This replaces Cursor's system prompt with the RCA (Root Cause Analysis)
-        prompt that instructs models to analyze, not write code.
-
-        Args:
-            context: Optional context (uses stored context if not provided)
-
-        Returns:
-            Messages configured for council analysis
-        """
-        return self.build_phase_messages(DiscussionPhase.DIVERGENCE, context)
-
-    def build_writer_messages(
-        self,
-        analysis_report: str,
-        context: TernionContext | None = None,
-    ) -> list[ChatMessage]:
-        """
-        Build messages for the Writer during EXECUTION phase.
-
-        This restores Cursor's system prompt to ensure the output
-        matches the expected format (e.g., DIFF format).
-
-        Args:
-            analysis_report: The synthesized Ternion Analysis Report
-            context: Optional context (uses stored context if not provided)
-
-        Returns:
-            Messages configured for code generation
-        """
-        return self.build_phase_messages(
-            DiscussionPhase.EXECUTION,
-            context,
-            additional_context=analysis_report,
-        )
 
     def _contains_images(self, content: MessageContent | None) -> bool:
         """Check if message content contains images."""

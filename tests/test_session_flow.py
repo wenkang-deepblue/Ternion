@@ -344,6 +344,69 @@ class TestRCAToRejectClarify:
             # Verify clarify does not echo the entire report back
             assert "END_OF_REPORT_TOKEN" not in content
 
+    def test_clarify_architecture_question_routes_to_fix_plan_excerpt(
+        self, client: TestClient, mock_user_config, mock_session_awaiting
+    ) -> None:
+        """
+        Clarify should route design/architecture questions to the Fix Plan excerpt.
+
+        This reduces noise by not always echoing Root Cause for design-oriented questions.
+        """
+        mock_session_awaiting.ternion_report_raw = (
+            "## Root Cause\n"
+            "- ROOT_CAUSE_TOKEN: Architecture thesis and core decision.\n\n"
+            "## Evidence / Logs\n"
+            "- Requirements and constraints.\n\n"
+            "## Scope & Non-Goals\n"
+            "- In Scope: ...\n\n"
+            "## Fix Plan / Recommendation\n"
+            "- FIX_PLAN_TOKEN: Architecture and milestone roadmap.\n\n"
+            "## Verification\n"
+            "### User Verification\n"
+            "- Acceptance criteria.\n"
+            "### Implementer Verification\n"
+            "- Test matrix.\n\n"
+            "## Risks & Rollback\n"
+            "- Risks and rollback.\n\n"
+            "## If not effective, then what?\n"
+            "- Fallback approaches.\n"
+        )
+        mock_session_awaiting.ternion_report_safe = mock_session_awaiting.ternion_report_raw
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+            patch("ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock) as mock_classify,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_session_store.load_session.return_value = mock_session_awaiting
+            mock_classify.return_value = Intent.CLARIFY
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [
+                        {"role": "assistant", "content": "TERNION_SESSION_ID=test123abc"},
+                        {"role": "user", "content": "这个架构应该怎么设计？请给出实现路径。"},
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            content = response.json()["choices"][0]["message"]["content"]
+
+            # Verify RCA was NOT re-run
+            mock_run.assert_not_called()
+
+            # Should include fix-plan excerpt token, and avoid echoing root-cause token for this question type
+            assert "FIX_PLAN_TOKEN" in content
+            assert "ROOT_CAUSE_TOKEN" not in content
+
 
 class TestPostExecutionFollowup:
     """Test follow-up behavior after session completion."""
@@ -473,3 +536,89 @@ class TestReportHashVerification:
 
             # Hash mismatch should be logged as warning
             mock_logger.warning.assert_called()
+
+
+class TestRoleConfigValidation:
+    """Test role configuration validation (CR-011)."""
+
+    def test_empty_model_config_returns_503(self, client: TestClient) -> None:
+        """Request with empty model config should return 503."""
+        config = MagicMock()
+        config.execution_mode = "cursor_handoff"
+        config.show_thinking_logs = True
+        # Role with empty model
+        config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model=""),  # Empty model!
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider = MagicMock()
+        mock_provider.api_keys = [MagicMock()]
+        mock_provider.selected_key_id = "test-key-id"
+        config.providers = {"openai": mock_provider}
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+        ):
+            mock_config_store.load.return_value = config
+            mock_provider_mgr.has_providers = True
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [
+                        {"role": "user", "content": "Fix my bug"},
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 503
+            content = response.json()
+            assert "error" in content
+            assert "Ternion A" in content["error"]["message"]
+            assert "not selected" in content["error"]["message"]
+
+    def test_empty_provider_config_returns_503(self, client: TestClient) -> None:
+        """Request with empty provider config should return 503."""
+        config = MagicMock()
+        config.execution_mode = "cursor_handoff"
+        config.show_thinking_logs = True
+        # Role with empty provider
+        config.roles = {
+            "ternion_a": RoleConfig(provider="", model="gpt-4"),  # Empty provider!
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider = MagicMock()
+        mock_provider.api_keys = [MagicMock()]
+        mock_provider.selected_key_id = "test-key-id"
+        config.providers = {"openai": mock_provider}
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+        ):
+            mock_config_store.load.return_value = config
+            mock_provider_mgr.has_providers = True
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [
+                        {"role": "user", "content": "Fix my bug"},
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 503
+            content = response.json()
+            assert "error" in content
+            assert "Ternion A" in content["error"]["message"]
+            assert "not selected" in content["error"]["message"]

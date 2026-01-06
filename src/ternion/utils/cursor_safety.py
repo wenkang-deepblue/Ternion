@@ -15,6 +15,8 @@ PATCH_TRIGGERS = [
     "~~~",
     "*** Begin Patch",
     "*** End Patch",
+    "*** Update File:",
+    "*** Add File:",
     "diff --git",
 ]
 
@@ -54,6 +56,8 @@ def sanitize_for_cursor_display(text: str) -> str:
     # Break patch triggers
     out = out.replace("*** Begin Patch", f"**{ZWSP}* Begin Patch")
     out = out.replace("*** End Patch", f"**{ZWSP}* End Patch")
+    out = out.replace("*** Update File:", f"**{ZWSP}* Update File:")
+    out = out.replace("*** Add File:", f"**{ZWSP}* Add File:")
     out = out.replace("diff --git", f"diff{ZWSP} --git")
 
     # Break leading diff markers (+++/--- at line start)

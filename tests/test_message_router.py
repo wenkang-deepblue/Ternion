@@ -2,12 +2,10 @@
 Tests for the Message Router module.
 """
 
-import pytest
 
 from ternion.core.models import ChatMessage, MessageRole
-from ternion.router.context import DiscussionPhase, TernionContext
+from ternion.router.context import TernionContext
 from ternion.router.message_router import MessageRouter
-from ternion.router.prompts import DIVERGENCE_PROMPT
 
 
 class TestTernionContext:
@@ -62,39 +60,11 @@ class TestMessageRouter:
 
         assert context.is_empty
 
-    def test_build_council_messages(self, sample_messages: list[ChatMessage]) -> None:
-        """Test building messages for council (DIVERGENCE phase)."""
+    def test_context_property(self, sample_messages: list[ChatMessage]) -> None:
+        """Test that context property returns stored context."""
         router = MessageRouter()
-        router.extract_context(sample_messages)
+        assert router.context is None
 
-        council_messages = router.build_council_messages()
-
-        # Should have Ternion prompt, not Cursor prompt
-        assert len(council_messages) == 3  # 1 system + 2 history
-        assert council_messages[0].role == MessageRole.SYSTEM
-        assert council_messages[0].content == DIVERGENCE_PROMPT
-
-    def test_build_writer_messages(self, sample_messages: list[ChatMessage]) -> None:
-        """Test building messages for writer (EXECUTION phase)."""
-        router = MessageRouter()
-        router.extract_context(sample_messages)
-
-        writer_messages = router.build_writer_messages(
-            analysis_report="The bug is in the return statement."
-        )
-
-        # Should restore Cursor's system prompt
-        assert writer_messages[0].role == MessageRole.SYSTEM
-        assert "DIFF format" in str(writer_messages[0].content)
-        # Should include analysis report
-        assert any(
-            "[Ternion Analysis Report]" in str(m.content)
-            for m in writer_messages
-        )
-
-    def test_build_phase_messages_without_context(self) -> None:
-        """Test building messages without extracting context first."""
-        router = MessageRouter()
-
-        with pytest.raises(ValueError, match="No context available"):
-            router.build_phase_messages(DiscussionPhase.DIVERGENCE)
+        context = router.extract_context(sample_messages)
+        assert router.context is context
+        assert router.context.cursor_system_prompt is not None
