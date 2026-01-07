@@ -153,6 +153,7 @@ class ProviderManager:
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        timeout_seconds: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
         """
@@ -164,6 +165,7 @@ class ProviderManager:
             model: Optional model override
             temperature: Sampling temperature
             max_tokens: Maximum tokens
+            timeout_seconds: Optional timeout override (default: from config)
             **kwargs: Additional parameters
 
         Returns:
@@ -171,20 +173,43 @@ class ProviderManager:
 
         Raises:
             ProviderError: If provider fails
+            TimeoutError: If request times out (CR-030)
             ValueError: If provider not found
         """
+        import asyncio
+
+        from ternion.core.config import settings
+        from ternion.core.exceptions import TimeoutError as TernionTimeout
+        from ternion.utils.log_manager import log_manager
+
         provider = self.get_provider(provider_name)
         if not provider:
             raise ValueError(f"Provider not configured: {provider_name}")
 
+        # Use provided timeout or fall back to config default
+        timeout = timeout_seconds or settings.discussion.timeout_seconds
+
         try:
-            return await provider.chat_completion(
-                messages=messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                **kwargs,
+            return await asyncio.wait_for(
+                provider.chat_completion(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                ),
+                timeout=timeout,
             )
+        except asyncio.TimeoutError:
+            log_manager.emit(
+                "ERROR",
+                "LLM",
+                f"Provider timeout: {provider_name} did not respond within {timeout}s",
+            )
+            raise TernionTimeout(
+                operation=f"chat_completion ({provider_name})",
+                timeout_seconds=timeout,
+            ) from None
         except Exception as e:
             raise ProviderError(str(e), provider_name) from e
 

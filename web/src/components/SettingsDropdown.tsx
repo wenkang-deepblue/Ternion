@@ -231,15 +231,6 @@ export function SettingsDropdown({
             >
               ~/.ternion/config.json
             </button>
-            <br />
-            {t.settingsConfigRestoreHint}:{' '}
-            <button
-              onClick={() => api.revealFile('~/.ternion/config_backup.json').catch(console.error)}
-              className="text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 underline underline-offset-2 cursor-pointer transition-colors"
-              title={t.logsOpenFile}
-            >
-              config_backup.json
-            </button>
           </p>
         </div>
       </div>

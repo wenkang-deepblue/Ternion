@@ -130,6 +130,10 @@ class UserConfig(BaseModel):
     # Control whether thinking logs are prepended to final output.
     # Set to False for strict system prompts that require only patch/diff output.
     show_thinking_logs: bool = True
+    # Reserved for future CORS allowlist customization (v1/v1.5 advanced feature).
+    # Users can add extra IPs (e.g., "192.168.1.100") for LAN access.
+    # Backend will combine these with ports.web to form complete origins.
+    cors_extra_origins: list[str] = Field(default_factory=list)
     updated_at: str = ""
 
 
@@ -206,27 +210,18 @@ class ConfigStore:
 
     def save(self, config: UserConfig) -> None:
         """
-        Save configuration to file using atomic write with backup.
+        Save configuration to file using atomic write with strict permissions.
 
         Uses temp file + os.replace for atomicity on POSIX systems.
-        Creates a backup file (config_backup.json) before overwriting.
+        Sets file permissions to 0600 (owner read/write only) to protect API keys.
+
+        Note: Backup file was intentionally removed (CR-026) because:
+        - It doubled the API key exposure surface (two files with plaintext keys)
+        - Atomic write already provides sufficient crash safety
+        - Backup files are easily captured by cloud sync/backup tools
         """
         self._ensure_dir()
         config.updated_at = datetime.utcnow().isoformat()
-
-        backup_path = self.config_path.parent / "config_backup.json"
-
-        # Create backup of existing config if it exists
-        if self.config_path.exists():
-            try:
-                with open(self.config_path, encoding="utf-8") as f:
-                    existing_content = f.read()
-                with open(backup_path, "w", encoding="utf-8") as f:
-                    f.write(existing_content)
-                logger.debug("config_backup_created", path=str(backup_path))
-            except Exception as e:
-                logger.warning("config_backup_failed", error=str(e))
-                # Continue with save even if backup fails
 
         # Atomic write using temp file + replace
         fd, tmp_path = tempfile.mkstemp(
@@ -238,6 +233,9 @@ class ConfigStore:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(config.model_dump(), f, indent=2, ensure_ascii=False)
             os.replace(tmp_path, self.config_path)
+            # Set strict permissions: owner read/write only (0600)
+            # This protects API keys from other users on shared machines
+            os.chmod(self.config_path, 0o600)
             self._config = config
             logger.info("config_saved", path=str(self.config_path))
         except Exception as e:

@@ -25,12 +25,61 @@ from ternion.router.prompts import (
     FINAL_CHECK_PROMPT,
     GLOBAL_SECURITY_RULES,
 )
+from ternion.core.exceptions import TimeoutError as TernionTimeout
 from ternion.utils.cursor_safety import sanitize_for_preview
 from ternion.utils.i18n import MessageKey, t
 from ternion.utils.log_manager import log_manager
 from ternion.workflow.state import ReviewResult, TernionState, WorkflowPhase
 
 logger = structlog.get_logger(__name__)
+
+# Default timeout for provider calls (CR-030)
+DEFAULT_TIMEOUT_SECONDS = settings.discussion.timeout_seconds
+
+
+async def _call_with_timeout(
+    provider: Any,
+    messages: list[ChatMessage],
+    model: str,
+    temperature: float,
+    timeout_seconds: int | None = None,
+) -> Any:
+    """
+    Call provider.chat_completion with timeout protection (CR-030).
+
+    Args:
+        provider: Provider instance with chat_completion method
+        messages: Chat messages
+        model: Model to use
+        temperature: Sampling temperature
+        timeout_seconds: Optional timeout override
+
+    Returns:
+        ProviderResponse from the provider
+
+    Raises:
+        TernionTimeout: If request times out (status_code=504)
+    """
+    timeout = timeout_seconds or DEFAULT_TIMEOUT_SECONDS
+    try:
+        return await asyncio.wait_for(
+            provider.chat_completion(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+            ),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        log_manager.emit(
+            "ERROR",
+            "LLM",
+            f"Provider timeout: {provider.name} did not respond within {timeout}s",
+        )
+        raise TernionTimeout(
+            operation=f"chat_completion ({provider.name})",
+            timeout_seconds=timeout,
+        ) from None
 
 
 def _prepend_global_security_rules(prompt: str) -> str:
@@ -170,7 +219,8 @@ async def divergence_node(state: TernionState) -> TernionState:
                     "error": f"Provider {provider_name} not configured",
                 }
 
-            response = await provider.chat_completion(
+            response = await _call_with_timeout(
+                provider=provider,
                 messages=ternion_messages,
                 model=model,
                 temperature=0.7,
@@ -320,7 +370,8 @@ async def convergence_node(state: TernionState) -> TernionState:
                 ],
             }
 
-        response = await provider.chat_completion(
+        response = await _call_with_timeout(
+            provider=provider,
             messages=messages,
             model=model,
             temperature=0.5,  # Lower temperature for synthesis
@@ -575,7 +626,8 @@ async def execution_node(state: TernionState) -> TernionState:
                 ],
             }
 
-        response = await provider.chat_completion(
+        response = await _call_with_timeout(
+            provider=provider,
             messages=messages,
             model=model,
             temperature=0.3,  # Lower temperature for code generation
@@ -711,7 +763,8 @@ async def final_check_node(state: TernionState) -> TernionState:
                 ],
             }
 
-        response = await provider.chat_completion(
+        response = await _call_with_timeout(
+            provider=provider,
             messages=messages,
             model=model,
             temperature=0.2,  # Low temperature for critical review

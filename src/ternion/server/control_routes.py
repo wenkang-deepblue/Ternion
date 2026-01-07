@@ -27,6 +27,7 @@ from ternion.core.config_store import (
 )
 from ternion.providers.manager import provider_manager
 from ternion.utils.log_manager import log_manager
+from ternion.utils.secrets import redact_secrets
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["control-panel"])
@@ -575,16 +576,18 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
 
     except Exception as e:
         error_msg = str(e)
+        # Redact any secrets that might be in error messages (CR-027)
+        safe_error_msg = redact_secrets(error_msg)
         error_lower = error_msg.lower()
         auth_keywords = ["invalid", "unauthorized", "not valid", "api_key_invalid", "authentication", "incorrect"]
         if any(kw in error_lower for kw in auth_keywords):
-            log_manager.emit("ERROR", "USER_ACTION", f"API Key test failed: {provider_display} - {error_msg[:2000]}")
+            log_manager.emit("ERROR", "USER_ACTION", f"API Key test failed: {provider_display} - {safe_error_msg[:2000]}")
             return TestProviderResponse(
-                success=False, message=error_msg[:100], code="AUTH_ERROR"
+                success=False, message=safe_error_msg[:100], code="AUTH_ERROR"
             )
-        log_manager.emit("ERROR", "USER_ACTION", f"API Key test failed: {provider_display} - {error_msg[:2000]}")
+        log_manager.emit("ERROR", "USER_ACTION", f"API Key test failed: {provider_display} - {safe_error_msg[:2000]}")
         return TestProviderResponse(
-            success=False, message=error_msg[:100], code="CONNECTION_ERROR"
+            success=False, message=safe_error_msg[:100], code="CONNECTION_ERROR"
         )
 
     return TestProviderResponse(success=False, message="Unknown error", code="UNKNOWN_ERROR")
@@ -780,12 +783,30 @@ class RevealFileRequest(BaseModel):
 
 @router.post("/reveal-file")
 async def reveal_file(request: RevealFileRequest) -> dict:
-    """Reveal a file in the system file manager (Finder on macOS, Explorer on Windows)."""
+    """
+    Reveal a file in the system file manager (Finder on macOS, Explorer on Windows).
+
+    Security: Only paths within ~/.ternion/ are allowed (CR-029).
+    """
     import os
     import platform
     import subprocess
+    from pathlib import Path
 
+    # Expand user path and resolve to absolute path
     path = os.path.expanduser(request.path)
+    resolved_path = Path(path).resolve()
+
+    # Whitelist: only allow paths within ~/.ternion/
+    allowed_base = Path.home() / ".ternion"
+    try:
+        resolved_path.relative_to(allowed_base)
+    except ValueError:
+        # Path is not within allowed directory
+        raise HTTPException(
+            status_code=403,
+            detail="PATH_NOT_ALLOWED",
+        )
 
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="FILE_NOT_FOUND")

@@ -9,6 +9,8 @@ import contextlib
 from collections import deque
 from datetime import UTC, datetime
 
+from ternion.utils.secrets import redact_secrets
+
 
 class LogManager:
     """Manages log entries for SSE streaming to observability panel."""
@@ -21,16 +23,22 @@ class LogManager:
         """
         Emit a log entry to all subscribers.
 
+        Note: Messages are automatically sanitized to redact API keys and
+        other secrets before being stored or broadcast (CR-027 security fix).
+
         Args:
             level: Log level (INFO, WARN, ERROR, DEBUG)
             category: Log category (SYSTEM, LLM, USER_ACTION, TOKEN_USAGE)
             message: Log message content
         """
+        # Redact secrets from message before logging (CR-027)
+        safe_message = redact_secrets(message)
+
         entry = {
             "timestamp": datetime.now(UTC).isoformat(),
             "level": level,
             "category": category,
-            "message": message,
+            "message": safe_message,
         }
         self._history.append(entry)
         for queue in self._subscribers:

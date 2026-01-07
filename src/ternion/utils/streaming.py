@@ -27,6 +27,9 @@ def create_sse_stream(
     This is a utility for creating placeholder responses. In production,
     the actual LLM provider streams will be used.
 
+    Uses fixed-size chunks (128 UTF-8 characters) for balanced streaming UX
+    without excessive SSE overhead (CR-032 optimization).
+
     Args:
         model: Model name to include in the response
         content: The complete content to stream
@@ -34,12 +37,15 @@ def create_sse_stream(
     Yields:
         SSE-formatted data strings
     """
+    # Chunk size in UTF-8 characters (not bytes) for smooth streaming UX
+    CHUNK_SIZE = 128
+
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    words = content.split(" ")
-    for i, word in enumerate(words):
-        text = f" {word}" if i > 0 else word
+    # Split content into fixed-size chunks instead of by words (CR-032)
+    for i in range(0, len(content), CHUNK_SIZE):
+        text = content[i:i + CHUNK_SIZE]
 
         chunk = ChatCompletionChunk(
             id=chunk_id,
