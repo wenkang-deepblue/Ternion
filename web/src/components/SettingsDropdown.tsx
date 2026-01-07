@@ -10,6 +10,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import type { Translations } from '../i18n';
+import api from '../api/client';
 
 // Settings icons for light/dark mode with normal/hover states
 import settingsLightNormal from '../assets/icons/settings_light_mode_50dp.svg';
@@ -217,6 +218,29 @@ export function SettingsDropdown({
               </button>
             ))}
           </div>
+        </div>
+
+        {/* Config File Note */}
+        <div className="mt-4 pt-3 border-t border-slate-200 dark:border-slate-700">
+          <p className="text-xs text-slate-400 dark:text-slate-500 leading-relaxed">
+            {t.settingsConfigLabel}:{' '}
+            <button
+              onClick={() => api.revealFile('~/.ternion/config.json').catch(console.error)}
+              className="text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 underline underline-offset-2 cursor-pointer transition-colors"
+              title={t.logsOpenFile}
+            >
+              ~/.ternion/config.json
+            </button>
+            <br />
+            {t.settingsConfigRestoreHint}:{' '}
+            <button
+              onClick={() => api.revealFile('~/.ternion/config_backup.json').catch(console.error)}
+              className="text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 underline underline-offset-2 cursor-pointer transition-colors"
+              title={t.logsOpenFile}
+            >
+              config_backup.json
+            </button>
+          </p>
         </div>
       </div>
     </div>

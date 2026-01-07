@@ -128,6 +128,7 @@ class TestProviderResponse(BaseModel):
 
     success: bool
     message: str
+    code: str
 
 
 class PortsUpdateRequest(BaseModel):

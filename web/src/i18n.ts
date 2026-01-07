@@ -204,6 +204,8 @@ export interface Translations {
   settingsThemeSystem: string;
   settingsLanguage: string;
   settingsLanguageAuto: string;
+  settingsConfigLabel: string;
+  settingsConfigRestoreHint: string;
 
   // Execution Mode Selector
   execModeTitle: string;
@@ -432,6 +434,8 @@ const EN: Translations = {
   settingsThemeSystem: 'System',
   settingsLanguage: 'Language',
   settingsLanguageAuto: 'Auto',
+  settingsConfigLabel: 'Config',
+  settingsConfigRestoreHint: 'If corrupted, restore from backup',
 
   // Execution Mode Selector
   execModeTitle: 'Execution Mode',
@@ -656,6 +660,8 @@ const ZH: Translations = {
   settingsThemeSystem: '跟随系统',
   settingsLanguage: '语言',
   settingsLanguageAuto: '自动',
+  settingsConfigLabel: '配置文件',
+  settingsConfigRestoreHint: '如损坏，可从备份恢复',
 
   // Execution Mode Selector
   execModeTitle: '推理方案选择',
@@ -878,6 +884,8 @@ const ES: Translations = {
   settingsThemeSystem: 'Sistema',
   settingsLanguage: 'Idioma',
   settingsLanguageAuto: 'Auto',
+  settingsConfigLabel: 'Configuración',
+  settingsConfigRestoreHint: 'Si está dañado, restaurar desde',
 
   // Execution Mode Selector
   execModeTitle: 'Modo de Ejecución',
@@ -1102,6 +1110,8 @@ const FR: Translations = {
   settingsThemeSystem: 'Système',
   settingsLanguage: 'Langue',
   settingsLanguageAuto: 'Auto',
+  settingsConfigLabel: 'Configuration',
+  settingsConfigRestoreHint: 'Si corrompu, restaurer depuis',
 
   // Execution Mode Selector
   execModeTitle: 'Mode d\'Exécution',
@@ -1326,6 +1336,8 @@ const DE: Translations = {
   settingsThemeSystem: 'System',
   settingsLanguage: 'Sprache',
   settingsLanguageAuto: 'Auto',
+  settingsConfigLabel: 'Konfiguration',
+  settingsConfigRestoreHint: 'Bei Beschädigung wiederherstellen von',
 
   // Execution Mode Selector
   execModeTitle: 'Ausführungsmodus',
@@ -1550,6 +1562,8 @@ const JA: Translations = {
   settingsThemeSystem: 'システム',
   settingsLanguage: '言語',
   settingsLanguageAuto: '自動',
+  settingsConfigLabel: '設定ファイル',
+  settingsConfigRestoreHint: '破損時はバックアップから復元',
 
   // Execution Mode Selector
   execModeTitle: '実行モード',
@@ -1774,6 +1788,8 @@ const KO: Translations = {
   settingsThemeSystem: '시스템',
   settingsLanguage: '언어',
   settingsLanguageAuto: '자동',
+  settingsConfigLabel: '설정 파일',
+  settingsConfigRestoreHint: '손상 시 백업에서 복원',
 
   // Execution Mode Selector
   execModeTitle: '실행 모드',
@@ -1846,10 +1862,22 @@ export function getTranslations(lang: Language): Translations {
 }
 
 /**
+ * Check if a language uses CJK (Chinese, Japanese, Korean) formatting.
+ * CJK languages use different separators and parentheses.
+ */
+export function isCJKLanguage(lang: Language): boolean {
+  return lang === 'zh' || lang === 'ja' || lang === 'ko';
+}
+
+/**
  * Get localized error message from error code.
  * Falls back to the code itself if no translation exists.
+ * 
+ * @param t - Translations object
+ * @param errorCode - Error code string from backend
+ * @param language - Optional explicit language for formatting (defaults to 'en' if not provided)
  */
-export function getErrorMessage(t: Translations, errorCode: string): string {
+export function getErrorMessage(t: Translations, errorCode: string, language?: Language): string {
   // Special handling: include missing roles for ROLES_INCOMPLETE
   // Backend may return: "ROLES_INCOMPLETE:ternion_a,arbiter,writer"
   if (errorCode.startsWith('ROLES_INCOMPLETE:')) {
@@ -1868,14 +1896,15 @@ export function getErrorMessage(t: Translations, errorCode: string): string {
       reviewer: t.reviewerName,
     };
 
-    const isZh = t.tabConfig === '配置';
-    const sep = isZh ? '、' : ', ';
+    // Use explicit language parameter for CJK formatting decisions
+    const isCJK = language ? isCJKLanguage(language) : false;
+    const sep = isCJK ? '、' : ', ';
     const missingDisplay = missingRoles.map(r => roleNameMap[r] || r).join(sep);
 
     const baseKey = `code_ROLES_INCOMPLETE` as keyof Translations;
     const base = (t[baseKey] as unknown as string) || 'ROLES_INCOMPLETE';
     const suffix = missingDisplay
-      ? (isZh ? `（缺少：${missingDisplay}）` : ` (missing: ${missingDisplay})`)
+      ? (isCJK ? `（缺少：${missingDisplay}）` : ` (missing: ${missingDisplay})`)
       : '';
     return `${base}${suffix}`;
   }

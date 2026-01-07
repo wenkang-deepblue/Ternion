@@ -250,10 +250,10 @@ function AppContent() {
       <main className="max-w-5xl mx-auto px-4 py-8">
         <div style={{ display: activeTab === 'config' ? 'block' : 'none' }}>
           <div className="space-y-6">
-            <ApiKeyManager config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} />
+            <ApiKeyManager config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} language={effectiveLanguage} />
             <ExecutionModeSelector config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} />
-            <RoleModelConfig config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} executionMode={config?.execution_mode} />
-            <BudgetSettings config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} />
+            <RoleModelConfig config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} executionMode={config?.execution_mode} language={effectiveLanguage} />
+            <BudgetSettings config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} language={effectiveLanguage} />
           </div>
         </div>
         <div style={{ display: activeTab === 'ports' ? 'block' : 'none' }}>
@@ -273,7 +273,7 @@ function AppContent() {
           <p>
             Ternion v0.4.8 • {t.appSubtitle} •{' '}
             <a
-              href="http://localhost:9110/docs"
+              href={`http://localhost:${config?.ports?.backend || 9110}/docs`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-blue-600 hover:underline"

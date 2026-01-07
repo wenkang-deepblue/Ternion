@@ -51,6 +51,7 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [autoScroll, setAutoScroll] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [lastDownload, setLastDownload] = useState<{
     filePath: string;
     logCount: number;
@@ -59,8 +60,30 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
   const logContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Clear any pending reconnect timer
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+
+  // Disconnect SSE stream
+  const disconnectStream = useCallback(() => {
+    clearReconnectTimer();
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    setStatus('disconnected');
+  }, [clearReconnectTimer]);
+
+  // Connect to SSE stream
   const connectToLogStream = useCallback(() => {
+    // Clear any existing connection and timer
+    clearReconnectTimer();
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
@@ -85,17 +108,23 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
     es.onerror = () => {
       setStatus('disconnected');
       es.close();
-      // Attempt reconnection after 3 seconds
-      setTimeout(connectToLogStream, 3000);
+      eventSourceRef.current = null;
+      // Schedule reconnection with timer ref for proper cleanup
+      reconnectTimerRef.current = setTimeout(connectToLogStream, 3000);
     };
-  }, []);
+  }, [clearReconnectTimer]);
 
+  // Connect/disconnect based on visibility
   useEffect(() => {
-    connectToLogStream();
+    if (isVisible) {
+      connectToLogStream();
+    } else {
+      disconnectStream();
+    }
     return () => {
-      eventSourceRef.current?.close();
+      disconnectStream();
     };
-  }, [connectToLogStream]);
+  }, [isVisible, connectToLogStream, disconnectStream]);
 
   useEffect(() => {
     if (!autoScroll || !isVisible) return;
@@ -122,6 +151,7 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
 
   const handleDownload = async () => {
     setDownloading(true);
+    setDownloadError(null);
     try {
       const result = await api.downloadLogs();
       if (result.success) {
@@ -130,9 +160,12 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
           logCount: result.log_count,
           timestamp: new Date().toLocaleTimeString(),
         });
+      } else {
+        setDownloadError(t.logsDownloadError);
       }
     } catch (err) {
       console.error('Failed to download logs:', err);
+      setDownloadError(t.logsDownloadError);
     } finally {
       setDownloading(false);
     }
@@ -281,6 +314,26 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
           )}
           <div ref={bottomRef} />
         </div>
+        {/* Download error notification */}
+        {downloadError && (
+          <div className="mt-5 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-4 py-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm text-red-700 dark:text-red-300">
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+              </svg>
+              <span className="font-medium">{downloadError}</span>
+            </div>
+            <button
+              onClick={() => setDownloadError(null)}
+              className="text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors"
+              title="Dismiss"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        )}
         {/* Download success notification */}
         {lastDownload && (
           <div className="mt-5 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2">

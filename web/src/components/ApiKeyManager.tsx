@@ -13,6 +13,7 @@ import type { Config } from '../api/client';
 import { useToast } from './Toast';
 import type { Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
+import type { Language } from '../i18n';
 
 // API Key section icons
 import apiKeyIconLight from '../assets/icons/api_key_light_mode_50dp.svg';
@@ -37,6 +38,7 @@ interface ApiKeyManagerProps {
   onConfigUpdate: (config: Config) => void;
   t: Translations;
   isDarkMode: boolean;
+  language: Language;
 }
 
 const PROVIDER_INFO = {
@@ -79,7 +81,7 @@ const measureTextWidth = (text: string, font: string = '0.8rem Inter, sans-serif
   return ctx.measureText(text).width;
 };
 
-export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyManagerProps) {
+export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode, language }: ApiKeyManagerProps) {
   const { showToast } = useToast();
   const [newKeys, setNewKeys] = useState<Record<string, { name: string; key: string }>>({
     google: { name: '', key: '' },
@@ -121,7 +123,7 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyM
 
       if (!testResult.success) {
         // Use global getErrorMessage helper
-        let errorMessage = getErrorMessage(t, testResult.code);
+        let errorMessage = getErrorMessage(t, testResult.code, language);
         
         // If translation is missing (returns code) or it is a connection error, append detail
         if (errorMessage === testResult.code || testResult.code === 'CONNECTION_ERROR') {
@@ -163,7 +165,7 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyM
     } catch (error) {
       console.error('Test API Error:', error);
       const errorCode = error instanceof Error ? error.message : String(error);
-      showToast(getErrorMessage(t, errorCode), 'error');
+      showToast(getErrorMessage(t, errorCode, language), 'error');
     } finally {
       setTesting(null);
       setSaving(false);
@@ -177,7 +179,7 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyM
       showToast(`${t.apiKeySelected}: ${result.key_name || t.unnamed}`, 'info');
     } catch (error) {
       const errorCode = error instanceof Error ? error.message : String(error);
-      showToast(getErrorMessage(t, errorCode), 'error');
+      showToast(getErrorMessage(t, errorCode, language), 'error');
     }
   };
 
@@ -190,7 +192,7 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode }: ApiKeyM
       showToast(t.apiKeyDeleted, 'info');
     } catch (error) {
       const errorCode = error instanceof Error ? error.message : String(error);
-      showToast(getErrorMessage(t, errorCode), 'error');
+      showToast(getErrorMessage(t, errorCode, language), 'error');
     }
   };
 

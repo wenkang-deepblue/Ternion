@@ -14,6 +14,7 @@ import type { Config, RoleConfig, ModelsData, ModelInfo } from '../api/client';
 import { useToast } from './Toast';
 import type { Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
+import type { Language } from '../i18n';
 
 // Section icon
 import characterIconLight from '../assets/icons/character_light_mode_50dp.svg';
@@ -38,6 +39,7 @@ interface RoleModelConfigProps {
   t: Translations;
   isDarkMode: boolean;
   executionMode?: string;
+  language: Language;
 }
 
 const PROVIDER_NAMES: Record<string, string> = {
@@ -62,7 +64,7 @@ const MODEL_NAMES: Record<string, string> = {
 const DRAFT_STORAGE_KEY = 'ternion_role_model_draft';
 const CONFIG_NONEMPTY_MARKER_KEY = 'ternion_config_nonempty';
 
-export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executionMode }: RoleModelConfigProps) {
+export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executionMode, language }: RoleModelConfigProps) {
   const { showToast } = useToast();
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
   const [selectedRoles, setSelectedRoles] = useState<Record<string, RoleConfig>>({});
@@ -240,7 +242,7 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
       await api.logRoleSelection(role, provider, model);
     } catch (error) {
       const errorCode = error instanceof Error ? error.message : String(error);
-      showToast(getErrorMessage(t, errorCode), 'error');
+      showToast(getErrorMessage(t, errorCode, language), 'error');
     }
   };
 
@@ -289,7 +291,7 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
     } catch (error) {
       console.error('Failed to save:', error);
       const errorCode = error instanceof Error ? error.message : String(error);
-      showToast(getErrorMessage(t, errorCode), 'error');
+      showToast(getErrorMessage(t, errorCode, language), 'error');
     } finally {
       setSaving(false);
     }

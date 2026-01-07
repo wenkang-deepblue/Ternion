@@ -12,6 +12,7 @@ import type { Config, BudgetConfig } from '../api/client';
 import { useToast } from './Toast';
 import type { Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
+import type { Language } from '../i18n';
 
 // Budget section icon
 import budgetIconLight from '../assets/icons/budget_light_mode_50dp.svg';
@@ -22,6 +23,7 @@ interface BudgetSettingsProps {
   onConfigUpdate: (config: Config) => void;
   t: Translations;
   isDarkMode: boolean;
+  language: Language;
 }
 
 const THRESHOLD_OPTIONS = [
@@ -34,7 +36,7 @@ const THRESHOLD_OPTIONS = [
   { value: 0.95, label: '95%' },
 ];
 
-export function BudgetSettings({ config, onConfigUpdate, t, isDarkMode }: BudgetSettingsProps) {
+export function BudgetSettings({ config, onConfigUpdate, t, isDarkMode, language }: BudgetSettingsProps) {
   const { showToast } = useToast();
   const [budget, setBudget] = useState<BudgetConfig>({
     monthly_limit_usd: 50,
@@ -79,7 +81,7 @@ export function BudgetSettings({ config, onConfigUpdate, t, isDarkMode }: Budget
     } catch (error) {
       console.error('Failed to save:', error);
       const errorCode = error instanceof Error ? error.message : String(error);
-      showToast(getErrorMessage(t, errorCode), 'error');
+      showToast(getErrorMessage(t, errorCode, language), 'error');
     } finally {
       setSaving(false);
     }

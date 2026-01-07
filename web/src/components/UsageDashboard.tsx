@@ -49,7 +49,7 @@ function formatTokenCount(value: number): string {
   return value.toString();
 }
 
-// Custom tooltip for charts
+// Custom tooltip for charts - uses dataKey for formatting decisions
 function CustomTooltip({ 
   active, 
   payload, 
@@ -57,18 +57,24 @@ function CustomTooltip({
   t: _t,
 }: {
   active?: boolean;
-  payload?: Array<{ name: string; value: number; color: string }>;
+  payload?: Array<{ name: string; value: number; color: string; dataKey?: string }>;
   label?: string;
   t: Translations;
 }) {
   if (!active || !payload || payload.length === 0) return null;
+
+  // Helper to check if a dataKey represents cost (not tokens)
+  const isCostField = (dataKey?: string): boolean => {
+    if (!dataKey) return false;
+    return dataKey.includes('cost');
+  };
 
   return (
     <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-3">
       <p className="font-medium text-slate-900 dark:text-white mb-2">{label}</p>
       {payload.map((entry, index) => (
         <p key={index} style={{ color: entry.color }} className="text-sm">
-          {entry.name}: {entry.name.includes('Cost') || entry.name.includes('金额') 
+          {entry.name}: {isCostField(entry.dataKey)
             ? `$${entry.value.toFixed(4)}` 
             : formatTokenCount(entry.value)}
         </p>

@@ -7,7 +7,10 @@ Provides persistent storage for user configuration including:
 - Budget settings
 """
 
+import contextlib
 import json
+import os
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -182,7 +185,7 @@ class ConfigStore:
 
         if self.config_path.exists():
             try:
-                with open(self.config_path) as f:
+                with open(self.config_path, encoding="utf-8") as f:
                     data = json.load(f)
                     # Migrate old format if needed
                     data = self._migrate_config(data)
@@ -202,16 +205,46 @@ class ConfigStore:
         return self.load()
 
     def save(self, config: UserConfig) -> None:
-        """Save configuration to file."""
+        """
+        Save configuration to file using atomic write with backup.
+
+        Uses temp file + os.replace for atomicity on POSIX systems.
+        Creates a backup file (config_backup.json) before overwriting.
+        """
         self._ensure_dir()
         config.updated_at = datetime.utcnow().isoformat()
 
+        backup_path = self.config_path.parent / "config_backup.json"
+
+        # Create backup of existing config if it exists
+        if self.config_path.exists():
+            try:
+                with open(self.config_path, encoding="utf-8") as f:
+                    existing_content = f.read()
+                with open(backup_path, "w", encoding="utf-8") as f:
+                    f.write(existing_content)
+                logger.debug("config_backup_created", path=str(backup_path))
+            except Exception as e:
+                logger.warning("config_backup_failed", error=str(e))
+                # Continue with save even if backup fails
+
+        # Atomic write using temp file + replace
+        fd, tmp_path = tempfile.mkstemp(
+            dir=self.config_path.parent,
+            suffix=".tmp",
+            prefix="config_"
+        )
         try:
-            with open(self.config_path, "w") as f:
-                json.dump(config.model_dump(), f, indent=2)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(config.model_dump(), f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, self.config_path)
             self._config = config
             logger.info("config_saved", path=str(self.config_path))
         except Exception as e:
+            # Clean up temp file on failure
+            with contextlib.suppress(OSError):
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
             logger.error("config_save_error", error=str(e))
             raise
 
