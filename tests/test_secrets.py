@@ -4,8 +4,6 @@ Tests for secret redaction utilities.
 Verifies that API keys and other secrets are properly redacted from text.
 """
 
-import pytest
-
 from ternion.utils.secrets import contains_secret_pattern, redact_secrets
 
 

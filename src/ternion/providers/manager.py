@@ -200,7 +200,7 @@ class ProviderManager:
                 ),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log_manager.emit(
                 "ERROR",
                 "LLM",

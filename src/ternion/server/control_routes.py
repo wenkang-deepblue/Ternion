@@ -806,7 +806,7 @@ async def reveal_file(request: RevealFileRequest) -> dict:
         raise HTTPException(
             status_code=403,
             detail="PATH_NOT_ALLOWED",
-        )
+        ) from None
 
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="FILE_NOT_FOUND")

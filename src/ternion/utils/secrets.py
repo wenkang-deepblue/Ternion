@@ -67,8 +67,4 @@ def contains_secret_pattern(text: str) -> bool:
     if not text:
         return False
 
-    for pattern, _ in _SECRET_PATTERNS:
-        if pattern.search(text):
-            return True
-
-    return False
+    return any(pattern.search(text) for pattern, _ in _SECRET_PATTERNS)

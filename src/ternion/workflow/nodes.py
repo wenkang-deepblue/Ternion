@@ -12,6 +12,7 @@ import structlog
 from ternion.core.budget import budget_manager
 from ternion.core.config import settings
 from ternion.core.config_store import config_store
+from ternion.core.exceptions import TimeoutError as TernionTimeout
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.core.session_store import (
     ExecutionMode,
@@ -25,7 +26,6 @@ from ternion.router.prompts import (
     FINAL_CHECK_PROMPT,
     GLOBAL_SECURITY_RULES,
 )
-from ternion.core.exceptions import TimeoutError as TernionTimeout
 from ternion.utils.cursor_safety import sanitize_for_preview
 from ternion.utils.i18n import MessageKey, t
 from ternion.utils.log_manager import log_manager
@@ -70,7 +70,7 @@ async def _call_with_timeout(
             ),
             timeout=timeout,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         log_manager.emit(
             "ERROR",
             "LLM",

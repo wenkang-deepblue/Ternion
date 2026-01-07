@@ -119,7 +119,6 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode, language 
     setTesting(provider);
     try {
       const testResult = await api.testProvider(provider, key);
-      console.log('Test Result:', testResult);
 
       if (!testResult.success) {
         // Use global getErrorMessage helper
