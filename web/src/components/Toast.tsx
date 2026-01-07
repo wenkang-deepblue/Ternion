@@ -64,7 +64,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         <div
           key={toast.id}
           className={`
-            fixed top-1/2 left-1/2 z-[9999]
+            fixed top-1/2 left-1/2 z-9999
             px-5 py-2.5 rounded-[10px]
             bg-[rgba(50,50,50,0.9)] text-white text-center
             shadow-lg backdrop-blur-sm

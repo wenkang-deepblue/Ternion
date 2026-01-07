@@ -458,7 +458,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                       type="number"
                       value={newBudgetLimit}
                       onChange={(e) => setNewBudgetLimit(e.target.value)}
-                      className="input w-full !pl-6 pr-3 py-2 text-sm border-slate-300 dark:border-slate-600 dark:bg-slate-700 text-slate-900 dark:text-white"
+                      className="input w-full pl-6! pr-3 py-2 text-sm border-slate-300 dark:border-slate-600 dark:bg-slate-700 text-slate-900 dark:text-white"
                       placeholder="50"
                       min="1"
                       step="1"
