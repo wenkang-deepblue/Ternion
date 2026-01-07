@@ -13,6 +13,11 @@ import re
 from dataclasses import dataclass
 
 _H2_RE = re.compile(r"(?m)^##\s+(?P<title>.+?)\s*$")
+_MD_HEADING_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s+")
+_MD_BLOCKQUOTE_RE = re.compile(r"(?m)^\s{0,3}>\s?")
+_MD_HR_RE = re.compile(r"(?m)^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 
 
 @dataclass(frozen=True)
@@ -111,4 +116,73 @@ def parse_structured_report(report: str) -> ParsedReport:
         if_not_effective=if_not_effective,
     )
 
+
+def _strip_markdown_for_display(text: str) -> str:
+    """
+    Best-effort Markdown -> plain text for UIs that do not render Markdown.
+
+    This is intentionally conservative: it removes formatting markers while
+    preserving line breaks and list structure as much as possible.
+    """
+    if not text:
+        return ""
+
+    out = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove headings / blockquote markers at line start
+    out = _MD_HEADING_RE.sub("", out)
+    out = _MD_BLOCKQUOTE_RE.sub("", out)
+
+    # Drop horizontal rules (visual only)
+    out = _MD_HR_RE.sub("", out)
+
+    # Convert images/links to their visible text
+    out = _MD_IMAGE_RE.sub(lambda m: (m.group(1) or "").strip(), out)
+    out = _MD_LINK_RE.sub(lambda m: (m.group(1) or "").strip(), out)
+
+    # Remove common emphasis/code markers
+    out = out.replace("**", "").replace("__", "")
+    out = out.replace("`", "")
+
+    # Normalize list markers (keep structure, just unify bullets)
+    out = re.sub(r"(?m)^\s*\*\s+", "- ", out)
+
+    # Collapse excessive blank lines
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out
+
+
+def format_report_for_display(report: str) -> str:
+    """
+    Format an Arbiter Markdown report into a plain-text view for display.
+    """
+    text = (report or "").strip()
+    if not text:
+        return ""
+
+    parsed = parse_structured_report(text)
+    if not parsed.is_structured:
+        return _strip_markdown_for_display(text)
+
+    def section(title: str, body: str) -> str:
+        body_clean = _strip_markdown_for_display(body).strip()
+        if not body_clean:
+            from ternion.utils.i18n import MessageKey, t
+
+            body_clean = t(MessageKey.REPORT_SECTION_MISSING_PLACEHOLDER)
+        return f"【{title}】\n{body_clean}"
+
+    from ternion.utils.i18n import MessageKey, t
+
+    parts = [
+        section(t(MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE), parsed.root_cause),
+        section(t(MessageKey.REPORT_SECTION_EVIDENCE_TITLE), parsed.evidence),
+        section(t(MessageKey.REPORT_SECTION_SCOPE_TITLE), parsed.scope),
+        section(t(MessageKey.REPORT_SECTION_FIX_PLAN_TITLE), parsed.fix_plan),
+        section(t(MessageKey.REPORT_SECTION_VERIFICATION_TITLE), parsed.verification),
+        section(t(MessageKey.REPORT_SECTION_RISKS_TITLE), parsed.risks),
+        section(t(MessageKey.REPORT_SECTION_IF_NOT_EFFECTIVE_TITLE), parsed.if_not_effective),
+    ]
+
+    return "\n\n".join(parts).strip()
 

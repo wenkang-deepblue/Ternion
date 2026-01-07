@@ -4,6 +4,8 @@ Tests for cursor safety utilities.
 
 
 from ternion.utils.cursor_safety import (
+    FULLWIDTH_BACKTICK,
+    FULLWIDTH_TILDE,
     ZWSP,
     sanitize_for_cursor_display,
     sanitize_for_preview,
@@ -39,14 +41,14 @@ class TestSanitizeForCursorDisplay:
         text = "Here is some code:\n```python\nprint('hello')\n```"
         result = sanitize_for_cursor_display(text)
         assert "```" not in result
-        assert f"`{ZWSP}`{ZWSP}`" in result
+        assert FULLWIDTH_BACKTICK * 3 in result
 
     def test_breaks_code_fence_tildes(self) -> None:
         """Triple tildes are broken with ZWSP."""
         text = "~~~\ncode block\n~~~"
         result = sanitize_for_cursor_display(text)
         assert "~~~" not in result
-        assert f"~{ZWSP}~{ZWSP}~" in result
+        assert FULLWIDTH_TILDE * 3 in result
 
     def test_breaks_begin_patch(self) -> None:
         """*** Begin Patch trigger is broken."""
@@ -54,22 +56,22 @@ class TestSanitizeForCursorDisplay:
         result = sanitize_for_cursor_display(text)
         assert "*** Begin Patch" not in result
         assert "*** End Patch" not in result
-        assert f"**{ZWSP}* Begin Patch" in result
-        assert f"**{ZWSP}* End Patch" in result
+        assert f"*** Begin Pat{ZWSP}ch" in result
+        assert f"*** End Pat{ZWSP}ch" in result
 
     def test_breaks_update_file(self) -> None:
         """*** Update File: trigger is broken."""
         text = "*** Update File: /path/to/file.py"
         result = sanitize_for_cursor_display(text)
         assert "*** Update File:" not in result
-        assert f"**{ZWSP}* Update File:" in result
+        assert f"*** Upd{ZWSP}ate File:" in result
 
     def test_breaks_add_file(self) -> None:
         """*** Add File: trigger is broken."""
         text = "*** Add File: /path/to/newfile.py"
         result = sanitize_for_cursor_display(text)
         assert "*** Add File:" not in result
-        assert f"**{ZWSP}* Add File:" in result
+        assert f"*** Add Fi{ZWSP}le:" in result
 
     def test_breaks_diff_git(self) -> None:
         """diff --git trigger is broken."""
@@ -138,7 +140,7 @@ class TestSanitizeForPreview:
         text = "```python"
         result = sanitize_for_preview(text)
         assert "```" not in result
-        assert f"`{ZWSP}`{ZWSP}`" in result
+        assert FULLWIDTH_BACKTICK * 3 in result
 
     def test_short_text_unchanged_except_triggers(self) -> None:
         """Short text without triggers remains the same."""

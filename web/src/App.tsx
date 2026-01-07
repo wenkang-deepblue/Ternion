@@ -116,6 +116,13 @@ function AppContent() {
         }
         if (configData.preferences.language) {
           setLanguageMode(configData.preferences.language as LanguageMode);
+          
+          // If language is 'auto', send current browser language to backend
+          // This ensures Ternion reports use the correct language
+          if (configData.preferences.language === 'auto') {
+            const browserLang = detectBrowserLanguage();
+            api.updatePreferences({ browser_language: browserLang }).catch(console.error);
+          }
         }
       }
     } catch (error) {
@@ -140,7 +147,14 @@ function AppContent() {
   const handleLanguageChange = useCallback(async (language: LanguageMode) => {
     setLanguageMode(language);
     try {
-      await api.updatePreferences({ language });
+      // If language is 'auto', also send the detected browser language
+      // so backend knows which language to use for Ternion reports
+      if (language === 'auto') {
+        const browserLang = detectBrowserLanguage();
+        await api.updatePreferences({ language, browser_language: browserLang });
+      } else {
+        await api.updatePreferences({ language });
+      }
     } catch (error) {
       console.error('Failed to save language preference:', error);
     }

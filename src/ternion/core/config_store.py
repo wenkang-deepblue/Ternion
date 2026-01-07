@@ -122,7 +122,10 @@ class UserConfig(BaseModel):
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
     theme: str = "system"  # "light", "dark", "system"
-    language: str = "auto"  # "auto", "en", "zh"
+    language: str = "auto"  # "auto", "en", "zh", "es", "fr", "de", "ja", "ko"
+    # Browser-detected language (stored when language == "auto")
+    # This allows backend to know user's browser language for report generation
+    browser_language: str = "en"
     # Execution mode is intentionally empty by default.
     # Users MUST explicitly choose and save it in the Web Control Panel.
     execution_mode: str = ""  # "cursor_handoff" | "ternion_full" | ""
@@ -315,6 +318,7 @@ class ConfigStore:
             "preferences": {
                 "theme": config.theme,
                 "language": config.language,
+                "browser_language": config.browser_language,
                 "hide_usage_disclaimer": config.hide_usage_disclaimer,
                 "show_thinking_logs": config.show_thinking_logs,
             },

@@ -208,3 +208,30 @@ class TestGetUserLanguage:
             result = get_user_language()
 
             assert result == DEFAULT_LANGUAGE
+
+    def test_returns_browser_language_when_auto_is_set(self):
+        """Should return browser_language when language is set to 'auto'."""
+        config = MagicMock()
+        config.language = "auto"
+        config.browser_language = "zh"
+
+        with patch("ternion.utils.i18n.config_store") as mock_store:
+            mock_store.load.return_value = config
+
+            result = get_user_language()
+
+            assert result == "zh"
+
+    def test_returns_default_when_auto_and_unsupported_browser_language(self):
+        """Should return default when language is 'auto' but browser_language is unsupported."""
+        config = MagicMock()
+        config.language = "auto"
+        config.browser_language = "pt"  # Portuguese not in supported list
+
+        with patch("ternion.utils.i18n.config_store") as mock_store:
+            mock_store.load.return_value = config
+
+            result = get_user_language()
+
+            assert result == DEFAULT_LANGUAGE
+

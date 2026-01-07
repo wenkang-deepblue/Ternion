@@ -88,14 +88,18 @@ class OpenAIProvider(BaseProvider):
             message_count=len(messages),
         )
 
-        response = await self._client.chat.completions.create(
-            model=model,
-            messages=converted,  # type: ignore
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=False,
+        # Build API parameters - only include max_tokens if specified
+        api_params: dict[str, Any] = {
+            "model": model,
+            "messages": converted,
+            "temperature": temperature,
+            "stream": False,
             **kwargs,
-        )
+        }
+        if max_tokens is not None:
+            api_params["max_tokens"] = max_tokens
+
+        response = await self._client.chat.completions.create(**api_params)  # type: ignore
 
         choice = response.choices[0]
         usage = response.usage
@@ -171,15 +175,19 @@ class OpenAIProvider(BaseProvider):
             message_count=len(messages),
         )
 
-        stream = await self._client.chat.completions.create(
-            model=model,
-            messages=converted,  # type: ignore
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-            stream_options={"include_usage": True},
+        # Build API parameters - only include max_tokens if specified
+        api_params: dict[str, Any] = {
+            "model": model,
+            "messages": converted,
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
             **kwargs,
-        )
+        }
+        if max_tokens is not None:
+            api_params["max_tokens"] = max_tokens
+
+        stream = await self._client.chat.completions.create(**api_params)  # type: ignore
 
         received_text = ""
         usage_data = None

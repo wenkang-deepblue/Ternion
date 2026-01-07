@@ -9,6 +9,12 @@ import re
 
 ZWSP = "\u200b"  # Zero-width space for breaking trigger patterns
 
+# Use lookalike characters to avoid creating Markdown code spans while breaking triggers.
+# - U+FF40 FULLWIDTH GRAVE ACCENT looks like a backtick but is not Markdown syntax.
+# - U+FF5E FULLWIDTH TILDE looks like a tilde but is not a Markdown fence trigger.
+FULLWIDTH_BACKTICK = "｀"
+FULLWIDTH_TILDE = "～"
+
 # Patterns that trigger Cursor's code/patch detection
 PATCH_TRIGGERS = [
     "```",
@@ -49,15 +55,15 @@ def sanitize_for_cursor_display(text: str) -> str:
 
     out = text
 
-    # Break code fence triggers
-    out = out.replace("```", f"`{ZWSP}`{ZWSP}`")
-    out = out.replace("~~~", f"~{ZWSP}~{ZWSP}~")
+    # Break code fence triggers without emitting ASCII fence characters.
+    out = out.replace("```", FULLWIDTH_BACKTICK * 3)
+    out = out.replace("~~~", FULLWIDTH_TILDE * 3)
 
-    # Break patch triggers
-    out = out.replace("*** Begin Patch", f"**{ZWSP}* Begin Patch")
-    out = out.replace("*** End Patch", f"**{ZWSP}* End Patch")
-    out = out.replace("*** Update File:", f"**{ZWSP}* Update File:")
-    out = out.replace("*** Add File:", f"**{ZWSP}* Add File:")
+    # Break patch triggers while preserving Markdown marker characters.
+    out = out.replace("*** Begin Patch", f"*** Begin Pat{ZWSP}ch")
+    out = out.replace("*** End Patch", f"*** End Pat{ZWSP}ch")
+    out = out.replace("*** Update File:", f"*** Upd{ZWSP}ate File:")
+    out = out.replace("*** Add File:", f"*** Add Fi{ZWSP}le:")
     out = out.replace("diff --git", f"diff{ZWSP} --git")
 
     # Break leading diff markers (+++/--- at line start)

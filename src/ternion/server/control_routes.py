@@ -608,7 +608,8 @@ class PreferencesUpdateRequest(BaseModel):
     """Request to update user preferences."""
 
     theme: str | None = None  # "light", "dark", "system"
-    language: str | None = None  # "auto", "en", "zh"
+    language: str | None = None  # "auto", "en", "zh", "es", "fr", "de", "ja", "ko"
+    browser_language: str | None = None  # Detected browser language (used when language="auto")
     hide_usage_disclaimer: bool | None = None  # Hide usage disclaimer warning
 
 
@@ -644,6 +645,11 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
     if request.hide_usage_disclaimer is not None:
         config.hide_usage_disclaimer = request.hide_usage_disclaimer
 
+    # Store browser-detected language (used when language="auto")
+    if request.browser_language is not None and request.browser_language in ("en", "zh", "es", "fr", "de", "ja", "ko"):
+        config.browser_language = request.browser_language
+        logger.debug("browser_language_updated", browser_language=request.browser_language)
+
     config_store.save(config)
     logger.info("preferences_updated", theme=config.theme, language=config.language)
 
@@ -652,6 +658,7 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
         "preferences": {
             "theme": config.theme,
             "language": config.language,
+            "browser_language": config.browser_language,
             "hide_usage_disclaimer": config.hide_usage_disclaimer,
         },
     }

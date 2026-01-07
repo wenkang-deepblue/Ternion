@@ -26,9 +26,10 @@ from ternion.router.prompts import (
     FINAL_CHECK_PROMPT,
     GLOBAL_SECURITY_RULES,
 )
-from ternion.utils.cursor_safety import sanitize_for_preview
+from ternion.utils.cursor_safety import sanitize_for_cursor_display, sanitize_for_preview
 from ternion.utils.i18n import MessageKey, t
 from ternion.utils.log_manager import log_manager
+from ternion.utils.report_parser import format_report_for_display
 from ternion.workflow.state import ReviewResult, TernionState, WorkflowPhase
 
 logger = structlog.get_logger(__name__)
@@ -161,6 +162,11 @@ async def divergence_node(state: TernionState) -> TernionState:
         Updated state with ternion analyses
     """
     logger.info("workflow_divergence_start")
+    log_manager.emit(
+        level="INFO",
+        category="WORKFLOW",
+        message="Divergence phase started | Parallel ternion analysis beginning",
+    )
 
     thinking_logs = list(state.get("thinking_logs", []))
     thinking_logs.append(t(MessageKey.DIVERGENCE_START))
@@ -318,6 +324,11 @@ async def convergence_node(state: TernionState) -> TernionState:
         Updated state with synthesized report
     """
     logger.info("workflow_convergence_start")
+    log_manager.emit(
+        level="INFO",
+        category="WORKFLOW",
+        message="Convergence phase started | Arbiter synthesizing analyses",
+    )
 
     thinking_logs = list(state.get("thinking_logs", []))
     thinking_logs.append(t(MessageKey.CONVERGENCE_START))
@@ -335,7 +346,30 @@ async def convergence_node(state: TernionState) -> TernionState:
             "is_consensus": False,
         }
 
-    # Build synthesis prompt
+    # Get effective language for report generation
+    user_config = config_store.load()
+    language_code = user_config.language
+    if language_code == "auto":
+        language_code = user_config.browser_language or "en"
+
+    # Language code to full name mapping
+    language_names = {
+        "en": "English",
+        "zh": "Simplified Chinese (简体中文)",
+        "es": "Spanish (Español)",
+        "fr": "French (Français)",
+        "de": "German (Deutsch)",
+        "ja": "Japanese (日本語)",
+        "ko": "Korean (한국어)",
+    }
+    language_name = language_names.get(language_code, "English")
+
+    # Create language instruction
+    language_instruction = f"Generate the entire report in {language_name}. All headings, bullet points, and explanations must be in {language_name}."
+
+    # Build synthesis prompt with language instruction
+    convergence_prompt_with_lang = CONVERGENCE_PROMPT.format(language_instruction=language_instruction)
+
     synthesis_content = "Council Analyses:\n\n"
     for analysis in successful_analyses:
         synthesis_content += f"### {analysis['ternion_id'].upper()}\n"
@@ -344,7 +378,7 @@ async def convergence_node(state: TernionState) -> TernionState:
     messages = [
         ChatMessage(
             role=MessageRole.SYSTEM,
-            content=_prepend_global_security_rules(CONVERGENCE_PROMPT),
+            content=_prepend_global_security_rules(convergence_prompt_with_lang),
         ),
         ChatMessage(role=MessageRole.USER, content=synthesis_content),
     ]
@@ -452,28 +486,38 @@ async def convergence_node(state: TernionState) -> TernionState:
                 message=f"Ternion Report generated (Len: {len(response.content)} chars). Content Preview: {response.content[:200].replace(chr(10), ' ')}..."
             )
 
-            # Use pre-sanitized report from session (generated at session creation)
-            # This ensures consistency with the session-level Cursor safety guarantee
-            sanitized_report = session.ternion_report_safe
+            # Generate a plain-text view of the report for display.
+            display_report = format_report_for_display(session.ternion_report_raw)
+            display_report_safe = sanitize_for_cursor_display(display_report)
 
-            # Build output with session markers (NO CODE FENCES)
             mode_description = (
-                "code implementation by Ternion"
+                t(MessageKey.EXECUTION_MODE_DESC_TERNION_FULL)
                 if execution_mode == ExecutionMode.TERNION_FULL
-                else "implementation handoff to Cursor"
+                else t(MessageKey.EXECUTION_MODE_DESC_CURSOR_HANDOFF)
+            )
+            session_path = f"~/.ternion/sessions/{session.session_id}.json"
+            raw_note = t(
+                MessageKey.REPORT_RAW_SESSION_NOTE,
+                path=session_path,
+                field="ternion_report_raw",
+            )
+            confirm_prompt_key = (
+                MessageKey.REPORT_CONFIRM_PROMPT_CURSOR_HANDOFF
+                if execution_mode == ExecutionMode.CURSOR_HANDOFF
+                else MessageKey.REPORT_CONFIRM_PROMPT
+            )
+            confirm_prompt = t(
+                confirm_prompt_key,
+                mode_desc=mode_description,
             )
 
-            final_output = f"""{sanitized_report}
+            final_output = f"""{display_report_safe}
 
 ---
 
-TERNION_SESSION_ID={session.session_id}
-TERNION_SESSION_STAGE=AWAITING_CONFIRMATION
-TERNION_EXECUTION_MODE={execution_mode.value}
-TERNION_REPORT_HASH={session.report_hash}
+{raw_note}
 
-Please review the analysis above. If correct, reply with your confirmation to proceed with {mode_description}.
-If you disagree or need adjustments, describe the issues and I will re-analyze."""
+{confirm_prompt}"""
 
             logger.info(
                 "convergence_awaiting_confirmation",
@@ -502,14 +546,260 @@ If you disagree or need adjustments, describe the issues and I will re-analyze."
             }
     except Exception as e:
         logger.error("convergence_failed", error=str(e))
-        # Use best available analysis as fallback
-        return {
-            **state,
-            "current_phase": WorkflowPhase.EXECUTION.value,
-            "ternion_report": successful_analyses[0]["analysis"],
-            "is_consensus": False,
-            "errors": state.get("errors", []) + [f"Convergence fallback: {str(e)}"],
-        }
+        log_manager.emit(
+            level="WARN",
+            category="WORKFLOW",
+            message=f"Arbiter failed: {str(e)[:80]}... Attempting ternion fallback",
+        )
+
+        # Try to use successful ternions as fallback Arbiter (Issue 2 fix)
+        # Priority: ternion_a → ternion_b → ternion_c
+        fallback_providers = []
+        for analysis in successful_analyses:
+            ternion_id = analysis.get("ternion_id")
+            cfg = config_store.get_role_config(ternion_id)
+            if cfg and cfg.provider and cfg.model:
+                fallback_providers.append({
+                    "ternion_id": ternion_id,
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                })
+
+        fallback_response = None
+        fallback_provider_name = None
+        fallback_model = None
+
+        for fallback_cfg in fallback_providers:
+            try:
+                fallback_provider = provider_manager.get_provider(fallback_cfg["provider"])
+                if not fallback_provider:
+                    continue
+
+                logger.info(
+                    "convergence_fallback_attempt",
+                    ternion_id=fallback_cfg["ternion_id"],
+                    provider=fallback_cfg["provider"],
+                )
+                log_manager.emit(
+                    level="INFO",
+                    category="WORKFLOW",
+                    message=f"Trying fallback Arbiter: {fallback_cfg['ternion_id']} ({fallback_cfg['provider']}/{fallback_cfg['model']})",
+                )
+
+                fallback_response = await _call_with_timeout(
+                    provider=fallback_provider,
+                    messages=messages,
+                    model=fallback_cfg["model"],
+                    temperature=0.5,
+                )
+                fallback_provider_name = fallback_provider.name
+                fallback_model = fallback_cfg["model"]
+
+                # Record usage for fallback
+                usage = fallback_response.usage or {}
+                input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+                completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+                thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
+                output_for_cost = completion_tokens if fallback_provider.name != "google" else completion_tokens + thoughts_tokens
+                budget_manager.record_usage(
+                    provider=fallback_provider.name,
+                    model=fallback_cfg["model"],
+                    input_tokens=input_tokens,
+                    output_tokens=output_for_cost,
+                    thoughts_tokens=thoughts_tokens,
+                    context_length=usage.get("total_tokens", 0),
+                )
+                if input_tokens or output_for_cost or thoughts_tokens:
+                    log_manager.emit(
+                        level="INFO",
+                        category="WORKFLOW",
+                        message=(
+                            f"convergence_fallback_usage | provider={fallback_provider.name} | "
+                            f"model={fallback_cfg['model']} | "
+                            f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens}"
+                        ),
+                    )
+
+                logger.info(
+                    "convergence_fallback_success",
+                    ternion_id=fallback_cfg["ternion_id"],
+                    provider=fallback_cfg["provider"],
+                )
+                log_manager.emit(
+                    level="INFO",
+                    category="WORKFLOW",
+                    message=f"Fallback Arbiter succeeded: {fallback_cfg['ternion_id']}",
+                )
+                break  # Success, exit fallback loop
+
+            except Exception as fallback_error:
+                logger.warning(
+                    "convergence_fallback_failed",
+                    ternion_id=fallback_cfg["ternion_id"],
+                    error=str(fallback_error),
+                )
+                log_manager.emit(
+                    level="WARN",
+                    category="WORKFLOW",
+                    message=f"Fallback Arbiter failed: {fallback_cfg['ternion_id']} - {str(fallback_error)[:50]}",
+                )
+                continue  # Try next fallback
+
+        # If fallback succeeded, use the synthesized report
+        if fallback_response:
+            thinking_logs.append(t(MessageKey.CONVERGENCE_ERROR, error=f"Used fallback: {fallback_provider_name}/{fallback_model}"))
+            preview = sanitize_for_preview(fallback_response.content, max_length=80)
+            thinking_logs.append(t(MessageKey.CONVERGENCE_COMPLETE, preview=preview))
+
+            # Continue with normal flow using fallback response
+            execution_mode_str = state.get("execution_mode", "") or config_store.load().execution_mode
+            if execution_mode_str not in ("cursor_handoff", "ternion_full"):
+                error_msg = t(MessageKey.EXECUTION_MODE_NOT_CONFIGURED)
+                logger.error("execution_mode_not_configured")
+                return {
+                    **state,
+                    "current_phase": WorkflowPhase.COMPLETE.value,
+                    "errors": state.get("errors", []) + [error_msg],
+                    "thinking_logs": thinking_logs + [t(MessageKey.CONVERGENCE_ERROR, error=error_msg)],
+                }
+
+            execution_mode = ExecutionMode(execution_mode_str)
+            await_confirmation = state.get("await_confirmation", True)
+
+            if await_confirmation:
+                session = session_store.create_session(
+                    ternion_report=fallback_response.content,
+                    execution_mode=execution_mode,
+                    original_context={
+                        "conversation_history": state.get("conversation_history", []),
+                        "cursor_system_prompt": state.get("cursor_system_prompt"),
+                    },
+                )
+
+                log_manager.emit(
+                    level="INFO",
+                    category="SESSION",
+                    message=f"Session created (via fallback Arbiter): {session.session_id} | Mode: {execution_mode.value}",
+                )
+
+                display_report = format_report_for_display(session.ternion_report_raw)
+                display_report_safe = sanitize_for_cursor_display(display_report)
+                mode_description = (
+                    t(MessageKey.EXECUTION_MODE_DESC_TERNION_FULL)
+                    if execution_mode == ExecutionMode.TERNION_FULL
+                    else t(MessageKey.EXECUTION_MODE_DESC_CURSOR_HANDOFF)
+                )
+                session_path = f"~/.ternion/sessions/{session.session_id}.json"
+                raw_note = t(
+                    MessageKey.REPORT_RAW_SESSION_NOTE,
+                    path=session_path,
+                    field="ternion_report_raw",
+                )
+                confirm_prompt_key = (
+                    MessageKey.REPORT_CONFIRM_PROMPT_CURSOR_HANDOFF
+                    if execution_mode == ExecutionMode.CURSOR_HANDOFF
+                    else MessageKey.REPORT_CONFIRM_PROMPT
+                )
+                confirm_prompt = t(
+                    confirm_prompt_key,
+                    mode_desc=mode_description,
+                )
+
+                final_output = f"""{display_report_safe}
+
+---
+
+{raw_note}
+
+{confirm_prompt}"""
+
+                return {
+                    **state,
+                    "current_phase": WorkflowPhase.CONVERGENCE.value,
+                    "ternion_report": fallback_response.content,
+                    "is_consensus": len(successful_analyses) > 1,
+                    "thinking_logs": thinking_logs,
+                    "session_id": session.session_id,
+                    "await_confirmation": True,
+                    "final_output": final_output,
+                }
+            else:
+                return {
+                    **state,
+                    "current_phase": WorkflowPhase.EXECUTION.value,
+                    "ternion_report": fallback_response.content,
+                    "is_consensus": len(successful_analyses) > 1,
+                    "thinking_logs": thinking_logs,
+                }
+
+        # All fallbacks failed - use raw analysis as last resort
+        fallback_report = successful_analyses[0]["analysis"]
+        thinking_logs.append(t(MessageKey.CONVERGENCE_ERROR, error="All Arbiters failed, using raw analysis"))
+        log_manager.emit(
+            level="WARN",
+            category="WORKFLOW",
+            message="All Arbiter attempts failed, using raw ternion analysis as fallback",
+        )
+
+        execution_mode_str = state.get("execution_mode", "") or config_store.load().execution_mode
+
+        if execution_mode_str == "cursor_handoff":
+            execution_mode = ExecutionMode.CURSOR_HANDOFF
+            session = session_store.create_session(
+                ternion_report=fallback_report,
+                execution_mode=execution_mode,
+                original_context={
+                    "conversation_history": state.get("conversation_history", []),
+                    "cursor_system_prompt": state.get("cursor_system_prompt"),
+                },
+            )
+
+            log_manager.emit(
+                level="WARN",
+                category="SESSION",
+                message=f"Session created with raw analysis (all Arbiters failed): {session.session_id}",
+            )
+
+            display_report = format_report_for_display(session.ternion_report_raw)
+            display_report_safe = sanitize_for_cursor_display(display_report)
+            fallback_warning = t(MessageKey.CONVERGENCE_FALLBACK_WARNING)
+            fallback_confirm = t(MessageKey.CONVERGENCE_FALLBACK_CONFIRM)
+            session_path = f"~/.ternion/sessions/{session.session_id}.json"
+            raw_note = t(
+                MessageKey.REPORT_RAW_SESSION_NOTE,
+                path=session_path,
+                field="ternion_report_raw",
+            )
+            final_output = f"""{display_report_safe}
+
+---
+
+{fallback_warning}
+
+{raw_note}
+
+{fallback_confirm}"""
+
+            return {
+                **state,
+                "current_phase": WorkflowPhase.CONVERGENCE.value,
+                "ternion_report": fallback_report,
+                "is_consensus": False,
+                "thinking_logs": thinking_logs,
+                "session_id": session.session_id,
+                "await_confirmation": True,
+                "final_output": final_output,
+                "errors": state.get("errors", []) + [f"All Arbiter fallbacks failed: {str(e)}"],
+            }
+        else:
+            return {
+                **state,
+                "current_phase": WorkflowPhase.EXECUTION.value,
+                "ternion_report": fallback_report,
+                "is_consensus": False,
+                "thinking_logs": thinking_logs,
+                "errors": state.get("errors", []) + [f"All Arbiter fallbacks failed: {str(e)}"],
+            }
 
 
 async def execution_node(state: TernionState) -> TernionState:
@@ -527,6 +817,11 @@ async def execution_node(state: TernionState) -> TernionState:
         Updated state with generated code
     """
     logger.info("workflow_execution_start")
+    log_manager.emit(
+        level="INFO",
+        category="WORKFLOW",
+        message="Execution phase started | Writer generating code",
+    )
 
     thinking_logs = list(state.get("thinking_logs", []))
     thinking_logs.append(t(MessageKey.EXECUTION_START))
@@ -697,6 +992,11 @@ async def final_check_node(state: TernionState) -> TernionState:
         Updated state with review result
     """
     logger.info("workflow_final_check_start")
+    log_manager.emit(
+        level="INFO",
+        category="WORKFLOW",
+        message="Final check phase started | Reviewer verifying code",
+    )
 
     thinking_logs = list(state.get("thinking_logs", []))
     thinking_logs.append(t(MessageKey.REVIEW_START))

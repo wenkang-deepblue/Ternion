@@ -41,6 +41,7 @@ export interface Config {
   preferences?: {
     theme: string;
     language: string;
+    browser_language?: string;
     hide_usage_disclaimer?: boolean;
   };
   updated_at?: string;
@@ -235,8 +236,9 @@ class ApiClient {
   async updatePreferences(prefs: {
     theme?: string;
     language?: string;
+    browser_language?: string;
     hide_usage_disclaimer?: boolean;
-  }): Promise<{ success: boolean; preferences: { theme: string; language: string; hide_usage_disclaimer: boolean } }> {
+  }): Promise<{ success: boolean; preferences: { theme: string; language: string; browser_language: string; hide_usage_disclaimer: boolean } }> {
     return this.request('/preferences', {
       method: 'PUT',
       body: JSON.stringify(prefs),

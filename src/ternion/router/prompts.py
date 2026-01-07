@@ -188,6 +188,9 @@ REFERENCE TEMPLATE (structure only; DO NOT copy content!):
 </EXAMPLE>
 
 Before finalizing, verify you produced all 7 required ## headings exactly once, in order, and both ### subheadings under Verification. If not, rewrite your answer to comply.
+
+*** OUTPUT LANGUAGE ***
+{language_instruction}
 """
 
 # ==============================================================================
