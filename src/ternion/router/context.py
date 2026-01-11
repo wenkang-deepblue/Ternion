@@ -6,9 +6,12 @@ Holds the decomposed message context extracted by MessageRouter.
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ternion.core.models import ChatMessage
+
+if TYPE_CHECKING:
+    from ternion.workflow.streaming_events import StreamEventQueue
 
 
 class DiscussionPhase(Enum):
@@ -50,6 +53,9 @@ class TernionContext:
     # Execution mode is intentionally empty by default. Must be explicitly configured in Web UI.
     execution_mode: str = ""  # "ternion_full" | "cursor_handoff" | ""
     rejection_context: str = ""  # User's rejection feedback for re-analysis
+
+    # Streaming event queue (internal, for real-time output forwarding)
+    _stream_queue: "StreamEventQueue | None" = None
 
     @property
     def is_empty(self) -> bool:

@@ -3,7 +3,7 @@ name = "ternion"
 version = "0.1.0"
 description = "A local LLM proxy gateway that orchestrates multi-model technical discussions"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.12"
 authors = [
     { name = "Ternion Contributors" }
@@ -12,7 +12,7 @@ keywords = ["llm", "ai", "proxy", "gateway", "multi-model", "discussion", "curso
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",

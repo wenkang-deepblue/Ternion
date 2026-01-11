@@ -58,6 +58,18 @@ def should_continue_after_review(state: TernionState) -> str:
         return END
 
 
+def should_continue_after_execution(state: TernionState) -> str:
+    """
+    Determine next step after execution.
+
+    Only proceed to final_check if execution succeeded and advanced the workflow.
+    """
+    phase = state.get("current_phase", "")
+    if phase == WorkflowPhase.FINAL_CHECK.value:
+        return "final_check"
+    return END
+
+
 def create_workflow() -> StateGraph:
     """
     Create the Ternion discussion workflow graph.
@@ -94,7 +106,14 @@ def create_workflow() -> StateGraph:
             END: END,
         },
     )
-    workflow.add_edge("execution", "final_check")
+    workflow.add_conditional_edges(
+        "execution",
+        should_continue_after_execution,
+        {
+            "final_check": "final_check",
+            END: END,
+        },
+    )
     workflow.add_conditional_edges(
         "final_check",
         should_continue_after_review,
@@ -156,6 +175,8 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         "await_confirmation": getattr(context, "await_confirmation", True),  # Default: require confirmation
         "execution_mode": getattr(context, "execution_mode", ""),
         "rejection_context": getattr(context, "rejection_context", ""),
+        # Streaming event queue (for real-time output)
+        "_stream_queue": getattr(context, "_stream_queue", None),
         # Workflow outputs
         "ternion_analyses": [],
         "is_consensus": False,

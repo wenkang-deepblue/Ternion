@@ -94,3 +94,7 @@ class TernionState(TypedDict, total=False):
     # Final result
     final_output: str
 
+    # Streaming event queue (internal, for real-time output forwarding)
+    # This is set by routes.py and consumed by nodes for streaming LLM output
+    # Using Any to avoid LangGraph type resolution issues with forward references
+    _stream_queue: Any

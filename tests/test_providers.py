@@ -93,3 +93,19 @@ class TestProviderManager:
         # The list depends on environment configuration
         providers = provider_manager.available_providers
         assert isinstance(providers, list)
+
+
+class TestOpenAIProviderFallback:
+    """Tests for OpenAI provider fallbacks."""
+
+    def test_non_chat_model_error_detection(self) -> None:
+        """Trigger fallback only for explicit chat endpoint mismatch errors."""
+        from ternion.providers.openai import OpenAIProvider
+
+        err = RuntimeError(
+            "Error code: 404 - {'error': {'message': 'This is not a chat model and thus not supported in the v1/chat/completions endpoint. Did you mean to use v1/completions?'}}"
+        )
+        assert OpenAIProvider._is_non_chat_model_error(err) is True
+
+        other = RuntimeError("Error code: 404 - {'error': {'message': 'Model not found'}}")
+        assert OpenAIProvider._is_non_chat_model_error(other) is False

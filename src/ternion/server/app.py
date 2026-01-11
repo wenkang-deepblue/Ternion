@@ -98,6 +98,10 @@ app.add_middleware(
 
 # Include routes
 app.include_router(router)
+# Compatibility alias: Some clients accidentally double-append "/v1" to the configured
+# base URL, resulting in requests like "/v1/v1/chat/completions". Including the same
+# router under prefix="/v1" makes those paths work without changing user settings.
+app.include_router(router, prefix="/v1", include_in_schema=False)
 app.include_router(control_router)  # Control Panel API
 
 

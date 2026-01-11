@@ -18,6 +18,7 @@ from ternion.core.session_store import (
     ExecutionMode,
     session_store,
 )
+from ternion.providers.base import ProviderResponse
 from ternion.providers.manager import provider_manager
 from ternion.router.prompts import (
     CONVERGENCE_PROMPT,
@@ -31,6 +32,7 @@ from ternion.utils.i18n import MessageKey, t
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import format_report_for_display
 from ternion.workflow.state import ReviewResult, TernionState, WorkflowPhase
+from ternion.workflow.streaming_events import StreamEventQueue
 
 logger = structlog.get_logger(__name__)
 
@@ -81,6 +83,118 @@ async def _call_with_timeout(
             operation=f"chat_completion ({provider.name})",
             timeout_seconds=timeout,
         ) from None
+
+
+async def _call_with_stream(
+    provider: Any,
+    messages: list[ChatMessage],
+    model: str,
+    temperature: float,
+    stream_queue: StreamEventQueue | None = None,
+    phase: str = "",
+    message_id: str = "",
+    timeout_seconds: int | None = None,
+) -> ProviderResponse:
+    """
+    Call provider.chat_completion_stream with real-time token forwarding.
+
+    This function streams LLM output tokens to the provided queue while
+    accumulating the full response. If no queue is provided, falls back
+    to non-streaming call.
+
+    Args:
+        provider: Provider instance with chat_completion_stream method
+        messages: Chat messages
+        model: Model to use
+        temperature: Sampling temperature
+        stream_queue: Optional queue to receive incremental tokens
+        phase: Current workflow phase (for event metadata)
+        message_id: Message identifier (for event metadata)
+        timeout_seconds: Optional timeout override
+
+    Returns:
+        ProviderResponse with the complete generated content
+
+    Raises:
+        TernionTimeout: If request times out
+    """
+    # If no queue provided, fall back to non-streaming call
+    if stream_queue is None:
+        return await _call_with_timeout(
+            provider=provider,
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+        )
+
+    timeout = timeout_seconds or DEFAULT_TIMEOUT_SECONDS
+    full_content = ""
+
+    try:
+        # Signal phase start
+        await stream_queue.put_phase_start(phase, provider=provider.name, model=model)
+
+        # Create stream generator
+        stream_gen = provider.chat_completion_stream(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+        )
+
+        # Consume stream with an idle timeout between chunks.
+        async def consume_stream() -> str:
+            nonlocal full_content
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(stream_gen.__anext__(), timeout=timeout)
+                except StopAsyncIteration:
+                    break
+                if not chunk:
+                    continue
+                full_content += chunk
+                await stream_queue.put_token(
+                    delta=chunk,
+                    phase=phase,
+                    message_id=message_id,
+                )
+            return full_content
+
+        full_content = await consume_stream()
+
+        # Signal completion with final content
+        await stream_queue.put_final(
+            content=full_content,
+            phase=phase,
+            message_id=message_id,
+        )
+
+        # Note: Token usage is tracked inside provider.chat_completion_stream
+        # We return a simplified ProviderResponse here
+        return ProviderResponse(
+            content=full_content,
+            finish_reason="stop",
+            usage={},  # Usage is tracked by provider internally
+        )
+
+    except TimeoutError:
+        log_manager.emit(
+            "ERROR",
+            "LLM",
+            f"Provider stream timeout: {provider.name} did not complete within {timeout}s",
+        )
+        await stream_queue.put_error(
+            f"Stream timeout after {timeout}s",
+            phase=phase,
+        )
+        raise TernionTimeout(
+            operation=f"chat_completion_stream ({provider.name})",
+            timeout_seconds=timeout,
+        ) from None
+    except Exception as e:
+        logger.exception("stream_error", provider=provider.name, error=str(e))
+        await stream_queue.put_error(str(e), phase=phase)
+        raise
 
 
 def _prepend_global_security_rules(prompt: str) -> str:
@@ -404,11 +518,19 @@ async def convergence_node(state: TernionState) -> TernionState:
                 ],
             }
 
-        response = await _call_with_timeout(
+        # Get stream queue from state for real-time output (if available)
+        stream_queue: StreamEventQueue | None = state.get("_stream_queue")
+        session_id = state.get("session_id", "")
+
+        # Use streaming call if queue is available, otherwise fall back to non-streaming
+        response = await _call_with_stream(
             provider=provider,
             messages=messages,
             model=model,
             temperature=0.5,  # Lower temperature for synthesis
+            stream_queue=stream_queue,
+            phase="convergence",
+            message_id=session_id,
         )
         usage = response.usage or {}
         input_tokens = (
@@ -511,13 +633,20 @@ async def convergence_node(state: TernionState) -> TernionState:
                 mode_desc=mode_description,
             )
 
+            session_markers = f"""TERNION_SESSION_ID={session.session_id}
+TERNION_SESSION_STAGE=AWAITING_CONFIRMATION
+TERNION_EXECUTION_MODE={execution_mode.value}
+TERNION_REPORT_HASH={session.report_hash}"""
+
             final_output = f"""{display_report_safe}
 
 ---
 
 {raw_note}
 
-{confirm_prompt}"""
+{confirm_prompt}
+
+{session_markers}"""
 
             logger.info(
                 "convergence_awaiting_confirmation",
@@ -705,13 +834,20 @@ async def convergence_node(state: TernionState) -> TernionState:
                     mode_desc=mode_description,
                 )
 
+                session_markers = f"""TERNION_SESSION_ID={session.session_id}
+TERNION_SESSION_STAGE=AWAITING_CONFIRMATION
+TERNION_EXECUTION_MODE={execution_mode.value}
+TERNION_REPORT_HASH={session.report_hash}"""
+
                 final_output = f"""{display_report_safe}
 
 ---
 
 {raw_note}
 
-{confirm_prompt}"""
+{confirm_prompt}
+
+{session_markers}"""
 
                 return {
                     **state,
@@ -770,6 +906,11 @@ async def convergence_node(state: TernionState) -> TernionState:
                 path=session_path,
                 field="ternion_report_raw",
             )
+            session_markers = f"""TERNION_SESSION_ID={session.session_id}
+TERNION_SESSION_STAGE=AWAITING_CONFIRMATION
+TERNION_EXECUTION_MODE={execution_mode.value}
+TERNION_REPORT_HASH={session.report_hash}"""
+
             final_output = f"""{display_report_safe}
 
 ---
@@ -778,7 +919,9 @@ async def convergence_node(state: TernionState) -> TernionState:
 
 {raw_note}
 
-{fallback_confirm}"""
+{fallback_confirm}
+
+{session_markers}"""
 
             return {
                 **state,
@@ -921,12 +1064,22 @@ async def execution_node(state: TernionState) -> TernionState:
                 ],
             }
 
-        response = await _call_with_timeout(
+        # Get stream queue from state for real-time output (if available)
+        stream_queue: StreamEventQueue | None = state.get("_stream_queue")
+        session_id = state.get("session_id", "")
+
+        # Use streaming call if queue is available, otherwise fall back to non-streaming
+        response = await _call_with_stream(
             provider=provider,
             messages=messages,
             model=model,
             temperature=0.3,  # Lower temperature for code generation
+            stream_queue=stream_queue,
+            phase="execution",
+            message_id=session_id,
         )
+        if not (response.content or "").strip():
+            raise ValueError("writer_returned_empty_output")
         usage = response.usage or {}
         input_tokens = (
             usage.get("prompt_tokens")
@@ -970,11 +1123,18 @@ async def execution_node(state: TernionState) -> TernionState:
         }
     except Exception as e:
         logger.error("execution_failed", error=str(e))
+        log_manager.emit(
+            level="ERROR",
+            category="WORKFLOW",
+            message=f"Execution failed | error={str(e)}",
+        )
         return {
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
             "generated_code": "",
             "errors": state.get("errors", []) + [f"Execution failed: {str(e)}"],
+            "thinking_logs": thinking_logs
+            + [t(MessageKey.EXECUTION_ERROR, error=str(e))],
         }
 
 
@@ -1014,6 +1174,7 @@ async def final_check_node(state: TernionState) -> TernionState:
             "review_result": ReviewResult.APPROVED.value,
             "review_feedback": "Max revisions reached, proceeding with current code.",
             "final_output": generated_code,
+            "thinking_logs": thinking_logs,
         }
 
     # Build review messages with analysis context
@@ -1127,6 +1288,11 @@ async def final_check_node(state: TernionState) -> TernionState:
             }
     except Exception as e:
         logger.warning("review_failed", error=str(e))
+        log_manager.emit(
+            level="WARN",
+            category="WORKFLOW",
+            message=f"Final check failed (skipped) | error={str(e)}",
+        )
         # Skip review on failure, approve the code
         return {
             **state,
@@ -1135,4 +1301,6 @@ async def final_check_node(state: TernionState) -> TernionState:
             "review_feedback": f"Review skipped due to error: {str(e)}",
             "final_output": generated_code,
             "errors": state.get("errors", []) + [f"Review skipped: {str(e)}"],
+            "thinking_logs": thinking_logs
+            + [t(MessageKey.FINAL_CHECK_ERROR, error=str(e))],
         }

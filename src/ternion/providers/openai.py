@@ -98,8 +98,59 @@ class OpenAIProvider(BaseProvider):
         }
         if max_tokens is not None:
             api_params["max_tokens"] = max_tokens
+        try:
+            response = await self._client.chat.completions.create(**api_params)  # type: ignore
+        except Exception as e:
+            if self._is_non_chat_model_error(e):
+                prompt = self._messages_to_prompt(messages)
+                if prompt is None:
+                    raise
+                completion_params: dict[str, Any] = {
+                    "model": model,
+                    "prompt": prompt,
+                    "temperature": temperature,
+                    **kwargs,
+                }
+                if max_tokens is not None:
+                    completion_params["max_tokens"] = max_tokens
+                completion = await self._client.completions.create(**completion_params)  # type: ignore
+                choice = completion.choices[0]
+                usage = completion.usage
 
-        response = await self._client.chat.completions.create(**api_params)  # type: ignore
+                prompt_tokens = usage.prompt_tokens if usage else 0
+                completion_tokens = usage.completion_tokens if usage else 0
+                total_tokens = usage.total_tokens if usage else 0
+
+                logger.info(
+                    "openai_token_usage",
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    reasoning_tokens=0,
+                    total_tokens=total_tokens,
+                )
+
+                log_manager.emit_token_usage(
+                    provider="openai",
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    thoughts_tokens=0,
+                    total_tokens=total_tokens,
+                )
+
+                return ProviderResponse(
+                    content=getattr(choice, "text", "") or "",
+                    finish_reason=getattr(choice, "finish_reason", None),
+                    usage={
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "reasoning_tokens": 0,
+                        "total_tokens": total_tokens,
+                    },
+                    raw_response=completion,
+                )
+            raise
 
         choice = response.choices[0]
         usage = response.usage
@@ -333,3 +384,49 @@ class OpenAIProvider(BaseProvider):
                     "content": str(msg.content) if msg.content else "",
                 })
         return result
+
+    @staticmethod
+    def _is_non_chat_model_error(error: Exception) -> bool:
+        """
+        Detect errors that indicate a model is not compatible with /v1/chat/completions.
+
+        We intentionally keep this logic conservative and only trigger the fallback when the
+        provider explicitly indicates the endpoint mismatch.
+        """
+        msg = str(error).lower()
+        return ("not a chat model" in msg) and ("v1/chat/completions" in msg)
+
+    def _messages_to_prompt(self, messages: list[ChatMessage]) -> str | None:
+        """
+        Convert chat messages into a single prompt string for /v1/completions fallback.
+
+        Returns None if messages contain images (unsupported for text completions fallback).
+        """
+        parts: list[str] = []
+        for msg in messages:
+            role = msg.role.value.upper()
+            text = self._content_to_text(msg.content)
+            if text is None:
+                return None
+            parts.append(f"{role}:\n{text}\n\n")
+        parts.append("ASSISTANT:\n")
+        return "".join(parts)
+
+    @staticmethod
+    def _content_to_text(content: object) -> str | None:
+        """Best-effort conversion of message content into plain text."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            out: list[str] = []
+            for part in content:
+                if isinstance(part, TextContent):
+                    out.append(part.text)
+                elif isinstance(part, ImageContent):
+                    return None
+                else:
+                    out.append(str(part))
+            return "\n".join(out)
+        return str(content)

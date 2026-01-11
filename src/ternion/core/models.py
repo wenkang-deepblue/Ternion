@@ -10,7 +10,7 @@ import uuid
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # ============================================================================
 # Message Content Types (for multimodal support)
@@ -91,6 +91,136 @@ class ChatCompletionRequest(BaseModel):
     tools: list[Any] | None = None
     tool_choice: Any | None = None
     response_format: dict[str, str] | None = None
+
+    # ------------------------------------------------------------------------
+    # Compatibility fields (Cursor / OpenAI Responses API)
+    # ------------------------------------------------------------------------
+    # Cursor (newer versions) may send OpenAI "Responses API"-style payloads to an
+    # OpenAI-compatible endpoint. Those payloads use `input` (or sometimes `prompt`)
+    # instead of `messages`. We accept these fields and coerce them into `messages`
+    # during validation to remain compatible across Cursor versions.
+    input: Any | None = None
+    prompt: str | None = None
+    max_output_tokens: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_compat_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        # Map Responses API token field → Chat Completions field.
+        if data.get("max_tokens") is None and isinstance(data.get("max_output_tokens"), int):
+            data["max_tokens"] = data.get("max_output_tokens")
+
+        # Coerce Responses API `input`/`prompt` into Chat Completions `messages`.
+        if not data.get("messages"):
+            if "input" in data:
+                data["messages"] = cls._input_to_messages(data.get("input"))
+            elif isinstance(data.get("prompt"), str) and data.get("prompt"):
+                data["messages"] = [{"role": "user", "content": data.get("prompt")}]
+
+        return data
+
+    @staticmethod
+    def _normalize_input_content(content: Any) -> Any:
+        """
+        Best-effort normalization of Responses API content into ChatMessage content.
+
+        - `input_text` → `text`
+        - `input_image` → `image_url`
+        """
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+
+        # Responses-style single content part as object
+        if isinstance(content, dict):
+            return ChatCompletionRequest._normalize_input_content([content])
+
+        if isinstance(content, list):
+            normalized: list[dict[str, Any]] = []
+            for part in content:
+                if part is None:
+                    continue
+                if isinstance(part, str):
+                    normalized.append({"type": "text", "text": part})
+                    continue
+                if not isinstance(part, dict):
+                    normalized.append({"type": "text", "text": str(part)})
+                    continue
+
+                ptype = str(part.get("type", "") or "").strip()
+                if ptype in {"input_text", "text", "output_text"}:
+                    text = part.get("text")
+                    if text is None:
+                        # Some clients may use `content` or `delta` for text chunks.
+                        text = part.get("content") if part.get("content") is not None else part.get("delta")
+                    normalized.append({"type": "text", "text": "" if text is None else str(text)})
+                    continue
+
+                if ptype in {"input_image", "image_url"}:
+                    # Try several common shapes:
+                    # - {"type":"image_url","image_url":{"url":"...","detail":"auto"}}
+                    # - {"type":"input_image","image_url":"..."}
+                    # - {"type":"input_image","image_url":{"url":"..."}}
+                    url = ""
+                    detail: str = "auto"
+                    image_url = part.get("image_url") if part.get("image_url") is not None else part.get("url")
+                    if isinstance(image_url, dict):
+                        url = str(image_url.get("url") or "")
+                        detail_val = image_url.get("detail")
+                        if isinstance(detail_val, str):
+                            detail = detail_val
+                    elif isinstance(image_url, str):
+                        url = image_url
+
+                    if detail not in {"auto", "low", "high"}:
+                        detail = "auto"
+                    normalized.append({"type": "image_url", "image_url": {"url": url, "detail": detail}})
+                    continue
+
+                # Fallback: preserve information as text.
+                normalized.append({"type": "text", "text": str(part)})
+
+            # If we only ended up with text parts, returning a list is still valid
+            # (multimodal format). Keep it as list for deterministic parsing.
+            return normalized
+
+        return str(content)
+
+    @staticmethod
+    def _input_to_messages(input_value: Any) -> list[dict[str, Any]]:
+        """Convert Responses API `input` into Chat Completions `messages`."""
+        if input_value is None:
+            return [{"role": "user", "content": ""}]
+        if isinstance(input_value, str):
+            return [{"role": "user", "content": input_value}]
+
+        items: list[Any]
+        if isinstance(input_value, list):
+            items = input_value
+        else:
+            items = [input_value]
+
+        messages: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, dict) and "role" in item:
+                role = item.get("role") or "user"
+                content = item.get("content")
+                if content is None and "text" in item:
+                    content = item.get("text")
+                messages.append(
+                    {
+                        "role": role,
+                        "content": ChatCompletionRequest._normalize_input_content(content),
+                    }
+                )
+            else:
+                # Fallback: treat unknown input shapes as a single user message.
+                messages.append({"role": "user", "content": str(item)})
+        return messages
 
 
 # ============================================================================

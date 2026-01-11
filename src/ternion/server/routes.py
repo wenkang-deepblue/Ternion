@@ -4,10 +4,11 @@ API routes for Ternion gateway.
 Implements OpenAI-compatible endpoints for chat completions and models listing.
 """
 
+from collections.abc import Iterable
 import re
 
 import structlog
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ternion.core.budget import budget_manager
@@ -37,10 +38,12 @@ from ternion.core.session_store import (
 from ternion.providers.manager import provider_manager
 from ternion.router.message_router import MessageRouter
 from ternion.utils.cursor_safety import sanitize_for_cursor_display
+from ternion.utils.cursor_request_capture import schedule_cursor_request_capture
 from ternion.utils.i18n import MessageKey, get_web_base_url, t
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import parse_structured_report
-from ternion.utils.streaming import create_sse_stream
+from ternion.utils.streaming import create_sse_stream, create_sse_stream_from_queue
+from ternion.workflow.streaming_events import StreamEventQueue
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -52,6 +55,89 @@ _PATCHLIKE_TRIGGERS = (
     "*** Add File:",
     "diff --git",
 )
+
+
+_CURSOR_NON_AGENT_MODE_HINTS = (
+    # Ask mode
+    "Ask mode is active",
+    "The user is in ask mode",
+    # Plan mode
+    "Plan mode is active",
+    # Debug mode
+    "Debug mode is active",
+    "You are now in **DEBUG MODE**",
+    "debug_mode_logging",
+)
+
+
+def _iter_message_content_text(content: object) -> Iterable[str]:
+    """
+    Yield all plain text segments from an OpenAI-compatible message content.
+
+    Cursor may send message content as either:
+    - a plain string
+    - a multimodal list of content parts (text + image_url)
+
+    This helper extracts only text parts for lightweight, in-memory mode detection.
+    """
+    if isinstance(content, str):
+        text = content.strip()
+        if text:
+            yield text
+        return
+
+    if isinstance(content, list):
+        for part in content:
+            part_type = getattr(part, "type", None)
+            if part_type != "text":
+                continue
+            text = getattr(part, "text", None)
+            if isinstance(text, str):
+                text = text.strip()
+                if text:
+                    yield text
+
+
+def _request_contains_case_insensitive(request: ChatCompletionRequest, needle: str) -> bool:
+    """
+    Check whether any request message contains the given substring (case-insensitive).
+
+    This avoids persisting or logging Cursor's system prompt while still allowing
+    best-effort detection of Ask/Plan/Debug vs Agent modes.
+    """
+    if not needle:
+        return False
+    needle_lower = needle.lower()
+    for msg in request.messages:
+        for text in _iter_message_content_text(msg.content):
+            if needle_lower in text.lower():
+                return True
+    return False
+
+
+def _is_high_confidence_non_agent_mode(request: ChatCompletionRequest) -> bool:
+    """
+    Detect non-agent Cursor modes (Ask/Plan/Debug) from in-band system reminders.
+
+    Cursor may include a <system_reminder> block in user messages that explicitly
+    states a non-agent mode (e.g., "Ask mode is active") and instructs switching
+    to Agent mode for code changes. When present, we treat the request as non-agent
+    regardless of tools/tool_choice fields.
+    """
+    return any(
+        _request_contains_case_insensitive(request, hint) for hint in _CURSOR_NON_AGENT_MODE_HINTS
+    )
+
+
+def _is_cursor_agent_request(request: ChatCompletionRequest) -> bool:
+    """
+    Best-effort detection for Cursor Agent mode requests.
+
+    This detection is intentionally conservative:
+    - Return False for non-agent modes (Ask/Plan/Debug).
+    - Return True when no non-agent mode marker is present.
+    """
+    return not _is_high_confidence_non_agent_mode(request)
 
 
 def _is_patch_or_diff_output(text: str) -> bool:
@@ -328,15 +414,441 @@ TERNION_MODELS = [
 message_router = MessageRouter()
 
 
+async def _run_discussion_streaming(
+    context: "TernionContext",
+    model: str,
+    budget_warning: str | None,
+    show_thinking_logs: bool,
+) -> StreamingResponse:
+    """
+    Run the Ternion discussion workflow with real-time streaming output.
+
+    This function creates a StreamEventQueue, passes it to the workflow,
+    and returns an SSE response that forwards LLM tokens in real-time.
+
+    Args:
+        context: The extracted context from the Cursor request
+        model: Model name for SSE response
+        budget_warning: Optional budget warning to prepend
+        show_thinking_logs: Whether to include thinking logs in output
+
+    Returns:
+        StreamingResponse with real-time SSE events
+    """
+    import asyncio
+    from collections.abc import AsyncGenerator
+
+    from ternion.workflow.graph import run_discussion
+    from ternion.workflow.streaming_events import StreamEventQueue, StreamEventType
+
+    # Create event queue for streaming
+    stream_queue = StreamEventQueue()
+
+    # Inject queue into context so workflow can access it
+    context._stream_queue = stream_queue  # type: ignore[attr-defined]
+
+    async def generate_sse() -> AsyncGenerator[str, None]:
+        """SSE generator that consumes events from the queue."""
+        import time
+        import uuid
+
+        from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
+
+        chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+        final_state: dict = {}
+
+        # Start workflow in background task
+        async def run_workflow() -> None:
+            nonlocal final_state
+            try:
+                final_state = await run_discussion(context)
+            except Exception as e:
+                logger.exception("streaming_workflow_error", error=str(e))
+                await stream_queue.put_error(str(e))
+            finally:
+                stream_queue.close()
+
+        # Launch workflow task
+        workflow_task = asyncio.create_task(run_workflow())
+
+        # Send budget warning first if present
+        if budget_warning:
+            from ternion.core.budget import budget_manager
+            warning_text = budget_manager.format_budget_warning(budget_warning)
+            chunk = ChatCompletionChunk(
+                id=chunk_id,
+                created=created,
+                model=model,
+                choices=[StreamChoice(delta=ChoiceDelta(content=warning_text))],
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+
+        # Variables for final output assembly
+        streamed_content = ""
+        current_phase = ""
+
+        try:
+            # Consume events from queue
+            async for event in stream_queue:
+                if event.event_type == StreamEventType.TOKEN_DELTA:
+                    # Forward token delta as SSE chunk
+                    if event.delta:
+                        streamed_content += event.delta
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=event.delta))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                elif event.event_type == StreamEventType.PHASE_START:
+                    current_phase = event.phase
+                    # Optionally emit phase start indicator
+                    if show_thinking_logs and event.phase:
+                        phase_indicator = f"\n> 🔄 **[{event.phase.upper()}]** Starting...\n\n"
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=phase_indicator))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                elif event.event_type == StreamEventType.ERROR:
+                    # Forward error
+                    error_text = f"\n\n[Ternion Error] {event.content}\n"
+                    chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(content=error_text))],
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+
+            # Wait for workflow to complete
+            await workflow_task
+
+            # If workflow produced final_output but we didn't stream it
+            # (e.g., non-streamable phases), send it now
+            workflow_final = final_state.get("final_output", "") or final_state.get("generated_code", "")
+            if workflow_final and not streamed_content:
+                # Workflow produced output but streaming wasn't used
+                # (e.g., divergence phase doesn't stream)
+                # Send the complete output
+                for i in range(0, len(workflow_final), 128):
+                    text = workflow_final[i:i + 128]
+                    chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+
+            # Emit thinking logs to observability
+            thinking_logs = final_state.get("thinking_logs", [])
+            if thinking_logs:
+                _emit_thinking_logs_to_observability(
+                    thinking_logs,
+                    session_id=final_state.get("session_id") or None,
+                    context="streaming_discussion_output",
+                    suppressed_from_chat=True,  # Already streamed
+                )
+
+            # Send final chunk
+            final_chunk = ChatCompletionChunk(
+                id=chunk_id,
+                created=created,
+                model=model,
+                choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+            )
+            yield f"data: {final_chunk.model_dump_json()}\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.exception("sse_generation_error", error=str(e))
+            error_chunk = ChatCompletionChunk(
+                id=chunk_id,
+                created=created,
+                model=model,
+                choices=[StreamChoice(delta=ChoiceDelta(content=f"\n[Stream Error] {str(e)}"))],
+            )
+            yield f"data: {error_chunk.model_dump_json()}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate_sse(),
+        media_type="text/event-stream",
+    )
+
+
+async def _run_implementation_streaming(
+    initial_state: dict,
+    model: str,
+    session_id: str,
+    budget_prefix: str,
+    show_thinking_logs: bool,
+) -> StreamingResponse:
+    """
+    Run the implementation stage (Writer + Reviewer) with real-time streaming.
+
+    This function creates a StreamEventQueue, passes it to the implementation stage,
+    and returns an SSE response that forwards LLM tokens in real-time.
+
+    Args:
+        initial_state: Initial state dict with ternion_report, conversation_history, etc.
+        model: Model name for SSE response
+        session_id: Session ID for tracking
+        budget_prefix: Optional budget warning to prepend
+        show_thinking_logs: Whether to include thinking logs
+
+    Returns:
+        StreamingResponse with real-time SSE events
+    """
+    import asyncio
+    from collections.abc import AsyncGenerator
+
+    from ternion.workflow.implementation_stage import run_implementation_stage
+    from ternion.workflow.streaming_events import StreamEventQueue, StreamEventType
+
+    # Create event queue for streaming
+    stream_queue = StreamEventQueue()
+
+    # Inject queue into state so nodes can access it
+    initial_state["_stream_queue"] = stream_queue
+
+    async def generate_sse() -> AsyncGenerator[str, None]:
+        """SSE generator that consumes events from the queue."""
+        import time
+        import uuid
+
+        from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
+
+        chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+        final_state: dict = {}
+
+        # Start implementation stage in background task
+        async def run_impl() -> None:
+            nonlocal final_state
+            try:
+                final_state = await run_implementation_stage(initial_state)
+            except Exception as e:
+                logger.exception("streaming_implementation_error", error=str(e))
+                await stream_queue.put_error(str(e))
+            finally:
+                stream_queue.close()
+
+        # Launch implementation task
+        impl_task = asyncio.create_task(run_impl())
+
+        # Send budget prefix first if present
+        if budget_prefix:
+            chunk = ChatCompletionChunk(
+                id=chunk_id,
+                created=created,
+                model=model,
+                choices=[StreamChoice(delta=ChoiceDelta(content=budget_prefix))],
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+
+        streamed_content = ""
+
+        try:
+            # Consume events from queue
+            async for event in stream_queue:
+                if event.event_type == StreamEventType.TOKEN_DELTA:
+                    if event.delta:
+                        streamed_content += event.delta
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=event.delta))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                elif event.event_type == StreamEventType.PHASE_START:
+                    if show_thinking_logs and event.phase:
+                        phase_indicator = f"\n> 🔄 **[{event.phase.upper()}]** Starting...\n\n"
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=phase_indicator))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                elif event.event_type == StreamEventType.ERROR:
+                    error_text = f"\n\n[Ternion Error] {event.content}\n"
+                    chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(content=error_text))],
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+
+            # Wait for implementation to complete
+            await impl_task
+
+            # If no content was streamed but workflow produced output, send it
+            workflow_final = final_state.get("final_output", "") or final_state.get("generated_code", "")
+            if workflow_final and not streamed_content:
+                for i in range(0, len(workflow_final), 128):
+                    text = workflow_final[i:i + 128]
+                    chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+
+            # Update session status
+            session_store.update_session(session_id, stage=SessionStage.EXECUTED)
+
+            # Log completion
+            thinking_logs = final_state.get("thinking_logs", [])
+            if thinking_logs:
+                _emit_thinking_logs_to_observability(
+                    thinking_logs,
+                    session_id=session_id,
+                    context="streaming_implementation_output",
+                    suppressed_from_chat=True,
+                )
+
+            # Send final chunk
+            final_chunk = ChatCompletionChunk(
+                id=chunk_id,
+                created=created,
+                model=model,
+                choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+            )
+            yield f"data: {final_chunk.model_dump_json()}\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.exception("sse_impl_generation_error", error=str(e))
+            error_chunk = ChatCompletionChunk(
+                id=chunk_id,
+                created=created,
+                model=model,
+                choices=[StreamChoice(delta=ChoiceDelta(content=f"\n[Stream Error] {str(e)}"))],
+            )
+            yield f"data: {error_chunk.model_dump_json()}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate_sse(),
+        media_type="text/event-stream",
+    )
+
+
+# Import for type hints
+from ternion.router.context import TernionContext
+
+
 @router.get("/health")
 async def health_check() -> dict[str, str]:
     """Health check endpoint."""
     return {"status": "healthy"}
 
 
+@router.get("/", include_in_schema=False)
+async def root_probe(request: Request) -> dict[str, str]:
+    """
+    Base URL probe endpoint (no /v1 prefix).
+
+    Some clients validate connectivity by probing the base origin before calling
+    API paths. Returning 200 helps distinguish "no request sent" vs "wrong path".
+    """
+    logger.info(
+        "api_probe",
+        path=str(request.url.path),
+        method=request.method,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    return {"status": "ok"}
+
+
+@router.head("/", include_in_schema=False)
+async def root_probe_head(request: Request) -> Response:
+    """HEAD variant of `/` for strict clients."""
+    logger.info(
+        "api_probe",
+        path=str(request.url.path),
+        method=request.method,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    return Response(status_code=200)
+
+
+@router.get("/v1", include_in_schema=False)
+async def v1_root(request: Request) -> dict[str, str]:
+    """
+    OpenAI-compatible base URL probe endpoint.
+
+    Cursor (certain versions) may issue a GET/HEAD to the configured base URL
+    (often ending with `/v1`) before calling `/v1/models` or `/v1/chat/completions`.
+    """
+    logger.info(
+        "api_probe",
+        path=str(request.url.path),
+        method=request.method,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    return {"status": "ok"}
+
+
+@router.head("/v1", include_in_schema=False)
+async def v1_root_head(request: Request) -> Response:
+    """HEAD variant of `/v1` for strict clients."""
+    logger.info(
+        "api_probe",
+        path=str(request.url.path),
+        method=request.method,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    return Response(status_code=200)
+
+
+@router.get("/v1/", include_in_schema=False)
+async def v1_root_slash(request: Request) -> dict[str, str]:
+    """Same as `/v1` but avoids redirect_slashes for strict clients."""
+    logger.info(
+        "api_probe",
+        path=str(request.url.path),
+        method=request.method,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    return {"status": "ok"}
+
+
+@router.head("/v1/", include_in_schema=False)
+async def v1_root_slash_head(request: Request) -> Response:
+    """HEAD variant of `/v1/` for strict clients."""
+    logger.info(
+        "api_probe",
+        path=str(request.url.path),
+        method=request.method,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    return Response(status_code=200)
+
+
+@router.get("/models")
 @router.get("/v1/models")
-async def list_models() -> ModelsListResponse:
+async def list_models(request: Request) -> ModelsListResponse:
     """List available models (OpenAI-compatible)."""
+    logger.info(
+        "models_list_request",
+        path=str(request.url.path),
+        method=request.method,
+        user_agent=request.headers.get("user-agent", ""),
+    )
     # Intentionally expose only Ternion models.
     #
     # Rationale: When users enable "Override OpenAI Base URL" in Cursor to point at Ternion,
@@ -345,6 +857,22 @@ async def list_models() -> ModelsListResponse:
     return ModelsListResponse(data=list(TERNION_MODELS))
 
 
+@router.head("/models", include_in_schema=False)
+@router.head("/v1/models", include_in_schema=False)
+async def list_models_head(request: Request) -> Response:
+    """HEAD variant of `/v1/models` for strict clients."""
+    logger.info(
+        "models_list_request",
+        path=str(request.url.path),
+        method=request.method,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    return Response(status_code=200)
+
+
+@router.post("/responses", response_model=None)
+@router.post("/v1/responses", response_model=None)
+@router.post("/chat/completions", response_model=None)
 @router.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
     request: ChatCompletionRequest,
@@ -362,6 +890,10 @@ async def chat_completions(
         message_count=len(request.messages),
         stream=request.stream,
     )
+
+    # Development-only: capture incoming Cursor requests (including system prompt) for debugging.
+    # This is disabled by default and runs in the background when enabled.
+    schedule_cursor_request_capture(request)
 
     model = request.model.lower()
 
@@ -486,8 +1018,31 @@ async def chat_completions(
 
     # Set session management flags from user config
     user_config = config_store.load()
-    context.await_confirmation = True  # Always require confirmation for new requests
+    is_agent_request = _is_cursor_agent_request(request)
+
     context.execution_mode = user_config.execution_mode
+    # Default: require confirmation for cursor_handoff, but skip confirmation in ternion_full.
+    context.await_confirmation = user_config.execution_mode != "ternion_full"
+
+    # Cursor Agent compatibility: When users configured CURSOR_HANDOFF but run Cursor in Agent mode,
+    # Cursor cannot automatically switch away from `ternion-team` to a native model for implementation.
+    #
+    # To avoid "report-only stall" in Agent mode, automatically promote the execution mode to
+    # TERNION_FULL and skip the confirmation gate for this request. Also persist the mode switch
+    # so the Web UI reflects the new mode.
+    if is_agent_request and user_config.execution_mode == "cursor_handoff":
+        log_manager.emit(
+            level="INFO",
+            category="USER_ACTION",
+            message=(
+                "Cursor Agent mode detected | auto-switch execution_mode: cursor_handoff -> ternion_full "
+                "(confirmation gate disabled for this request)"
+            ),
+        )
+        user_config.execution_mode = "ternion_full"
+        config_store.save(user_config)
+        context.execution_mode = "ternion_full"
+        context.await_confirmation = False
 
     # Require execution mode to be explicitly configured and saved
     if user_config.execution_mode not in ("cursor_handoff", "ternion_full"):
@@ -591,10 +1146,21 @@ async def chat_completions(
     try:
         from ternion.workflow.graph import run_discussion
 
+        # For streaming requests, use real-time event forwarding
+        if request.stream:
+            return await _run_discussion_streaming(
+                context=context,
+                model=request.model,
+                budget_warning=budget_warning,
+                show_thinking_logs=user_config.show_thinking_logs,
+            )
+
+        # Non-streaming: run workflow and return complete response
         final_state = await run_discussion(context)
 
         # Build output with thinking logs + final code
         thinking_logs = final_state.get("thinking_logs", [])
+        errors = final_state.get("errors", []) or []
         final_code = final_state.get("final_output", "") or final_state.get("generated_code", "")
         is_patch_output = _is_patch_or_diff_output(final_code)
         _emit_thinking_logs_to_observability(
@@ -620,17 +1186,16 @@ async def chat_completions(
             output_parts.append(final_code)
         else:
             output_parts.append("[Ternion] Discussion completed but no output was generated.")
+            if errors:
+                output_parts.append("\n\n[Ternion] Errors:\n")
+                for err in errors:
+                    msg = sanitize_for_cursor_display(str(err))
+                    if msg:
+                        output_parts.append(f"- {msg}\n")
 
         output = "".join(output_parts)
 
-        # Return response
-        if request.stream:
-            return StreamingResponse(
-                create_sse_stream(model=request.model, content=output),
-                media_type="text/event-stream",
-            )
-        else:
-            return JSONResponse(
+        return JSONResponse(
                 content=ChatCompletionResponse(
                     model=request.model,
                     choices=[
@@ -826,6 +1391,17 @@ async def handle_confirmed_session(
             "revision_count": 0,
         }
 
+        # For streaming requests, use real-time event forwarding
+        if request.stream:
+            return await _run_implementation_streaming(
+                initial_state=initial_state,
+                model=request.model,
+                session_id=session.session_id,
+                budget_prefix=impl_budget_prefix,
+                show_thinking_logs=config.show_thinking_logs,
+            )
+
+        # Non-streaming execution
         final_state = await run_implementation_stage(initial_state)
 
         # Extract results
@@ -871,13 +1447,7 @@ async def handle_confirmed_session(
         output = "".join(output_parts)
         session_store.update_session(session.session_id, stage=SessionStage.EXECUTED)
 
-        if request.stream:
-            return StreamingResponse(
-                create_sse_stream(model=request.model, content=output),
-                media_type="text/event-stream",
-            )
-        else:
-            return JSONResponse(
+        return JSONResponse(
                 content=ChatCompletionResponse(
                     model=request.model,
                     choices=[
@@ -920,7 +1490,8 @@ async def handle_rejected_session(
     from ternion.workflow.graph import run_discussion
 
     context = message_router.extract_context(request.messages)
-    context.await_confirmation = True  # Still require confirmation for new report
+    # In ternion_full, we do not stop at the report stage; proceed to execution automatically.
+    context.await_confirmation = session.execution_mode != ExecutionMode.TERNION_FULL
     context.rejection_context = feedback
     context.execution_mode = session.execution_mode.value
 

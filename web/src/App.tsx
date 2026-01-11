@@ -100,6 +100,32 @@ function AppContent() {
     loadData();
   }, []);
 
+  // Poll config periodically so backend-initiated changes (e.g. auto-switch execution_mode)
+  // become visible without requiring a manual page refresh.
+  useEffect(() => {
+    let cancelled = false;
+    const interval = window.setInterval(async () => {
+      try {
+        const latest = await api.getConfig();
+        if (cancelled) return;
+        setConfig((prev) => {
+          const prevUpdated = prev?.updated_at || '';
+          const latestUpdated = latest?.updated_at || '';
+          if (prev && prevUpdated && latestUpdated && prevUpdated === latestUpdated) {
+            return prev;
+          }
+          return latest;
+        });
+      } catch {
+        // Ignore polling errors (server may be restarting)
+      }
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+
   const loadData = async () => {
     try {
       const [configData, statusData] = await Promise.all([

@@ -178,3 +178,146 @@ class TestChatCompletions:
 
                 assert len(chunks) > 0
 
+    def test_cursor_handoff_agent_auto_switches_to_ternion_full(
+        self, client: TestClient
+    ) -> None:
+        """
+        When configured as cursor_handoff but invoked from Cursor Agent mode,
+        the server should auto-switch to ternion_full and skip confirmation gate.
+        """
+        mock_result = {
+            "final_output": "AUTO_EXECUTION_OK",
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "cursor_handoff"
+        mock_user_config.show_thinking_logs = True
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            # Required after auto-switch to ternion_full
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        async def run_discussion_assert(ctx):  # type: ignore[no-untyped-def]
+            assert getattr(ctx, "execution_mode", "") == "ternion_full"
+            assert getattr(ctx, "await_confirmation", True) is False
+            return mock_result
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.side_effect = run_discussion_assert
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "codebase_search",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            content = response.json()["choices"][0]["message"]["content"]
+            assert "AUTO_EXECUTION_OK" in content
+
+            # Persisted mode switch so Web UI reflects it.
+            assert mock_user_config.execution_mode == "ternion_full"
+            mock_config_store.save.assert_called_once()
+
+    def test_cursor_handoff_non_agent_does_not_auto_switch_even_with_tools(
+        self, client: TestClient
+    ) -> None:
+        """
+        When invoked from a non-agent Cursor mode (Ask/Plan/Debug), do not auto-switch
+        cursor_handoff -> ternion_full even if the request includes tool definitions.
+        """
+        mock_result = {
+            "final_output": "REPORT_ONLY_OK",
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "cursor_handoff"
+        mock_user_config.show_thinking_logs = True
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        non_agent_reminder = (
+            "<system_reminder>\n"
+            "The user is in ask mode; only read-only tools are available.\n"
+            "</system_reminder>"
+        )
+
+        async def run_discussion_assert(ctx):  # type: ignore[no-untyped-def]
+            assert getattr(ctx, "execution_mode", "") == "cursor_handoff"
+            assert getattr(ctx, "await_confirmation", False) is True
+            return mock_result
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.side_effect = run_discussion_assert
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": non_agent_reminder}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "codebase_search",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            content = response.json()["choices"][0]["message"]["content"]
+            assert "REPORT_ONLY_OK" in content
+
+            assert mock_user_config.execution_mode == "cursor_handoff"
+            mock_config_store.save.assert_not_called()

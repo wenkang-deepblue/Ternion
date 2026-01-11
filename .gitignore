@@ -107,6 +107,7 @@ temp/
 
 # Design docs
 docs/
+SKILL.md
 usage_test.json
 
 # Ignore README until ready for release (user will manage this)
@@ -125,3 +126,4 @@ App.css
 
 # Development backup
 *backup*.*
+*request*.py
