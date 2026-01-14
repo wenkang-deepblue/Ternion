@@ -9,19 +9,35 @@ user confirms the analysis report to avoid re-running RCA.
 from typing import Any
 
 import structlog
+from pathlib import Path
 
-from ternion.workflow.nodes import execution_node, final_check_node
+from ternion.workflow.nodes import execution_node, optimizer_node
 from ternion.workflow.state import TernionState, WorkflowPhase
 
 logger = structlog.get_logger(__name__)
 
 
+def _read_file_snapshots(paths: list[str]) -> dict[str, str]:
+    snapshots: dict[str, str] = {}
+    for path in paths or []:
+        if not isinstance(path, str) or not path.strip():
+            continue
+        try:
+            p = Path(path)
+            if not p.exists() or not p.is_file():
+                continue
+            snapshots[str(p)] = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+    return snapshots
+
+
 async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
     """
-    Run Execution + Final Check (+ revision loop) starting from an existing report.
+    Run Execution + Optimizer starting from an existing report.
 
     This function bypasses divergence and convergence phases, directly running
-    the Writer and Reviewer with the already-confirmed Ternion report.
+    the Writer and Optimizer with the already-confirmed Ternion report.
 
     Args:
         state: TernionState with ternion_report and conversation_history already set
@@ -52,27 +68,38 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
         state["final_output"] = error_msg
         return state
 
-    # Ensure the state is positioned at EXECUTION phase.
-    state["current_phase"] = WorkflowPhase.EXECUTION.value
+    # Default to EXECUTION unless caller provides a specific resume phase.
+    phase = state.get("current_phase") or WorkflowPhase.EXECUTION.value
+    if phase not in (WorkflowPhase.EXECUTION.value, WorkflowPhase.OPTIMIZER.value):
+        phase = WorkflowPhase.EXECUTION.value
+    state["current_phase"] = phase
 
-    # Run execution + final_check loop
+    # Run execution + optimizer loop
     while True:
-        # Run Writer (execution_node)
-        state = await execution_node(state)
+        phase = state.get("current_phase") or WorkflowPhase.EXECUTION.value
 
-        # Check if execution failed or workflow should stop
-        if state.get("current_phase") != WorkflowPhase.FINAL_CHECK.value:
+        if phase == WorkflowPhase.EXECUTION.value:
+            state = await execution_node(state)
+
+            # Stop immediately if tool calls are pending (server will route follow-up).
+            if state.get("pending_tool_calls"):
+                return state
+
+            # Transition to optimizer when the Writer produced an implementation.
+            if state.get("current_phase") == WorkflowPhase.OPTIMIZER.value:
+                if not (state.get("writer_output_files") or {}):
+                    state["writer_output_files"] = _read_file_snapshots(
+                        list(state.get("modified_files") or [])
+                    )
+                continue
+
             return state
 
-        # Run Reviewer (final_check_node)
-        state = await final_check_node(state)
+        if phase == WorkflowPhase.OPTIMIZER.value:
+            state = await optimizer_node(state)
 
-        # If approved, workflow is complete
-        if state.get("current_phase") == WorkflowPhase.COMPLETE.value:
+            # Stop immediately if tool calls are pending (server will route follow-up).
+            if state.get("pending_tool_calls"):
+                return state
+
             return state
-
-        # If not back to EXECUTION (revision), something unexpected happened
-        if state.get("current_phase") != WorkflowPhase.EXECUTION.value:
-            return state
-
-        # Loop continues for revision

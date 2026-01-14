@@ -16,7 +16,7 @@ from ternion.workflow.nodes import (
     convergence_node,
     divergence_node,
     execution_node,
-    final_check_node,
+    optimizer_node,
 )
 from ternion.workflow.state import TernionState, WorkflowPhase
 
@@ -41,32 +41,26 @@ def should_continue_or_await_confirmation(state: TernionState) -> str:
     return END
 
 
-def should_continue_after_review(state: TernionState) -> str:
-    """
-    Determine next step after review.
-
-    Returns to execution if revision needed, otherwise ends.
-    """
-    phase = state.get("current_phase", "")
-
-    if phase == WorkflowPhase.COMPLETE.value:
-        return END
-    elif phase == WorkflowPhase.EXECUTION.value:
-        # Revision needed - loop back
-        return "execution"
-    else:
-        return END
-
-
 def should_continue_after_execution(state: TernionState) -> str:
     """
     Determine next step after execution.
 
-    Only proceed to final_check if execution succeeded and advanced the workflow.
+    Only proceed to optimizer if execution succeeded and advanced the workflow.
     """
     phase = state.get("current_phase", "")
-    if phase == WorkflowPhase.FINAL_CHECK.value:
-        return "final_check"
+    if phase == WorkflowPhase.OPTIMIZER.value:
+        return "optimizer"
+    return END
+
+
+def should_continue_after_optimizer(state: TernionState) -> str:
+    """
+    Determine next step after optimizer.
+
+    The optimizer may emit tool calls (phase remains OPTIMIZER) or complete.
+    In both cases, the LangGraph workflow should stop and let the server route
+    any follow-ups via the tool-loop session.
+    """
     return END
 
 
@@ -78,7 +72,7 @@ def create_workflow() -> StateGraph:
     1. Divergence: Parallel analysis by council
     2. Convergence: Arbiter synthesis
     3. Execution: Writer generates code
-    4. Final Check: Reviewer verification (with optional loop)
+    4. Optimizer: Evidence-based improvement and delivery (dev override)
 
     Returns:
         Compiled LangGraph workflow
@@ -90,7 +84,7 @@ def create_workflow() -> StateGraph:
     workflow.add_node("divergence", divergence_node)
     workflow.add_node("convergence", convergence_node)
     workflow.add_node("execution", execution_node)
-    workflow.add_node("final_check", final_check_node)
+    workflow.add_node("optimizer", optimizer_node)
 
     # Set entry point
     workflow.set_entry_point("divergence")
@@ -110,15 +104,14 @@ def create_workflow() -> StateGraph:
         "execution",
         should_continue_after_execution,
         {
-            "final_check": "final_check",
+            "optimizer": "optimizer",
             END: END,
         },
     )
     workflow.add_conditional_edges(
-        "final_check",
-        should_continue_after_review,
+        "optimizer",
+        should_continue_after_optimizer,
         {
-            "execution": "execution",
             END: END,
         },
     )
@@ -162,11 +155,19 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
             else None
         ),
         "conversation_history": [
-            {"role": msg.role.value, "content": msg.content}
+            {
+                "role": msg.role.value,
+                "content": msg.content,
+                "name": msg.name,
+                "tool_calls": msg.tool_calls,
+                "tool_call_id": msg.tool_call_id,
+            }
             for msg in context.conversation_history
-            # Filter out system messages to prevent phase prompt override
-            # Also preserve both str and list (multimodal) content
-            if msg.content is not None and msg.role != MessageRole.SYSTEM
+            if msg.role != MessageRole.SYSTEM and (
+                msg.content is not None
+                or msg.tool_calls is not None
+                or msg.tool_call_id is not None
+            )
         ],
         "has_images": context.has_images,
         "current_phase": WorkflowPhase.DIVERGENCE.value,
@@ -177,11 +178,18 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         "rejection_context": getattr(context, "rejection_context", ""),
         # Streaming event queue (for real-time output)
         "_stream_queue": getattr(context, "_stream_queue", None),
+        # Cursor tool calling (Agent mode)
+        "cursor_tools": getattr(context, "cursor_tools", None),
+        "cursor_tool_choice": getattr(context, "cursor_tool_choice", None),
         # Workflow outputs
         "ternion_analyses": [],
         "is_consensus": False,
         "ternion_report": "",
         "generated_code": "",
+        "baseline_file_snapshots": {},
+        "modified_files": [],
+        "writer_output_files": {},
+        "optimizer_review_report": "",
         "review_result": "",
         "review_feedback": "",
         "revision_count": 0,

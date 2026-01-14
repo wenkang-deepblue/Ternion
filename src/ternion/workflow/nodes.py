@@ -26,6 +26,7 @@ from ternion.router.prompts import (
     EXECUTION_PROMPT,
     FINAL_CHECK_PROMPT,
     GLOBAL_SECURITY_RULES,
+    OPTIMIZER_PROMPT,
 )
 from ternion.utils.cursor_safety import sanitize_for_cursor_display, sanitize_for_preview
 from ternion.utils.i18n import MessageKey, t
@@ -35,6 +36,12 @@ from ternion.workflow.state import ReviewResult, TernionState, WorkflowPhase
 from ternion.workflow.streaming_events import StreamEventQueue
 
 logger = structlog.get_logger(__name__)
+
+# Optimizer output wrapper markers (development override).
+_OPTIMIZER_INTERNAL_BEGIN = "TERNION_OPTIMIZER_INTERNAL_REPORT_BEGIN"
+_OPTIMIZER_INTERNAL_END = "TERNION_OPTIMIZER_INTERNAL_REPORT_END"
+_OPTIMIZER_USER_BEGIN = "TERNION_OPTIMIZER_USER_SUMMARY_BEGIN"
+_OPTIMIZER_USER_END = "TERNION_OPTIMIZER_USER_SUMMARY_END"
 
 # Default timeout for provider calls (CR-030)
 DEFAULT_TIMEOUT_SECONDS = settings.discussion.timeout_seconds
@@ -46,6 +53,7 @@ async def _call_with_timeout(
     model: str,
     temperature: float,
     timeout_seconds: int | None = None,
+    **kwargs: Any,
 ) -> Any:
     """
     Call provider.chat_completion with timeout protection (CR-030).
@@ -70,6 +78,7 @@ async def _call_with_timeout(
                 messages=messages,
                 model=model,
                 temperature=temperature,
+                **kwargs,
             ),
             timeout=timeout,
         )
@@ -255,6 +264,37 @@ def _parse_review_status(review_content: str) -> ReviewResult:
         return ReviewResult.REVISION_NEEDED
 
     return ReviewResult.REVISION_NEEDED
+
+
+def _split_optimizer_output(text: str) -> tuple[str, str]:
+    """
+    Split Optimizer output into internal and user-visible sections.
+
+    The Optimizer prompt requires a strict wrapper with begin/end markers.
+    This helper extracts those blocks and falls back to treating the full
+    content as user summary when markers are missing.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return "", ""
+
+    def extract_block(begin: str, end: str) -> str:
+        start = raw.find(begin)
+        if start < 0:
+            return ""
+        start += len(begin)
+        stop = raw.find(end, start)
+        if stop < 0:
+            return ""
+        return raw[start:stop].strip()
+
+    internal = extract_block(_OPTIMIZER_INTERNAL_BEGIN, _OPTIMIZER_INTERNAL_END)
+    user = extract_block(_OPTIMIZER_USER_BEGIN, _OPTIMIZER_USER_END)
+    if user:
+        return internal, user
+
+    # Safety fallback: never leak the raw optimizer output to the user if the wrapper is missing.
+    return internal or raw, ""
 
 
 # Note: sanitize_for_preview and sanitize_for_cursor_display are imported from
@@ -973,6 +1013,24 @@ async def execution_node(state: TernionState) -> TernionState:
     cursor_prompt = state.get("cursor_system_prompt")
     ternion_report = state.get("ternion_report", "")
     history = state.get("conversation_history", [])
+    history_len_before = len(history)
+    tool_context_digest = ""
+    truncated_history = False
+    try:
+        from ternion.utils.execution_history_compaction import (
+            ExecutionHistoryCompactionConfig,
+            compact_execution_history_for_writer,
+        )
+
+        history, tool_context_digest = compact_execution_history_for_writer(
+            history,
+            config=ExecutionHistoryCompactionConfig(),
+        )
+        truncated_history = len(history) != history_len_before
+    except Exception:
+        # Best-effort: do not block execution on compaction failures.
+        tool_context_digest = ""
+        truncated_history = False
 
     messages = []
 
@@ -991,7 +1049,13 @@ async def execution_node(state: TernionState) -> TernionState:
     # Add conversation history
     for msg in history:
         messages.append(
-            ChatMessage(role=MessageRole(msg["role"]), content=msg["content"])
+            ChatMessage(
+                role=MessageRole(msg["role"]),
+                content=msg.get("content"),
+                name=msg.get("name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
         )
 
     # Inject Writer constraints as a final user instruction without breaking client format rules.
@@ -1010,6 +1074,11 @@ async def execution_node(state: TernionState) -> TernionState:
         "\n\n[TERNION ANALYSIS REPORT]\n\n",
         ternion_report,
     ]
+    if tool_context_digest:
+        content_parts.extend([
+            "\n\n[TERNION TOOL CONTEXT DIGEST]\n\n",
+            tool_context_digest,
+        ])
 
     # If this is a revision round, always include reviewer feedback section
     # Even if feedback is empty, provide a placeholder to prevent Writer confusion
@@ -1068,6 +1137,123 @@ async def execution_node(state: TernionState) -> TernionState:
         stream_queue: StreamEventQueue | None = state.get("_stream_queue")
         session_id = state.get("session_id", "")
 
+        cursor_tools = state.get("cursor_tools") or []
+        cursor_tool_choice = state.get("cursor_tool_choice")
+        should_use_tool_calls = bool(cursor_tools) and provider.name == "openai"
+
+        log_manager.emit(
+            level="INFO",
+            category="WORKFLOW",
+            message=(
+                "execution_writer_context | "
+                f"session_id={session_id} | "
+                f"history_messages={len(history)} | "
+                f"history_truncated={truncated_history} | "
+                f"digest_chars={len(tool_context_digest)} | "
+                f"tools={len(cursor_tools)} | "
+                f"revision_count={revision_count}"
+            ),
+        )
+
+        if should_use_tool_calls:
+            if stream_queue:
+                await stream_queue.put_token(
+                    delta="\n" + t(MessageKey.EXECUTION_START),
+                    phase="execution",
+                    message_id=session_id,
+                )
+            extra_kwargs: dict[str, Any] = {"tools": cursor_tools}
+            if cursor_tool_choice is not None:
+                extra_kwargs["tool_choice"] = cursor_tool_choice
+            import time
+            started = time.monotonic()
+            response = await _call_with_timeout(
+                provider=provider,
+                messages=messages,
+                model=model,
+                temperature=0.3,
+                **extra_kwargs,
+            )
+            elapsed = time.monotonic() - started
+            log_manager.emit(
+                level="INFO",
+                category="WORKFLOW",
+                message=(
+                    "execution_writer_call_done | "
+                    f"session_id={session_id} | "
+                    f"elapsed_seconds={elapsed:.2f} | "
+                    f"tool_calls={len(response.tool_calls or []) if response.tool_calls else 0} | "
+                    f"content_chars={len(response.content or '')}"
+                ),
+            )
+            usage = response.usage or {}
+            input_tokens = (
+                usage.get("prompt_tokens")
+                or usage.get("input_tokens")
+                or 0
+            )
+            completion_tokens = (
+                usage.get("completion_tokens")
+                or usage.get("output_tokens")
+                or 0
+            )
+            thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
+            output_for_cost = (
+                completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+            )
+            budget_manager.record_usage(
+                provider=provider.name,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_for_cost,
+                thoughts_tokens=thoughts_tokens,
+                context_length=usage.get("total_tokens", 0),
+            )
+            if input_tokens or output_for_cost or thoughts_tokens:
+                log_manager.emit(
+                    level="INFO",
+                    category="WORKFLOW",
+                    message=(
+                        f"execution_usage | provider={provider.name} | "
+                        f"model={model} | "
+                        f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
+                        f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
+                    ),
+                )
+            if response.tool_calls:
+                log_manager.emit(
+                    level="INFO",
+                    category="WORKFLOW",
+                    message=(
+                        "execution_writer_tool_calls_ready | "
+                        f"session_id={session_id} | "
+                        f"count={len(response.tool_calls)}"
+                    ),
+                )
+                return {
+                    **state,
+                    "current_phase": WorkflowPhase.EXECUTION.value,
+                    "pending_tool_calls": response.tool_calls,
+                    "thinking_logs": thinking_logs,
+                }
+            if not (response.content or "").strip():
+                raise ValueError("writer_returned_empty_output")
+            log_manager.emit(
+                level="INFO",
+                category="WORKFLOW",
+                message=(
+                    "execution_writer_coding_done | "
+                    f"session_id={session_id} | "
+                    f"content_chars={len(response.content or '')}"
+                ),
+            )
+            thinking_logs.append(t(MessageKey.EXECUTION_COMPLETE))
+            return {
+                **state,
+                "current_phase": WorkflowPhase.OPTIMIZER.value,
+                "generated_code": response.content,
+                "thinking_logs": thinking_logs,
+            }
         # Use streaming call if queue is available, otherwise fall back to non-streaming
         response = await _call_with_stream(
             provider=provider,
@@ -1113,11 +1299,20 @@ async def execution_node(state: TernionState) -> TernionState:
                 ),
             )
 
+        log_manager.emit(
+            level="INFO",
+            category="WORKFLOW",
+            message=(
+                "execution_writer_coding_done | "
+                f"session_id={session_id} | "
+                f"content_chars={len(response.content or '')}"
+            ),
+        )
         thinking_logs.append(t(MessageKey.EXECUTION_COMPLETE))
 
         return {
             **state,
-            "current_phase": WorkflowPhase.FINAL_CHECK.value,
+            "current_phase": WorkflowPhase.OPTIMIZER.value,
             "generated_code": response.content,
             "thinking_logs": thinking_logs,
         }
@@ -1168,6 +1363,14 @@ async def final_check_node(state: TernionState) -> TernionState:
     # Check revision limit
     if revision_count >= max_revisions:
         logger.warning("max_revisions_reached", count=revision_count)
+        log_manager.emit(
+            level="INFO",
+            category="WORKFLOW",
+            message=(
+                "Final check skipped | max revisions reached | "
+                f"revision_count={revision_count} | max_revisions={max_revisions}"
+            ),
+        )
         return {
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
@@ -1266,6 +1469,26 @@ async def final_check_node(state: TernionState) -> TernionState:
         review_status = _parse_review_status(response.content)
 
         if review_status == ReviewResult.APPROVED:
+            try:
+                from ternion.utils.reviewer_output_capture import (
+                    build_reviewer_capture_payload,
+                    schedule_reviewer_output_capture,
+                )
+
+                schedule_reviewer_output_capture(
+                    build_reviewer_capture_payload(
+                        session_id=str(state.get("session_id") or ""),
+                        stage=str(state.get("current_phase") or ""),
+                        provider=provider.name,
+                        model=model,
+                        review_status="APPROVED",
+                        review_feedback=response.content,
+                        revision_count=revision_count,
+                        generated_code=generated_code,
+                    )
+                )
+            except Exception:
+                pass
             thinking_logs.append(t(MessageKey.REVIEW_APPROVED))
             return {
                 **state,
@@ -1276,6 +1499,26 @@ async def final_check_node(state: TernionState) -> TernionState:
                 "thinking_logs": thinking_logs,
             }
         else:
+            try:
+                from ternion.utils.reviewer_output_capture import (
+                    build_reviewer_capture_payload,
+                    schedule_reviewer_output_capture,
+                )
+
+                schedule_reviewer_output_capture(
+                    build_reviewer_capture_payload(
+                        session_id=str(state.get("session_id") or ""),
+                        stage=str(state.get("current_phase") or ""),
+                        provider=provider.name,
+                        model=model,
+                        review_status="REVISION_NEEDED",
+                        review_feedback=response.content,
+                        revision_count=revision_count,
+                        generated_code=generated_code,
+                    )
+                )
+            except Exception:
+                pass
             # Revision needed - will loop back to execution
             thinking_logs.append(t(MessageKey.REVIEW_REVISION))
             return {
@@ -1293,6 +1536,26 @@ async def final_check_node(state: TernionState) -> TernionState:
             category="WORKFLOW",
             message=f"Final check failed (skipped) | error={str(e)}",
         )
+        try:
+            from ternion.utils.reviewer_output_capture import (
+                build_reviewer_capture_payload,
+                schedule_reviewer_output_capture,
+            )
+
+            schedule_reviewer_output_capture(
+                build_reviewer_capture_payload(
+                    session_id=str(state.get("session_id") or ""),
+                    stage=str(state.get("current_phase") or ""),
+                    provider="(unknown)",
+                    model="(unknown)",
+                    review_status="SKIPPED",
+                    review_feedback=f"Review skipped due to error: {str(e)}",
+                    revision_count=revision_count,
+                    generated_code=generated_code,
+                )
+            )
+        except Exception:
+            pass
         # Skip review on failure, approve the code
         return {
             **state,
@@ -1303,4 +1566,273 @@ async def final_check_node(state: TernionState) -> TernionState:
             "errors": state.get("errors", []) + [f"Review skipped: {str(e)}"],
             "thinking_logs": thinking_logs
             + [t(MessageKey.FINAL_CHECK_ERROR, error=str(e))],
+        }
+
+
+async def optimizer_node(state: TernionState) -> TernionState:
+    """
+    Development override: Optimizer phase (replaces Reviewer gate).
+
+    The Optimizer validates the implementation against acceptance criteria,
+    applies only necessary improvements via tool calls, and finally outputs:
+    - an internal optimizer report (captured to disk; user-invisible)
+    - a user-visible work summary report
+    """
+    logger.info("workflow_optimizer_start")
+    log_manager.emit(
+        level="INFO",
+        category="WORKFLOW",
+        message="Optimizer phase started | Validating and improving implementation",
+    )
+
+    thinking_logs = list(state.get("thinking_logs", []))
+
+    # Use the Web UI language preference for Optimizer output (internal + user-visible summary).
+    user_config = config_store.load()
+    language_code = user_config.language
+    if language_code == "auto":
+        language_code = user_config.browser_language or "en"
+    language_names = {
+        "en": "English",
+        "zh": "Simplified Chinese (简体中文)",
+        "es": "Spanish (Español)",
+        "fr": "French (Français)",
+        "de": "German (Deutsch)",
+        "ja": "Japanese (日本語)",
+        "ko": "Korean (한국어)",
+    }
+    language_name = language_names.get(language_code, "English")
+    language_instruction = (
+        "Generate BOTH the internal optimizer report and the user-visible work summary in "
+        f"{language_name}. All headings, bullet points, and explanations must be in {language_name}. "
+        "Do NOT translate the wrapper marker lines."
+    )
+    optimizer_prompt_with_lang = f"{OPTIMIZER_PROMPT}\n\nOUTPUT LANGUAGE:\n{language_instruction}\n"
+
+    ternion_report = state.get("ternion_report", "")
+    generated_code = state.get("generated_code", "")
+
+    baseline = state.get("baseline_file_snapshots") or {}
+    modified_files = state.get("modified_files") or []
+    writer_output_files = state.get("writer_output_files") or {}
+
+    history = state.get("conversation_history", [])
+    history_len_before = len(history)
+    tool_context_digest = ""
+    truncated_history = False
+    try:
+        from ternion.utils.execution_history_compaction import (
+            ExecutionHistoryCompactionConfig,
+            compact_execution_history_for_writer,
+        )
+
+        history, tool_context_digest = compact_execution_history_for_writer(
+            history,
+            config=ExecutionHistoryCompactionConfig(),
+        )
+        truncated_history = len(history) != history_len_before
+    except Exception:
+        tool_context_digest = ""
+        truncated_history = False
+
+    messages: list[ChatMessage] = [
+        ChatMessage(
+            role=MessageRole.SYSTEM,
+            content=_prepend_global_security_rules(optimizer_prompt_with_lang),
+        )
+    ]
+
+    for msg in history:
+        messages.append(
+            ChatMessage(
+                role=MessageRole(msg["role"]),
+                content=msg.get("content"),
+                name=msg.get("name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        )
+
+    optimizer_instructions = _prepend_global_security_rules(optimizer_prompt_with_lang)
+    content_parts: list[str] = [
+        "[TERNION OPTIMIZER INSTRUCTIONS]\n\n",
+        optimizer_instructions,
+        "\n\n[TERNION ANALYSIS REPORT]\n\n",
+        ternion_report,
+    ]
+    if tool_context_digest:
+        content_parts.extend([
+            "\n\n[TERNION TOOL CONTEXT DIGEST]\n\n",
+            tool_context_digest,
+        ])
+
+    if modified_files:
+        content_parts.extend([
+            "\n\n[MODIFIED FILES]\n\n",
+            "\n".join(f"- {p}" for p in modified_files),
+        ])
+
+    if baseline:
+        content_parts.append("\n\n[ORIGINAL CODE BASELINE - PRE-CHANGE]\n\n")
+        for path, content in baseline.items():
+            content_parts.extend([
+                f"\n\nFILE: {path}\n",
+                "-----\n",
+                content,
+                "\n-----\n",
+            ])
+
+    if writer_output_files:
+        content_parts.append("\n\n[WRITER OUTPUT FILES - POST-CHANGE]\n\n")
+        for path, content in writer_output_files.items():
+            content_parts.extend([
+                f"\n\nFILE: {path}\n",
+                "-----\n",
+                content,
+                "\n-----\n",
+            ])
+
+    if generated_code:
+        content_parts.extend([
+            "\n\n[WRITER OUTPUT TEXT]\n\n",
+            generated_code,
+        ])
+
+    messages.append(
+        ChatMessage(
+            role=MessageRole.USER,
+            content="".join(content_parts),
+        )
+    )
+
+    try:
+        provider = provider_manager.get_provider_for_role("reviewer")
+        role_cfg = config_store.get_role_config("reviewer")
+        model = role_cfg.model if role_cfg and role_cfg.model else None
+        if not model:
+            logger.error("optimizer_model_not_configured")
+            return {
+                **state,
+                "errors": state.get("errors", []) + [
+                    "Optimizer model not configured. Please configure it in the Web Control Panel."
+                ],
+                "thinking_logs": thinking_logs + [
+                    t(MessageKey.FINAL_CHECK_ERROR, error="Optimizer model not configured")
+                ],
+                "current_phase": WorkflowPhase.COMPLETE.value,
+            }
+
+        cursor_tools = state.get("cursor_tools") or []
+        cursor_tool_choice = state.get("cursor_tool_choice")
+        should_use_tool_calls = bool(cursor_tools) and provider.name == "openai"
+
+        session_id = state.get("session_id", "")
+        log_manager.emit(
+            level="INFO",
+            category="WORKFLOW",
+            message=(
+                "optimizer_context | "
+                f"session_id={session_id} | "
+                f"history_messages={len(history)} | "
+                f"history_truncated={truncated_history} | "
+                f"digest_chars={len(tool_context_digest)} | "
+                f"tools={len(cursor_tools)} | "
+                f"baseline_files={len(baseline)} | "
+                f"writer_files={len(writer_output_files)}"
+            ),
+        )
+
+        stream_queue: StreamEventQueue | None = state.get("_stream_queue")
+        if stream_queue:
+            await stream_queue.put_token(
+                delta="\n" + t(MessageKey.OPTIMIZER_START),
+                phase="optimizer",
+                message_id=session_id,
+            )
+
+        extra_kwargs: dict[str, Any] = {}
+        if should_use_tool_calls:
+            extra_kwargs["tools"] = cursor_tools
+            if cursor_tool_choice is not None:
+                extra_kwargs["tool_choice"] = cursor_tool_choice
+
+        import time
+
+        started = time.monotonic()
+        response = await _call_with_timeout(
+            provider=provider,
+            messages=messages,
+            model=model,
+            temperature=0.2,
+            **extra_kwargs,
+        )
+        elapsed = time.monotonic() - started
+        log_manager.emit(
+            level="INFO",
+            category="WORKFLOW",
+            message=(
+                "optimizer_call_done | "
+                f"session_id={session_id} | "
+                f"elapsed_seconds={elapsed:.2f} | "
+                f"tool_calls={len(response.tool_calls or []) if response.tool_calls else 0} | "
+                f"content_chars={len(response.content or '')}"
+            ),
+        )
+
+        if response.tool_calls:
+            return {
+                **state,
+                "current_phase": WorkflowPhase.OPTIMIZER.value,
+                "pending_tool_calls": response.tool_calls,
+                "thinking_logs": thinking_logs,
+            }
+
+        internal_report, user_summary = _split_optimizer_output(response.content or "")
+        if not (user_summary or "").strip():
+            user_summary = t(MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR)
+        user_summary_safe = sanitize_for_cursor_display(user_summary)
+
+        try:
+            from ternion.utils.reviewer_output_capture import (
+                build_reviewer_capture_payload,
+                schedule_reviewer_output_capture,
+            )
+
+            schedule_reviewer_output_capture(
+                build_reviewer_capture_payload(
+                    session_id=str(state.get("session_id") or ""),
+                    stage=WorkflowPhase.OPTIMIZER.value,
+                    provider=provider.name,
+                    model=model,
+                    review_status="OPTIMIZER_REPORT",
+                    review_feedback=internal_report or (response.content or ""),
+                    revision_count=int(state.get("revision_count", 0) or 0),
+                    generated_code=generated_code,
+                )
+            )
+        except Exception:
+            pass
+
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "optimizer_review_report": internal_report,
+            "final_output": user_summary_safe,
+            "thinking_logs": thinking_logs,
+        }
+    except Exception as e:
+        logger.warning("optimizer_failed", error=str(e))
+        log_manager.emit(
+            level="WARN",
+            category="WORKFLOW",
+            message=f"Optimizer failed | error={str(e)}",
+        )
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "errors": state.get("errors", []) + [f"Optimizer failed: {str(e)}"],
+            "final_output": sanitize_for_cursor_display(
+                f"[Ternion Error] Optimizer failed: {str(e)}"
+            ),
+            "thinking_logs": thinking_logs,
         }

@@ -32,6 +32,10 @@ class SessionStage(str, Enum):
 
     RCA_COMPLETE = "rca_complete"
     AWAITING_CONFIRMATION = "awaiting_confirmation"
+    EXECUTION_IN_PROGRESS = "execution_in_progress"
+    AWAITING_TOOL_RESULTS = "awaiting_tool_results"
+    REVIEW_IN_PROGRESS = "review_in_progress"
+    OPTIMIZER_IN_PROGRESS = "optimizer_in_progress"
     CONFIRMED = "confirmed"
     REJECTED = "rejected"
     EXECUTED = "executed"
@@ -72,6 +76,22 @@ class Session:
     generated_code: str = ""
     review_feedback: str = ""
     hash_verified: bool | None = None  # Hash verification result for offline analysis
+    cursor_system_prompt: str = ""
+    cursor_tools: list[dict[str, Any]] = field(default_factory=list)
+    cursor_tool_choice: Any | None = None
+    execution_messages: list[dict[str, Any]] = field(default_factory=list)
+    pending_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_results_raw: dict[str, str] = field(default_factory=dict)
+    tool_results_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
+    round_index: int = 0
+    revision_count: int = 0
+    workflow_phase: str = "execution"
+    modified_files: list[str] = field(default_factory=list)
+    baseline_file_snapshots: dict[str, str] = field(default_factory=dict)
+    writer_output_files: dict[str, str] = field(default_factory=dict)
+    optimizer_review_report: str = ""
+    optimizer_todo_written: bool = False
+    optimizer_phase_announced: bool = False
 
     @property
     def ternion_report(self) -> str:
@@ -142,6 +162,24 @@ class SessionStore:
         ternion_report: str,
         execution_mode: ExecutionMode,
         original_context: dict | None = None,
+        *,
+        stage: SessionStage = SessionStage.AWAITING_CONFIRMATION,
+        cursor_system_prompt: str = "",
+        cursor_tools: list[dict[str, Any]] | None = None,
+        cursor_tool_choice: Any | None = None,
+        execution_messages: list[dict[str, Any]] | None = None,
+        pending_tool_calls: list[dict[str, Any]] | None = None,
+        tool_results_raw: dict[str, str] | None = None,
+        tool_results_meta: dict[str, dict[str, Any]] | None = None,
+        round_index: int = 0,
+        revision_count: int = 0,
+        workflow_phase: str = "execution",
+        modified_files: list[str] | None = None,
+        baseline_file_snapshots: dict[str, str] | None = None,
+        writer_output_files: dict[str, str] | None = None,
+        optimizer_review_report: str = "",
+        optimizer_todo_written: bool = False,
+        optimizer_phase_announced: bool = False,
     ) -> Session:
         """
         Create a new session after Ternion report generation.
@@ -167,7 +205,7 @@ class SessionStore:
 
         session = Session(
             session_id=generate_session_id(),
-            stage=SessionStage.AWAITING_CONFIRMATION,
+            stage=stage,
             execution_mode=execution_mode,
             ternion_report_raw=ternion_report,
             ternion_report_safe=safe_report,
@@ -175,6 +213,22 @@ class SessionStore:
             created_at=now,
             updated_at=now,
             original_context=original_context or {},
+            cursor_system_prompt=cursor_system_prompt,
+            cursor_tools=list(cursor_tools or []),
+            cursor_tool_choice=cursor_tool_choice,
+            execution_messages=list(execution_messages or []),
+            pending_tool_calls=list(pending_tool_calls or []),
+            tool_results_raw=dict(tool_results_raw or {}),
+            tool_results_meta=dict(tool_results_meta or {}),
+            round_index=round_index,
+            revision_count=revision_count,
+            workflow_phase=workflow_phase,
+            modified_files=list(modified_files or []),
+            baseline_file_snapshots=dict(baseline_file_snapshots or {}),
+            writer_output_files=dict(writer_output_files or {}),
+            optimizer_review_report=optimizer_review_report,
+            optimizer_todo_written=optimizer_todo_written,
+            optimizer_phase_announced=optimizer_phase_announced,
         )
 
         self._save_session(session)
@@ -242,6 +296,22 @@ class SessionStore:
         generated_code: str | None = None,
         review_feedback: str | None = None,
         hash_verified: bool | None = None,
+        cursor_system_prompt: str | None = None,
+        cursor_tools: list[dict[str, Any]] | None = None,
+        cursor_tool_choice: Any | None = None,
+        execution_messages: list[dict[str, Any]] | None = None,
+        pending_tool_calls: list[dict[str, Any]] | None = None,
+        tool_results_raw: dict[str, str] | None = None,
+        tool_results_meta: dict[str, dict[str, Any]] | None = None,
+        round_index: int | None = None,
+        revision_count: int | None = None,
+        workflow_phase: str | None = None,
+        modified_files: list[str] | None = None,
+        baseline_file_snapshots: dict[str, str] | None = None,
+        writer_output_files: dict[str, str] | None = None,
+        optimizer_review_report: str | None = None,
+        optimizer_todo_written: bool | None = None,
+        optimizer_phase_announced: bool | None = None,
     ) -> Session | None:
         """
         Update a session with new values.
@@ -271,6 +341,38 @@ class SessionStore:
             session.review_feedback = review_feedback
         if hash_verified is not None:
             session.hash_verified = hash_verified
+        if cursor_system_prompt is not None:
+            session.cursor_system_prompt = cursor_system_prompt
+        if cursor_tools is not None:
+            session.cursor_tools = cursor_tools
+        if cursor_tool_choice is not None:
+            session.cursor_tool_choice = cursor_tool_choice
+        if execution_messages is not None:
+            session.execution_messages = execution_messages
+        if pending_tool_calls is not None:
+            session.pending_tool_calls = pending_tool_calls
+        if tool_results_raw is not None:
+            session.tool_results_raw = tool_results_raw
+        if tool_results_meta is not None:
+            session.tool_results_meta = tool_results_meta
+        if round_index is not None:
+            session.round_index = round_index
+        if revision_count is not None:
+            session.revision_count = revision_count
+        if workflow_phase is not None:
+            session.workflow_phase = workflow_phase
+        if modified_files is not None:
+            session.modified_files = modified_files
+        if baseline_file_snapshots is not None:
+            session.baseline_file_snapshots = baseline_file_snapshots
+        if writer_output_files is not None:
+            session.writer_output_files = writer_output_files
+        if optimizer_review_report is not None:
+            session.optimizer_review_report = optimizer_review_report
+        if optimizer_todo_written is not None:
+            session.optimizer_todo_written = optimizer_todo_written
+        if optimizer_phase_announced is not None:
+            session.optimizer_phase_announced = optimizer_phase_announced
 
         session.updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         self._save_session(session)

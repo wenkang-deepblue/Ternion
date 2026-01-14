@@ -178,6 +178,169 @@ class TestChatCompletions:
 
                 assert len(chunks) > 0
 
+    def test_chat_completions_returns_tool_calls_and_rewrites_ids(
+        self, client: TestClient
+    ) -> None:
+        """When workflow returns pending_tool_calls, respond with tool_calls and embedded session_id."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = True
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "REPORT",
+            "pending_tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {"name": "codebase_search", "arguments": "{\"query\":\"foo\"}"},
+                }
+            ],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "codebase_search",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["choices"][0]["finish_reason"] == "tool_calls"
+            tool_calls = data["choices"][0]["message"]["tool_calls"]
+            assert tool_calls[0]["id"] == "ternion_0123456789ab_r0001_c00"
+            assert tool_calls[0]["function"]["name"] == "codebase_search"
+
+    def test_execution_followup_routes_by_tool_call_id(self, client: TestClient) -> None:
+        """Execution follow-ups should be routed via tool_call_id even without session markers."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = True
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+            patch("ternion.server.routes.handle_execution_followup", new_callable=AsyncMock) as mock_handler,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_session_store.load_session.return_value = fake_session
+            from fastapi.responses import JSONResponse
+            mock_handler.return_value = JSONResponse(content={"ok": True})
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [
+                        {"role": "user", "content": "Continue"},
+                        {
+                            "role": "tool",
+                            "tool_call_id": "ternion_0123456789ab_r0001_c00",
+                            "content": "RESULT",
+                        },
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            assert response.json() == {"ok": True}
+            mock_handler.assert_awaited()
+
+    def test_read_file_tool_call_is_paginated_by_server(self, client: TestClient) -> None:
+        """Server should enforce offset/limit on read_file tool calls."""
+        from ternion.server.routes import _rewrite_tool_call_ids
+
+        tool_calls = [
+            {
+                "id": "call_abc",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{\"target_file\":\"/tmp/x\"}"},
+            }
+        ]
+        rewritten = _rewrite_tool_call_ids(tool_calls, session_id="0123456789ab", round_index=1)
+        args = rewritten[0]["function"]["arguments"]
+        assert "\"offset\": 1" in args
+        assert "\"limit\"" in args
+
     def test_cursor_handoff_agent_auto_switches_to_ternion_full(
         self, client: TestClient
     ) -> None:

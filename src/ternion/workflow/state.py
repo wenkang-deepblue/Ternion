@@ -16,6 +16,7 @@ class WorkflowPhase(str, Enum):
     CONVERGENCE = "convergence"
     EXECUTION = "execution"
     FINAL_CHECK = "final_check"
+    OPTIMIZER = "optimizer"
     COMPLETE = "complete"
 
 
@@ -60,6 +61,8 @@ class TernionState(TypedDict, total=False):
     cursor_system_prompt: str | None
     conversation_history: list[dict[str, Any]]
     has_images: bool
+    cursor_tools: list[dict[str, Any]] | None
+    cursor_tool_choice: Any | None
 
     # Current phase
     current_phase: str
@@ -79,11 +82,18 @@ class TernionState(TypedDict, total=False):
 
     # Step 3: Execution outputs
     generated_code: str
+    pending_tool_calls: list[dict[str, Any]]
 
-    # Step 4: Final Check outputs
+    # Step 4: Final Check outputs (legacy; may be bypassed in dev override)
     review_result: str  # "approved" or "revision_needed"
     review_feedback: str
     revision_count: int
+
+    # Step 4 (Dev Override): Optimizer inputs/outputs
+    baseline_file_snapshots: dict[str, str]
+    modified_files: list[str]
+    writer_output_files: dict[str, str]
+    optimizer_review_report: str
 
     # Error tracking
     errors: list[str]

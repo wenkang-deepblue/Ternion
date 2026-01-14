@@ -308,7 +308,6 @@ class TestBudgetWarningFormat:
         warning = "BUDGET_WARNING"
         formatted = budget_manager.format_budget_warning(warning)
         assert "[Ternion" in formatted
-        assert "⚠️" in formatted
         assert "Control Panel" in formatted
 
     def test_format_budget_warning_none(self, budget_manager: BudgetManager) -> None:

@@ -10,7 +10,7 @@ from typing import Any
 import structlog
 from openai import AsyncOpenAI
 
-from ternion.core.models import ChatMessage, ImageContent, TextContent
+from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
 from ternion.providers.base import BaseProvider, ProviderResponse
 from ternion.utils.log_manager import log_manager
 
@@ -154,6 +154,24 @@ class OpenAIProvider(BaseProvider):
 
         choice = response.choices[0]
         usage = response.usage
+        tool_calls = None
+        if hasattr(choice, "message") and choice.message is not None:
+            raw_tool_calls = getattr(choice.message, "tool_calls", None)
+            if raw_tool_calls:
+                tool_calls = []
+                for item in raw_tool_calls:
+                    if isinstance(item, dict):
+                        tool_calls.append(item)
+                    elif hasattr(item, "model_dump"):
+                        tool_calls.append(item.model_dump())
+                    elif hasattr(item, "to_dict"):
+                        tool_calls.append(item.to_dict())
+                    else:
+                        tool_calls.append({
+                            "id": getattr(item, "id", ""),
+                            "type": getattr(item, "type", ""),
+                            "function": getattr(item, "function", None),
+                        })
 
         # Extract token counts
         prompt_tokens = usage.prompt_tokens if usage else 0
@@ -187,6 +205,7 @@ class OpenAIProvider(BaseProvider):
         return ProviderResponse(
             content=choice.message.content or "",
             finish_reason=choice.finish_reason,
+            tool_calls=tool_calls,
             usage={
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
@@ -352,11 +371,20 @@ class OpenAIProvider(BaseProvider):
         """
         result = []
         for msg in messages:
+            out: dict[str, Any] = {"role": msg.role.value}
+            if msg.name:
+                out["name"] = msg.name
+
+            # Tool role messages must include tool_call_id for OpenAI compatibility.
+            if msg.role == MessageRole.TOOL:
+                out["content"] = self._content_to_text(msg.content) or ""
+                if msg.tool_call_id:
+                    out["tool_call_id"] = msg.tool_call_id
+                result.append(out)
+                continue
+
             if isinstance(msg.content, str):
-                result.append({
-                    "role": msg.role.value,
-                    "content": msg.content,
-                })
+                out["content"] = msg.content
             elif isinstance(msg.content, list):
                 # Multimodal content
                 content_parts = []
@@ -374,15 +402,16 @@ class OpenAIProvider(BaseProvider):
                                 "detail": part.image_url.detail,
                             },
                         })
-                result.append({
-                    "role": msg.role.value,
-                    "content": content_parts,
-                })
+                out["content"] = content_parts
+            elif msg.content is None:
+                out["content"] = None
             else:
-                result.append({
-                    "role": msg.role.value,
-                    "content": str(msg.content) if msg.content else "",
-                })
+                out["content"] = str(msg.content)
+
+            if msg.tool_calls:
+                out["tool_calls"] = msg.tool_calls
+
+            result.append(out)
         return result
 
     @staticmethod

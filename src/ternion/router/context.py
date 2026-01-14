@@ -47,6 +47,10 @@ class TernionContext:
     # Flag indicating if multimodal content is present
     has_images: bool = False
 
+    # Cursor tool calling (Agent mode)
+    cursor_tools: list[dict[str, Any]] = field(default_factory=list)
+    cursor_tool_choice: Any | None = None
+
     # Session management (Human-in-the-Loop)
     session_id: str = ""  # Existing session ID for follow-up requests
     await_confirmation: bool = True  # If True, stop after convergence for confirmation

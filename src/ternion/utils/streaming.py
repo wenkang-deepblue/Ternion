@@ -78,6 +78,49 @@ def create_sse_stream(
     yield "data: [DONE]\n\n"
 
 
+def create_sse_tool_calls_stream(
+    model: str,
+    tool_calls: list[dict],
+    *,
+    content: str | None = None,
+) -> Generator[str, None, None]:
+    """
+    Create an OpenAI-compatible SSE stream that returns tool calls.
+
+    This is used to drive Cursor Agent tool execution even when the server-side
+    implementation is non-streaming.
+    """
+    chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+
+    first_delta = ChoiceDelta(
+        role="assistant",
+        content=content,
+        tool_calls=tool_calls,
+    )
+    first_chunk = ChatCompletionChunk(
+        id=chunk_id,
+        created=created,
+        model=model,
+        choices=[StreamChoice(delta=first_delta)],
+    )
+    yield f"data: {first_chunk.model_dump_json()}\n\n"
+
+    final_chunk = ChatCompletionChunk(
+        id=chunk_id,
+        created=created,
+        model=model,
+        choices=[
+            StreamChoice(
+                delta=ChoiceDelta(),
+                finish_reason="tool_calls",
+            )
+        ],
+    )
+    yield f"data: {final_chunk.model_dump_json()}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 async def stream_sse_chunks(
     chunks: AsyncGenerator[str, None],
 ) -> AsyncGenerator[str, None]:

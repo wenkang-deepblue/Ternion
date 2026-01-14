@@ -8,7 +8,7 @@
  * - Reviewer: Code reviewer
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import api from '../api/client';
 import type { Config, RoleConfig, ModelsData, ModelInfo } from '../api/client';
 import { useToast } from './Toast';
@@ -70,6 +70,11 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
   const [selectedRoles, setSelectedRoles] = useState<Record<string, RoleConfig>>({});
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+
+  // Anchor for floating save button positioning
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [floatingLeft, setFloatingLeft] = useState<number | null>(null);
+  const [floatingHidden, setFloatingHidden] = useState(false);
 
   // Check if role is disabled based on execution mode
   const isRoleDisabled = (role: string) => {
@@ -323,8 +328,71 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
   const canSave = hasChanges && allRolesConfigured && enabledProviders.length > 0 && !saving;
   const saveButtonTitle = hasIncompleteRoles ? t.roleNotSaved : '';
 
+  const shouldShowFloatingSave = canSave;
+
+  const updateFloatingPosition = () => {
+    if (typeof window === 'undefined') return;
+    const el = cardRef.current;
+    if (!el) {
+      setFloatingLeft(null);
+      return;
+    }
+
+    const rect = el.getBoundingClientRect();
+    const gap = 16;
+    const left = Math.round(rect.right + gap);
+
+    // Responsive downgrade: hide on narrow screens or when button would overflow.
+    const minViewportWidth = 1024;
+    const buttonApproxWidth = 140;
+    const wouldOverflow = left + buttonApproxWidth > window.innerWidth - 8;
+    const hide = window.innerWidth < minViewportWidth || wouldOverflow;
+
+    setFloatingHidden(hide);
+    setFloatingLeft(left);
+  };
+
+  useLayoutEffect(() => {
+    updateFloatingPosition();
+  }, [isDarkMode, executionMode, modelsData, hasChanges, saving]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!shouldShowFloatingSave) return;
+
+    let rafId: number | null = null;
+    const schedule = () => {
+      if (rafId != null) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        updateFloatingPosition();
+      });
+    };
+
+    const onResize = () => schedule();
+    const onScroll = () => schedule();
+
+    window.addEventListener('resize', onResize, { passive: true });
+    window.addEventListener('scroll', onScroll, { passive: true });
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && cardRef.current) {
+      ro = new ResizeObserver(() => schedule());
+      ro.observe(cardRef.current);
+    }
+
+    schedule();
+
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('scroll', onScroll);
+      if (ro) ro.disconnect();
+      if (rafId != null) window.cancelAnimationFrame(rafId);
+    };
+  }, [shouldShowFloatingSave]);
+
   return (
-    <div className="card">
+    <div className="card" ref={cardRef}>
       <div className="card-header flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -359,6 +427,28 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
           </button>
         )}
       </div>
+
+      {shouldShowFloatingSave && !floatingHidden && floatingLeft != null && (
+        <button
+          className={`btn text-xs whitespace-nowrap btn-primary`}
+          onClick={handleSave}
+          disabled={!canSave}
+          aria-label={t.saveChanges}
+          title={t.saveChanges}
+          style={{
+            position: 'fixed',
+            top: '50%',
+            left: `${floatingLeft}px`,
+            transform: 'translateY(-50%)',
+            height: '45px',
+            minWidth: '120px',
+            zIndex: 9000,
+          }}
+        >
+          {saving ? t.saving : t.saveChanges}
+        </button>
+      )}
+
       <div className="card-body space-y-6">
         {Object.entries(ROLE_INFO).map(([role, info]) => {
           const roleConfig = selectedRoles[role];

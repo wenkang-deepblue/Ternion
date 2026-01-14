@@ -127,3 +127,4 @@ App.css
 # Development backup
 *backup*.*
 *request*.py
+*capture*.py

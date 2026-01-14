@@ -4,6 +4,7 @@ Log manager for Ternion observability.
 Provides a centralized logging system for SSE streaming to the Web Control Panel.
 """
 
+import os
 import asyncio
 import contextlib
 from collections import deque
@@ -15,7 +16,7 @@ from ternion.utils.secrets import redact_secrets
 class LogManager:
     """Manages log entries for SSE streaming to observability panel."""
 
-    def __init__(self, max_history: int = 100):
+    def __init__(self, max_history: int = 500):
         self._history: deque = deque(maxlen=max_history)
         self._subscribers: list[asyncio.Queue] = []
 
@@ -125,4 +126,5 @@ class LogManager:
 
 
 # Singleton instance
-log_manager = LogManager()
+_DEFAULT_MAX_HISTORY = int(os.environ.get("TERNION_LOG_MAX_HISTORY", "500"))
+log_manager = LogManager(max_history=_DEFAULT_MAX_HISTORY)

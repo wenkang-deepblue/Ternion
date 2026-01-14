@@ -165,11 +165,8 @@ class BudgetManager:
             usage_file: Path to store usage data (defaults to ~/.ternion/usage.json)
         """
         self.settings = settings or CostControlSettings()
-        # TODO: Switch back to ~/.ternion/usage.json after UI testing
-        # self.usage_file = usage_file or Path.home() / ".ternion" / "usage.json"
-        # self._test_mode = False
-        self.usage_file = usage_file or Path(__file__).parent.parent.parent.parent / "usage_test.json"
-        self._test_mode = True  # Skip day rollover and saving when using test data
+        self.usage_file = usage_file or Path.home() / ".ternion" / "usage.json"
+        self._test_mode = False
         self._store: UsageStore | None = None
         self._load_usage()
 

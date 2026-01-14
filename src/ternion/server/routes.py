@@ -5,7 +5,9 @@ Implements OpenAI-compatible endpoints for chat completions and models listing.
 """
 
 from collections.abc import Iterable
+import json
 import re
+from pathlib import Path
 
 import structlog
 from fastapi import APIRouter, Request
@@ -42,7 +44,11 @@ from ternion.utils.cursor_request_capture import schedule_cursor_request_capture
 from ternion.utils.i18n import MessageKey, get_web_base_url, t
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import parse_structured_report
-from ternion.utils.streaming import create_sse_stream, create_sse_stream_from_queue
+from ternion.utils.streaming import (
+    create_sse_stream,
+    create_sse_stream_from_queue,
+    create_sse_tool_calls_stream,
+)
 from ternion.workflow.streaming_events import StreamEventQueue
 
 logger = structlog.get_logger(__name__)
@@ -55,6 +61,11 @@ _PATCHLIKE_TRIGGERS = (
     "*** Add File:",
     "diff --git",
 )
+
+_TERNION_TOOL_CALL_ID_SESSION_RE = re.compile(r"\bternion_([a-f0-9]{12})_", re.IGNORECASE)
+
+_READ_FILE_DEFAULT_LIMIT = 300
+_READ_FILE_MAX_LIMIT = 400
 
 
 _CURSOR_NON_AGENT_MODE_HINTS = (
@@ -140,6 +151,24 @@ def _is_cursor_agent_request(request: ChatCompletionRequest) -> bool:
     return not _is_high_confidence_non_agent_mode(request)
 
 
+def _phase_start_indicator_text(phase: str) -> str | None:
+    """
+    Build a localized, Cursor-visible phase start indicator.
+
+    This must use i18n (t/MessageKey) and must not hardcode user-facing text.
+    """
+    phase_lower = (phase or "").strip().lower()
+    if phase_lower == "divergence":
+        return t(MessageKey.DIVERGENCE_START)
+    if phase_lower == "convergence":
+        return t(MessageKey.CONVERGENCE_START)
+    if phase_lower == "execution":
+        return t(MessageKey.EXECUTION_START)
+    if phase_lower == "optimizer":
+        return t(MessageKey.OPTIMIZER_START)
+    return None
+
+
 def _is_patch_or_diff_output(text: str) -> bool:
     """
     Detect whether an output likely contains a diff/patch that should remain "patch-only".
@@ -150,6 +179,250 @@ def _is_patch_or_diff_output(text: str) -> bool:
     if not text:
         return False
     return any(trigger in text for trigger in _PATCHLIKE_TRIGGERS)
+
+
+def _parse_execution_session_id(messages: list[dict]) -> str | None:
+    """
+    Parse execution session_id from tool call identifiers in conversation history.
+
+    Execution follow-ups for tool loops may not include any plain-text session markers.
+    In those cases, we rely on `tool_call_id` (tool messages) or `tool_calls[].id`
+    (assistant messages) to recover the session identifier.
+    """
+    for msg in reversed(messages or []):
+        role = str(msg.get("role", "") or "")
+
+        if role == "tool":
+            tool_call_id = msg.get("tool_call_id")
+            if isinstance(tool_call_id, str):
+                match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(tool_call_id)
+                if match:
+                    return match.group(1).lower()
+
+        if role == "assistant":
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    tc_id = tc.get("id")
+                    if isinstance(tc_id, str):
+                        match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(tc_id)
+                        if match:
+                            return match.group(1).lower()
+
+    return None
+
+
+def _rewrite_tool_call_ids(
+    tool_calls: list[dict],
+    *,
+    session_id: str,
+    round_index: int,
+) -> list[dict]:
+    """
+    Rewrite tool_call ids to embed session_id for stable follow-up routing.
+
+    Cursor will echo these ids back as `tool_call_id` in tool-role messages.
+    """
+    rewritten: list[dict] = []
+    for idx, tc in enumerate(tool_calls or []):
+        if not isinstance(tc, dict):
+            continue
+
+        function = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        name = function.get("name")
+        arguments = function.get("arguments")
+        if not isinstance(name, str) or not name.strip():
+            continue
+
+        if arguments is None:
+            arguments_str = "{}"
+        elif isinstance(arguments, str):
+            arguments_str = arguments
+        else:
+            import json
+
+            arguments_str = json.dumps(arguments, ensure_ascii=False)
+
+        if name == "read_file":
+            arguments_str = _enforce_read_file_pagination(arguments_str)
+
+        new_id = f"ternion_{session_id}_r{round_index:04d}_c{idx:02d}"
+        rewritten.append({
+            "id": new_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": arguments_str,
+            },
+        })
+
+    return rewritten
+
+
+def _enforce_read_file_pagination(arguments_json: str) -> str:
+    """
+    Enforce read_file pagination (offset/limit) to avoid oversized contexts.
+
+    This guardrail is deterministic and only applies to read_file tool calls.
+    """
+    import json
+
+    try:
+        args = json.loads(arguments_json) if arguments_json else {}
+    except Exception:
+        return arguments_json
+
+    if not isinstance(args, dict):
+        return arguments_json
+
+    offset = args.get("offset")
+    limit = args.get("limit")
+
+    if not isinstance(offset, int) or offset < 1:
+        args["offset"] = 1
+
+    if not isinstance(limit, int) or limit < 1:
+        args["limit"] = _READ_FILE_DEFAULT_LIMIT
+    elif limit > _READ_FILE_MAX_LIMIT:
+        args["limit"] = _READ_FILE_MAX_LIMIT
+
+    return json.dumps(args, ensure_ascii=False)
+
+
+_MUTATING_TOOL_NAMES = {
+    "write",
+    "search_replace",
+    "delete_file",
+    "edit_notebook",
+}
+
+
+def _coerce_json_object(text: str) -> dict:
+    try:
+        value = json.loads(text or "{}")
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _extract_tool_name_and_arguments(tc: dict) -> tuple[str | None, str]:
+    function = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+    name = function.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None, "{}"
+
+    arguments = function.get("arguments")
+    if arguments is None:
+        return name.strip(), "{}"
+    if isinstance(arguments, str):
+        return name.strip(), arguments
+
+    return name.strip(), json.dumps(arguments, ensure_ascii=False)
+
+
+def _normalize_file_path(path_str: str) -> str | None:
+    if not isinstance(path_str, str) or not path_str.strip():
+        return None
+    p = Path(path_str).expanduser()
+    if not p.is_absolute():
+        p = (Path.cwd() / p)
+    try:
+        return str(p.resolve())
+    except Exception:
+        return str(p)
+
+
+def _read_text_file_best_effort(path_str: str) -> str | None:
+    try:
+        p = Path(path_str)
+        if not p.exists() or not p.is_file():
+            return None
+        return p.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _extract_mutation_target_path(tool_name: str, arguments_json: str) -> str | None:
+    args = _coerce_json_object(arguments_json)
+    if tool_name in {"write", "search_replace"}:
+        value = args.get("file_path")
+        return value if isinstance(value, str) else None
+    if tool_name == "delete_file":
+        value = args.get("target_file")
+        return value if isinstance(value, str) else None
+    if tool_name == "edit_notebook":
+        value = args.get("target_notebook")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _ensure_baseline_snapshots_for_tool_calls(
+    session: Session,
+    tool_calls: list[dict],
+) -> tuple[dict[str, str], list[str]]:
+    baseline = dict(getattr(session, "baseline_file_snapshots", {}) or {})
+    modified_files = list(getattr(session, "modified_files", []) or [])
+    modified_set = set(modified_files)
+
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        name, args_str = _extract_tool_name_and_arguments(tc)
+        if not name or name not in _MUTATING_TOOL_NAMES:
+            continue
+        target = _extract_mutation_target_path(name, args_str)
+        normalized = _normalize_file_path(target or "")
+        if not normalized:
+            continue
+
+        if normalized not in baseline:
+            content = _read_text_file_best_effort(normalized)
+            if content is not None:
+                baseline[normalized] = content
+
+        if normalized not in modified_set:
+            modified_files.append(normalized)
+            modified_set.add(normalized)
+
+    return baseline, modified_files
+
+
+def _filter_optimizer_todo_write(
+    session: Session,
+    tool_calls: list[dict],
+) -> tuple[list[dict], bool]:
+    """
+    Enforce "todo_write at most once" during Optimizer phase.
+
+    Returns:
+        (filtered_tool_calls, todo_written_now)
+    """
+    if not tool_calls:
+        return [], False
+
+    already_written = bool(getattr(session, "optimizer_todo_written", False))
+    filtered: list[dict] = []
+    todo_written_now = False
+    todo_seen = False
+
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        name, _args = _extract_tool_name_and_arguments(tc)
+        if name != "todo_write":
+            filtered.append(tc)
+            continue
+        if already_written:
+            continue
+        if todo_seen:
+            continue
+        todo_seen = True
+        todo_written_now = True
+        filtered.append(tc)
+
+    return filtered, todo_written_now
 
 
 def _emit_thinking_logs_to_observability(
@@ -507,14 +780,15 @@ async def _run_discussion_streaming(
                     current_phase = event.phase
                     # Optionally emit phase start indicator
                     if show_thinking_logs and event.phase:
-                        phase_indicator = f"\n> 🔄 **[{event.phase.upper()}]** Starting...\n\n"
-                        chunk = ChatCompletionChunk(
-                            id=chunk_id,
-                            created=created,
-                            model=model,
-                            choices=[StreamChoice(delta=ChoiceDelta(content=phase_indicator))],
-                        )
-                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        indicator = _phase_start_indicator_text(event.phase)
+                        if indicator:
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content="\n" + indicator))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
 
                 elif event.event_type == StreamEventType.ERROR:
                     # Forward error
@@ -529,6 +803,84 @@ async def _run_discussion_streaming(
 
             # Wait for workflow to complete
             await workflow_task
+
+            pending_tool_calls = final_state.get("pending_tool_calls") or []
+            if pending_tool_calls:
+                cursor_prompt = context.cursor_system_prompt.content if (
+                    context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str)
+                ) else ""
+                workflow_phase = str(final_state.get("current_phase") or "execution")
+                session = session_store.create_session(
+                    ternion_report=final_state.get("ternion_report", "") or "",
+                    execution_mode=ExecutionMode.TERNION_FULL,
+                    stage=SessionStage.AWAITING_TOOL_RESULTS,
+                    cursor_system_prompt=cursor_prompt,
+                    cursor_tools=list(getattr(context, "cursor_tools", []) or []),
+                    cursor_tool_choice=getattr(context, "cursor_tool_choice", None),
+                    execution_messages=list(final_state.get("conversation_history", []) or []),
+                    workflow_phase=workflow_phase,
+                )
+                filtered_tool_calls = list(pending_tool_calls or [])
+                todo_written_now = False
+                if workflow_phase == "optimizer":
+                    filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                        session,
+                        filtered_tool_calls,
+                    )
+                baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+                    session,
+                    filtered_tool_calls,
+                )
+                rewritten_tool_calls = _rewrite_tool_call_ids(
+                    filtered_tool_calls,
+                    session_id=session.session_id,
+                    round_index=1,
+                )
+                execution_messages = list(session.execution_messages or [])
+                execution_messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": rewritten_tool_calls,
+                })
+                session_store.update_session(
+                    session.session_id,
+                    execution_messages=execution_messages,
+                    pending_tool_calls=rewritten_tool_calls,
+                    round_index=1,
+                    workflow_phase=workflow_phase,
+                    modified_files=modified_files,
+                    baseline_file_snapshots=baseline,
+                    optimizer_todo_written=(
+                        True if todo_written_now else getattr(session, "optimizer_todo_written", False)
+                    ),
+                    optimizer_phase_announced=True if workflow_phase == "optimizer" else False,
+                )
+
+                tool_chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=model,
+                    choices=[
+                        StreamChoice(
+                            delta=ChoiceDelta(
+                                role="assistant",
+                                content=None,
+                                tool_calls=rewritten_tool_calls,
+                            ),
+                        )
+                    ],
+                )
+                yield f"data: {tool_chunk.model_dump_json()}\n\n"
+
+                final_chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=model,
+                    choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="tool_calls")],
+                )
+                yield f"data: {final_chunk.model_dump_json()}\n\n"
+                yield "data: [DONE]\n\n"
+                return
 
             # If workflow produced final_output but we didn't stream it
             # (e.g., non-streamable phases), send it now
@@ -672,14 +1024,15 @@ async def _run_implementation_streaming(
 
                 elif event.event_type == StreamEventType.PHASE_START:
                     if show_thinking_logs and event.phase:
-                        phase_indicator = f"\n> 🔄 **[{event.phase.upper()}]** Starting...\n\n"
-                        chunk = ChatCompletionChunk(
-                            id=chunk_id,
-                            created=created,
-                            model=model,
-                            choices=[StreamChoice(delta=ChoiceDelta(content=phase_indicator))],
-                        )
-                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        indicator = _phase_start_indicator_text(event.phase)
+                        if indicator:
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content="\n" + indicator))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
 
                 elif event.event_type == StreamEventType.ERROR:
                     error_text = f"\n\n[Ternion Error] {event.content}\n"
@@ -911,11 +1264,32 @@ async def chat_completions(
             },
         )
 
-    # Convert messages to dict format for parsing
-    messages_as_dicts = [
-        {"role": msg.role.value if hasattr(msg.role, "value") else msg.role, "content": msg.content}
-        for msg in request.messages
-    ]
+    # Convert messages to dict format for parsing and routing.
+    #
+    # Note: Tool-loop execution follow-ups may only be identifiable via tool_call_id/tool_calls,
+    # so we must preserve those fields here.
+    messages_as_dicts = []
+    for msg in request.messages:
+        role = msg.role.value if hasattr(msg.role, "value") else msg.role
+        messages_as_dicts.append({
+            "role": role,
+            "content": msg.content,
+            "name": msg.name,
+            "tool_calls": msg.tool_calls,
+            "tool_call_id": msg.tool_call_id,
+        })
+
+    # Check for execution follow-up session first (tool loop).
+    execution_session_id = _parse_execution_session_id(messages_as_dicts)
+    if execution_session_id:
+        session = session_store.load_session(execution_session_id)
+        if session and session.stage in (
+            SessionStage.EXECUTION_IN_PROGRESS,
+            SessionStage.AWAITING_TOOL_RESULTS,
+            SessionStage.REVIEW_IN_PROGRESS,
+            SessionStage.OPTIMIZER_IN_PROGRESS,
+        ):
+            return await handle_execution_followup(session, request)
 
     # Check for existing session in conversation history (Human-in-the-Loop)
     session_id = parse_session_marker(messages_as_dicts)
@@ -1015,14 +1389,19 @@ async def chat_completions(
 
     # Extract context using MessageRouter
     context = message_router.extract_context(request.messages)
+    context.cursor_tools = list(request.tools or [])
+    context.cursor_tool_choice = request.tool_choice
 
     # Set session management flags from user config
     user_config = config_store.load()
     is_agent_request = _is_cursor_agent_request(request)
 
     context.execution_mode = user_config.execution_mode
-    # Default: require confirmation for cursor_handoff, but skip confirmation in ternion_full.
+    # Default: require confirmation unless this is an Agent request in ternion_full.
     context.await_confirmation = user_config.execution_mode != "ternion_full"
+    if not is_agent_request:
+        # Non-agent modes (Ask/Plan/Debug): always stop after generating the report.
+        context.await_confirmation = True
 
     # Cursor Agent compatibility: When users configured CURSOR_HANDOFF but run Cursor in Agent mode,
     # Cursor cannot automatically switch away from `ternion-team` to a native model for implementation.
@@ -1069,8 +1448,7 @@ async def chat_completions(
             status_code=503,
             content={
                 "error": {
-                    "message": "No LLM providers configured. "
-                    f"Please add API keys in the Web Control Panel at {get_control_panel_url()}",
+                    "message": t(MessageKey.NO_PROVIDERS_CONFIGURED),
                     "type": "configuration_error",
                 }
             },
@@ -1079,7 +1457,8 @@ async def chat_completions(
     # Check role configuration completeness (depends on execution mode)
     missing_roles = []
     required_roles = ["ternion_a", "ternion_b", "ternion_c", "arbiter"]
-    if user_config.execution_mode == "ternion_full":
+    requires_implementation_roles = is_agent_request and context.execution_mode == "ternion_full"
+    if requires_implementation_roles:
         required_roles += ["writer", "reviewer"]
     role_names = {
         "ternion_a": "Ternion A",
@@ -1146,7 +1525,6 @@ async def chat_completions(
     try:
         from ternion.workflow.graph import run_discussion
 
-        # For streaming requests, use real-time event forwarding
         if request.stream:
             return await _run_discussion_streaming(
                 context=context,
@@ -1157,6 +1535,72 @@ async def chat_completions(
 
         # Non-streaming: run workflow and return complete response
         final_state = await run_discussion(context)
+        pending_tool_calls = final_state.get("pending_tool_calls") or []
+        if pending_tool_calls:
+            cursor_prompt = context.cursor_system_prompt.content if (
+                context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str)
+            ) else ""
+            workflow_phase = str(final_state.get("current_phase") or "execution")
+            session = session_store.create_session(
+                ternion_report=final_state.get("ternion_report", "") or "",
+                execution_mode=ExecutionMode.TERNION_FULL,
+                stage=SessionStage.AWAITING_TOOL_RESULTS,
+                cursor_system_prompt=cursor_prompt,
+                cursor_tools=list(request.tools or []),
+                cursor_tool_choice=request.tool_choice,
+                execution_messages=list(final_state.get("conversation_history", []) or []),
+                workflow_phase=workflow_phase,
+            )
+            filtered_tool_calls = list(pending_tool_calls or [])
+            todo_written_now = False
+            announce_text: str | None = None
+            if workflow_phase == "optimizer":
+                filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                    session,
+                    filtered_tool_calls,
+                )
+                announce_text = "\n" + t(MessageKey.OPTIMIZER_START)
+            baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+                session,
+                filtered_tool_calls,
+            )
+            rewritten_tool_calls = _rewrite_tool_call_ids(
+                filtered_tool_calls,
+                session_id=session.session_id,
+                round_index=1,
+            )
+            execution_messages = list(session.execution_messages or [])
+            execution_messages.append({
+                "role": "assistant",
+                "content": announce_text,
+                "tool_calls": rewritten_tool_calls,
+            })
+            session_store.update_session(
+                session.session_id,
+                execution_messages=execution_messages,
+                pending_tool_calls=rewritten_tool_calls,
+                round_index=1,
+                workflow_phase=workflow_phase,
+                modified_files=modified_files,
+                baseline_file_snapshots=baseline,
+                optimizer_todo_written=bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now,
+                optimizer_phase_announced=True if workflow_phase == "optimizer" else False,
+            )
+            return JSONResponse(
+                content=ChatCompletionResponse(
+                    model=request.model,
+                    choices=[
+                        Choice(
+                            finish_reason="tool_calls",
+                            message=ChatMessage(
+                                role=MessageRole.ASSISTANT,
+                                content=announce_text,
+                                tool_calls=rewritten_tool_calls,
+                            ),
+                        )
+                    ],
+                ).model_dump()
+            )
 
         # Build output with thinking logs + final code
         thinking_logs = final_state.get("thinking_logs", [])
@@ -1221,6 +1665,228 @@ async def chat_completions(
         )
 
 
+async def handle_execution_followup(
+    session: Session,
+    request: ChatCompletionRequest,
+) -> Response:
+    """
+    Handle execution-stage follow-ups for Cursor Agent tool loops.
+
+    This branch is identified via tool_call_id, not via plain-text session markers.
+    """
+    from ternion.workflow.implementation_stage import run_implementation_stage
+    from ternion.utils.tool_result_compaction import compact_tool_result
+
+    # Refresh tool definitions on every request if present.
+    cursor_tools = list(request.tools or []) or list(session.cursor_tools or [])
+    cursor_tool_choice = request.tool_choice if request.tool_choice is not None else session.cursor_tool_choice
+
+    context = message_router.extract_context(request.messages)
+    cursor_system_prompt = session.cursor_system_prompt
+    if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str):
+        cursor_system_prompt = context.cursor_system_prompt.content
+
+    # Append new tool results from this request into the persisted execution history.
+    pending_by_id = {
+        tc.get("id"): tc
+        for tc in (session.pending_tool_calls or [])
+        if isinstance(tc, dict) and isinstance(tc.get("id"), str)
+    }
+    existing_tool_ids = {
+        m.get("tool_call_id")
+        for m in (session.execution_messages or [])
+        if isinstance(m, dict) and m.get("role") == "tool" and isinstance(m.get("tool_call_id"), str)
+    }
+    updated_execution_messages = list(session.execution_messages or [])
+    tool_results_raw = dict(getattr(session, "tool_results_raw", {}) or {})
+    tool_results_meta = dict(getattr(session, "tool_results_meta", {}) or {})
+    for msg in request.messages:
+        if msg.role != MessageRole.TOOL:
+            continue
+        if not isinstance(msg.tool_call_id, str):
+            continue
+        if msg.tool_call_id in existing_tool_ids:
+            continue
+        match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(msg.tool_call_id)
+        if not match or match.group(1).lower() != session.session_id.lower():
+            continue
+        raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        tool_call = pending_by_id.get(msg.tool_call_id) or {}
+        fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+        tool_name = fn.get("name") if isinstance(fn.get("name"), str) else None
+        tool_args = fn.get("arguments") if isinstance(fn.get("arguments"), str) else None
+
+        compacted_content, meta = compact_tool_result(
+            tool_name=tool_name,
+            content=raw_content,
+            tool_arguments=tool_args,
+        )
+        if meta.get("compacted") is True:
+            tool_results_raw[msg.tool_call_id] = raw_content
+            tool_results_meta[msg.tool_call_id] = meta
+        updated_execution_messages.append({
+            "role": "tool",
+            "content": compacted_content,
+            "tool_call_id": msg.tool_call_id,
+        })
+        existing_tool_ids.add(msg.tool_call_id)
+
+    resume_phase = str(getattr(session, "workflow_phase", "") or "execution")
+    resume_stage = (
+        SessionStage.OPTIMIZER_IN_PROGRESS
+        if resume_phase == "optimizer"
+        else SessionStage.EXECUTION_IN_PROGRESS
+    )
+    session_store.update_session(
+        session.session_id,
+        stage=resume_stage,
+        cursor_system_prompt=cursor_system_prompt,
+        cursor_tools=list(cursor_tools or []),
+        cursor_tool_choice=cursor_tool_choice,
+        execution_messages=updated_execution_messages,
+        pending_tool_calls=[],
+        tool_results_raw=tool_results_raw,
+        tool_results_meta=tool_results_meta,
+    )
+
+    initial_state = {
+        "cursor_system_prompt": cursor_system_prompt or None,
+        "conversation_history": updated_execution_messages,
+        "ternion_report": session.ternion_report_raw,
+        "session_id": session.session_id,
+        "execution_mode": session.execution_mode.value,
+        "current_phase": getattr(session, "workflow_phase", "execution") or "execution",
+        "thinking_logs": [],
+        "errors": [],
+        "generated_code": session.generated_code,
+        "review_feedback": session.review_feedback,
+        "revision_count": session.revision_count,
+        "baseline_file_snapshots": dict(getattr(session, "baseline_file_snapshots", {}) or {}),
+        "modified_files": list(getattr(session, "modified_files", []) or []),
+        "writer_output_files": dict(getattr(session, "writer_output_files", {}) or {}),
+        "optimizer_review_report": str(getattr(session, "optimizer_review_report", "") or ""),
+        "cursor_tools": cursor_tools,
+        "cursor_tool_choice": cursor_tool_choice,
+    }
+
+    final_state = await run_implementation_stage(initial_state)
+    pending_tool_calls = final_state.get("pending_tool_calls") or []
+
+    if pending_tool_calls:
+        next_round = (session.round_index or 0) + 1
+        workflow_phase = str(final_state.get("current_phase") or getattr(session, "workflow_phase", "execution") or "execution")
+        filtered_tool_calls = list(pending_tool_calls or [])
+        todo_written_now = False
+        announce_now = False
+        announce_text: str | None = None
+        if workflow_phase == "optimizer":
+            filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                session,
+                filtered_tool_calls,
+            )
+            announce_now = not bool(getattr(session, "optimizer_phase_announced", False))
+            if announce_now:
+                announce_text = "\n" + t(MessageKey.OPTIMIZER_START)
+
+        baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+            session,
+            filtered_tool_calls,
+        )
+        rewritten_tool_calls = _rewrite_tool_call_ids(
+            filtered_tool_calls,
+            session_id=session.session_id,
+            round_index=next_round,
+        )
+        updated_execution_messages.append({
+            "role": "assistant",
+            "content": announce_text,
+            "tool_calls": rewritten_tool_calls,
+        })
+        session_store.update_session(
+            session.session_id,
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_messages=updated_execution_messages,
+            pending_tool_calls=rewritten_tool_calls,
+            round_index=next_round,
+            generated_code=final_state.get("generated_code") or session.generated_code,
+            review_feedback=final_state.get("review_feedback") or session.review_feedback,
+            revision_count=final_state.get("revision_count", session.revision_count),
+            workflow_phase=workflow_phase,
+            modified_files=modified_files,
+            baseline_file_snapshots=baseline,
+            writer_output_files=dict(final_state.get("writer_output_files") or getattr(session, "writer_output_files", {}) or {}),
+            optimizer_review_report=str(final_state.get("optimizer_review_report") or getattr(session, "optimizer_review_report", "") or ""),
+            optimizer_todo_written=bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now,
+            optimizer_phase_announced=bool(getattr(session, "optimizer_phase_announced", False)) or announce_now,
+        )
+
+        if request.stream:
+            return StreamingResponse(
+                create_sse_tool_calls_stream(
+                    model=request.model,
+                    tool_calls=rewritten_tool_calls,
+                    content=announce_text,
+                ),
+                media_type="text/event-stream",
+            )
+        return JSONResponse(
+            content=ChatCompletionResponse(
+                model=request.model,
+                choices=[
+                    Choice(
+                        finish_reason="tool_calls",
+                        message=ChatMessage(
+                            role=MessageRole.ASSISTANT,
+                            content=announce_text,
+                            tool_calls=rewritten_tool_calls,
+                        ),
+                    )
+                ],
+            ).model_dump()
+        )
+
+    final_output = final_state.get("final_output", "") or final_state.get("generated_code", "")
+    errors = final_state.get("errors", []) or []
+    optimizer_ran = bool(final_state.get("optimizer_review_report") or getattr(session, "workflow_phase", "") == "optimizer")
+    announce_now = optimizer_ran and not bool(getattr(session, "optimizer_phase_announced", False))
+    if announce_now and final_output:
+        final_output = "\n" + t(MessageKey.OPTIMIZER_START) + final_output
+    new_stage = SessionStage.EXECUTED if not errors else SessionStage.EXECUTION_IN_PROGRESS
+    session_store.update_session(
+        session.session_id,
+        stage=new_stage,
+        pending_tool_calls=[],
+        generated_code=final_state.get("generated_code") or session.generated_code,
+        review_feedback=final_state.get("review_feedback") or session.review_feedback,
+        revision_count=final_state.get("revision_count", session.revision_count),
+        workflow_phase=str(final_state.get("current_phase") or getattr(session, "workflow_phase", "execution") or "execution"),
+        modified_files=list(final_state.get("modified_files") or getattr(session, "modified_files", []) or []),
+        baseline_file_snapshots=dict(final_state.get("baseline_file_snapshots") or getattr(session, "baseline_file_snapshots", {}) or {}),
+        writer_output_files=dict(final_state.get("writer_output_files") or getattr(session, "writer_output_files", {}) or {}),
+        optimizer_review_report=str(final_state.get("optimizer_review_report") or getattr(session, "optimizer_review_report", "") or ""),
+        optimizer_phase_announced=bool(getattr(session, "optimizer_phase_announced", False)) or announce_now,
+    )
+
+    if request.stream:
+        return StreamingResponse(
+            create_sse_stream(model=request.model, content=final_output),
+            media_type="text/event-stream",
+        )
+    return JSONResponse(
+        content=ChatCompletionResponse(
+            model=request.model,
+            choices=[
+                Choice(
+                    message=ChatMessage(
+                        role=MessageRole.ASSISTANT,
+                        content=final_output,
+                    )
+                )
+            ],
+        ).model_dump()
+    )
+
+
 async def handle_session_followup(
     session: Session,
     intent: Intent,
@@ -1274,6 +1940,36 @@ async def handle_confirmed_session(
     Returns:
         Generated code or handoff package
     """
+    is_agent_request = _is_cursor_agent_request(request)
+    if session.execution_mode == ExecutionMode.TERNION_FULL and not is_agent_request:
+        message = t(MessageKey.EXECUTION_REQUIRES_AGENT_MODE)
+        log_manager.emit(
+            level="INFO",
+            category="USER_ACTION",
+            message=(
+                "Execution requires Cursor Agent mode | "
+                f"session_id={session.session_id} | mode={session.execution_mode.value}"
+            ),
+        )
+        if request.stream:
+            return StreamingResponse(
+                create_sse_stream(model=request.model, content=message),
+                media_type="text/event-stream",
+            )
+        return JSONResponse(
+            content=ChatCompletionResponse(
+                model=request.model,
+                choices=[
+                    Choice(
+                        message=ChatMessage(
+                            role=MessageRole.ASSISTANT,
+                            content=message,
+                        )
+                    )
+                ],
+            ).model_dump()
+        )
+
     session_store.update_session(session.session_id, stage=SessionStage.CONFIRMED)
 
     if session.execution_mode == ExecutionMode.CURSOR_HANDOFF:

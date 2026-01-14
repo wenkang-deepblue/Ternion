@@ -23,12 +23,12 @@ class TestNodesImportSmoke:
             convergence_node,
             divergence_node,
             execution_node,
-            final_check_node,
+            optimizer_node,
         )
         assert divergence_node is not None
         assert convergence_node is not None
         assert execution_node is not None
-        assert final_check_node is not None
+        assert optimizer_node is not None
 
     def test_import_cursor_safety_functions(self):
         """Cursor safety functions used by nodes should be importable."""
@@ -98,6 +98,7 @@ class TestNodesImportSmoke:
             MessageKey.EXECUTION_START,
             MessageKey.EXECUTION_COMPLETE,
             MessageKey.EXECUTION_ERROR,
+            MessageKey.OPTIMIZER_START,
             MessageKey.REVIEW_START,
             MessageKey.REVIEW_APPROVED,
             MessageKey.REVIEW_REVISION,

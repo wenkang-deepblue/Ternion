@@ -23,6 +23,7 @@ class ProviderResponse:
 
     content: str = ""
     finish_reason: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
     usage: dict[str, int] = field(default_factory=dict)
     raw_response: Any = None
 

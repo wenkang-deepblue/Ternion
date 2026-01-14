@@ -24,6 +24,8 @@ class MessageKey(str, Enum):
     EXECUTION_START = "execution_start"
     EXECUTION_COMPLETE = "execution_complete"
     EXECUTION_ERROR = "execution_error"
+    OPTIMIZER_START = "optimizer_start"
+    OPTIMIZER_OUTPUT_PROTOCOL_ERROR = "optimizer_output_protocol_error"
     REVIEW_START = "review_start"
     REVIEW_APPROVED = "review_approved"
     REVIEW_REVISION = "review_revision"
@@ -36,6 +38,7 @@ class MessageKey(str, Enum):
     # Validation Errors
     EXECUTION_MODE_MISSING = "execution_mode_missing"
     ROLE_CONFIG_INCOMPLETE = "role_config_incomplete"
+    EXECUTION_REQUIRES_AGENT_MODE = "execution_requires_agent_mode"
 
     # Provider Manager Errors
     NO_PROVIDERS_CONFIGURED = "no_providers_configured"
@@ -70,22 +73,29 @@ class MessageKey(str, Enum):
 
 TRANSLATIONS: dict[Language, dict[str, str]] = {
     "en": {
-        MessageKey.DIVERGENCE_START: "> 🟢 **[Arbiter]**: Starting parallel problem analysis...\n",
-        MessageKey.DIVERGENCE_ANALYSIS: "> 🔵 **[{ternion_id}]**: {preview}\n",
-        MessageKey.CONVERGENCE_START: "> 🟢 **[Arbiter]**: Synthesizing opinions, generating report...\n",
-        MessageKey.CONVERGENCE_COMPLETE: "> 📋 **[Arbiter]**: Report complete: {preview}\n",
-        MessageKey.CONVERGENCE_ERROR: "> ❌ **[Arbiter]**: Error during convergence: {error}\n",
-        MessageKey.EXECUTION_START: "> ✍️ **[Writer]**: Generating code from analysis report...\n",
-        MessageKey.EXECUTION_COMPLETE: "> ✅ **[Writer]**: Code generation complete\n",
-        MessageKey.EXECUTION_ERROR: "> ❌ **[Writer]**: Error during execution: {error}\n",
-        MessageKey.REVIEW_START: "> 🔍 **[Reviewer]**: Reviewing code security and logic...\n",
-        MessageKey.REVIEW_APPROVED: "> ✅ **[Reviewer]**: Review passed\n",
-        MessageKey.REVIEW_REVISION: "> 🔄 **[Reviewer]**: Revision needed, returning to Writer...\n",
-        MessageKey.FINAL_CHECK_ERROR: "> ❌ **[Reviewer]**: Error during review: {error}\n",
+        MessageKey.DIVERGENCE_START: "> **[Arbiter]**: Starting parallel problem analysis...\n",
+        MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.CONVERGENCE_START: "> **[Arbiter]**: Synthesizing opinions, generating report...\n",
+        MessageKey.CONVERGENCE_COMPLETE: "> **[Arbiter]**: Report complete: {preview}\n",
+        MessageKey.CONVERGENCE_ERROR: "> **[Arbiter]**: Error during convergence: {error}\n",
+        MessageKey.EXECUTION_START: "> **[Writer]**: Generating code from analysis report...\n",
+        MessageKey.EXECUTION_COMPLETE: "> **[Writer]**: Code generation complete\n",
+        MessageKey.EXECUTION_ERROR: "> **[Writer]**: Error during execution: {error}\n",
+        MessageKey.OPTIMIZER_START: (
+            "> **[Optimizer]**: Validating and improving code against Ternion Report acceptance criteria...\n"
+        ),
+        MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR: (
+            "\n[Ternion] Optimizer output protocol error: missing user summary wrapper. "
+            "The internal optimizer report was captured. Please retry.\n"
+        ),
+        MessageKey.REVIEW_START: "> **[Reviewer]**: Reviewing code security and logic...\n",
+        MessageKey.REVIEW_APPROVED: "> **[Reviewer]**: Review passed\n",
+        MessageKey.REVIEW_REVISION: "> **[Reviewer]**: Revision needed, returning to Writer...\n",
+        MessageKey.FINAL_CHECK_ERROR: "> **[Reviewer]**: Error during review: {error}\n",
 
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
-            "> ⚠️ **Note**: This report was generated using a single analysis (fallback mode) "
+            "> **Note**: This report was generated using a single analysis (fallback mode) "
             "because the Arbiter synthesis failed. The analysis may be less comprehensive than usual."
         ),
         MessageKey.CONVERGENCE_FALLBACK_CONFIRM: (
@@ -101,6 +111,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_CONFIG_INCOMPLETE: (
             "Role model configuration incomplete. Please configure: {missing_roles}. "
             "Please open Web Control Panel: {web_url}"
+        ),
+        MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
+            "This request is in a non-Agent Cursor mode (Ask/Plan/Debug). "
+            "Execution requires Cursor Agent mode. Please switch to Agent mode and confirm again."
         ),
 
         # Provider Manager Errors
@@ -118,13 +132,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         # Budget Alerts
         MessageKey.BUDGET_WARNING: (
-            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
             "approaching budget limit. This request may exceed monthly budget.\n"
-            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+            "> View usage details in Control Panel -> Usage page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED: (
-            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
-            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+            "\n> **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
@@ -156,22 +170,27 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "zh": {
-        MessageKey.DIVERGENCE_START: "> 🟢 **[Arbiter]**: 开始并发问题分析...\n",
-        MessageKey.DIVERGENCE_ANALYSIS: "> 🔵 **[{ternion_id}]**: {preview}\n",
-        MessageKey.CONVERGENCE_START: "> 🟢 **[Arbiter]**: 综合分析各方意见，生成报告...\n",
-        MessageKey.CONVERGENCE_COMPLETE: "> 📋 **[Arbiter]**: 报告生成完成: {preview}\n",
-        MessageKey.CONVERGENCE_ERROR: "> ❌ **[Arbiter]**: 综合分析错误: {error}\n",
-        MessageKey.EXECUTION_START: "> ✍️ **[Writer]**: 基于分析报告生成代码中...\n",
-        MessageKey.EXECUTION_COMPLETE: "> ✅ **[Writer]**: 代码生成完成\n",
-        MessageKey.EXECUTION_ERROR: "> ❌ **[Writer]**: 代码生成错误: {error}\n",
-        MessageKey.REVIEW_START: "> 🔍 **[Reviewer]**: 审查代码安全性和逻辑...\n",
-        MessageKey.REVIEW_APPROVED: "> ✅ **[Reviewer]**: 审查通过\n",
-        MessageKey.REVIEW_REVISION: "> 🔄 **[Reviewer]**: 需要修订，返回 Writer 重写...\n",
-        MessageKey.FINAL_CHECK_ERROR: "> ❌ **[Reviewer]**: 审查错误: {error}\n",
+        MessageKey.DIVERGENCE_START: "> **[Arbiter]**: 开始并发问题分析...\n",
+        MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.CONVERGENCE_START: "> **[Arbiter]**: 综合分析各方意见，生成报告...\n",
+        MessageKey.CONVERGENCE_COMPLETE: "> **[Arbiter]**: 报告生成完成: {preview}\n",
+        MessageKey.CONVERGENCE_ERROR: "> **[Arbiter]**: 综合分析错误: {error}\n",
+        MessageKey.EXECUTION_START: "> **[Writer]**: 基于分析报告生成代码中...\n",
+        MessageKey.EXECUTION_COMPLETE: "> **[Writer]**: 代码生成完成\n",
+        MessageKey.EXECUTION_ERROR: "> **[Writer]**: 代码生成错误: {error}\n",
+        MessageKey.OPTIMIZER_START: "> **[Optimizer]**: 基于Ternion Report的验收标准校验并改进代码中...\n",
+        MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR: (
+            "\n[Ternion] Optimizer 输出协议错误：未生成用户可见的工作总结包装段。"
+            "内部 Optimizer 报告已落盘抓包，请重试。\n"
+        ),
+        MessageKey.REVIEW_START: "> **[Reviewer]**: 审查代码安全性和逻辑...\n",
+        MessageKey.REVIEW_APPROVED: "> **[Reviewer]**: 审查通过\n",
+        MessageKey.REVIEW_REVISION: "> **[Reviewer]**: 需要修订，返回 Writer 重写...\n",
+        MessageKey.FINAL_CHECK_ERROR: "> **[Reviewer]**: 审查错误: {error}\n",
 
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
-            "> ⚠️ **注意**: 此报告由单个分析生成（降级模式），因为 Arbiter 综合分析失败。"
+            "> **注意**: 此报告由单个分析生成（降级模式），因为 Arbiter 综合分析失败。"
             "分析结果可能不如正常情况全面。"
         ),
         MessageKey.CONVERGENCE_FALLBACK_CONFIRM: (
@@ -187,6 +206,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_CONFIG_INCOMPLETE: (
             "角色模型配置不完整，缺少：{missing_roles}。"
             "请打开 Web 控制面板：{web_url}"
+        ),
+        MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
+            "当前处于 Cursor 的非 Agent 模式（Ask/Plan/Debug）。执行/改代码需要 Cursor Agent 模式。"
+            "请切换到 Agent 模式后再次发送确认以继续。"
         ),
 
         # Provider Manager Errors
@@ -204,13 +227,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         # Budget Alerts
         MessageKey.BUDGET_WARNING: (
-            "\n> ⚠️ **[Ternion 预算警报]**：当前月度用量已达 **{usage_pct}%**，"
+            "\n> **[Ternion 预算警报]**：当前月度用量已达 **{usage_pct}%**，"
             "接近预算上限。此次请求可能导致超出月度预算。\n"
-            "> 📊 可在 Control Panel 的「用量」页面查看详细用量日志。\n\n"
+            "> 可在 Control Panel 的「用量」页面查看详细用量日志。\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED: (
-            "\n> 🚫 **[Ternion 预算超限]**：月度预算已耗尽，请求已被拦截。\n"
-            "> 📊 请在 Control Panel 的「配置」页面调整预算设置。\n\n"
+            "\n> **[Ternion 预算超限]**：月度预算已耗尽，请求已被拦截。\n"
+            "> 请在 Control Panel 的「配置」页面调整预算设置。\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "月度预算已耗尽，请求已被拦截。请在 Control Panel 的「配置」页面调整预算设置。",
         MessageKey.LOG_BUDGET_WARNING: "预算警告 | 用量={usage_pct}% | 接近月度上限",
@@ -241,22 +264,27 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "es": {
-        MessageKey.DIVERGENCE_START: "> 🟢 **[Árbitro]**: Iniciando análisis paralelo del problema...\n",
-        MessageKey.DIVERGENCE_ANALYSIS: "> 🔵 **[{ternion_id}]**: {preview}\n",
-        MessageKey.CONVERGENCE_START: "> 🟢 **[Árbitro]**: Sintetizando opiniones, generando informe...\n",
-        MessageKey.CONVERGENCE_COMPLETE: "> 📋 **[Árbitro]**: Informe completo: {preview}\n",
-        MessageKey.CONVERGENCE_ERROR: "> ❌ **[Árbitro]**: Error durante convergencia: {error}\n",
-        MessageKey.EXECUTION_START: "> ✍️ **[Escritor]**: Generando código del informe de análisis...\n",
-        MessageKey.EXECUTION_COMPLETE: "> ✅ **[Escritor]**: Generación de código completa\n",
-        MessageKey.EXECUTION_ERROR: "> ❌ **[Escritor]**: Error durante ejecución: {error}\n",
-        MessageKey.REVIEW_START: "> 🔍 **[Revisor]**: Revisando seguridad y lógica del código...\n",
-        MessageKey.REVIEW_APPROVED: "> ✅ **[Revisor]**: Revisión aprobada\n",
-        MessageKey.REVIEW_REVISION: "> 🔄 **[Revisor]**: Revisión necesaria, regresando a Escritor...\n",
-        MessageKey.FINAL_CHECK_ERROR: "> ❌ **[Revisor]**: Error durante revisión: {error}\n",
+        MessageKey.DIVERGENCE_START: "> **[Árbitro]**: Iniciando análisis paralelo del problema...\n",
+        MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.CONVERGENCE_START: "> **[Árbitro]**: Sintetizando opiniones, generando informe...\n",
+        MessageKey.CONVERGENCE_COMPLETE: "> **[Árbitro]**: Informe completo: {preview}\n",
+        MessageKey.CONVERGENCE_ERROR: "> **[Árbitro]**: Error durante convergencia: {error}\n",
+        MessageKey.EXECUTION_START: "> **[Escritor]**: Generando código del informe de análisis...\n",
+        MessageKey.EXECUTION_COMPLETE: "> **[Escritor]**: Generación de código completa\n",
+        MessageKey.EXECUTION_ERROR: "> **[Escritor]**: Error durante ejecución: {error}\n",
+        MessageKey.OPTIMIZER_START: "> **[Optimizador]**: Validando y mejorando la implementación...\n",
+        MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR: (
+            "\n[Ternion] Error de protocolo en la salida del optimizador: falta el bloque de resumen para el usuario. "
+            "El informe interno del optimizador fue capturado. Inténtalo de nuevo.\n"
+        ),
+        MessageKey.REVIEW_START: "> **[Revisor]**: Revisando seguridad y lógica del código...\n",
+        MessageKey.REVIEW_APPROVED: "> **[Revisor]**: Revisión aprobada\n",
+        MessageKey.REVIEW_REVISION: "> **[Revisor]**: Revisión necesaria, regresando a Escritor...\n",
+        MessageKey.FINAL_CHECK_ERROR: "> **[Revisor]**: Error durante revisión: {error}\n",
 
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
-            "> ⚠️ **Nota**: Este informe fue generado usando un solo análisis (modo de respaldo) "
+            "> **Nota**: Este informe fue generado usando un solo análisis (modo de respaldo) "
             "porque la síntesis del Árbitro falló. El análisis puede ser menos completo de lo habitual."
         ),
         MessageKey.CONVERGENCE_FALLBACK_CONFIRM: (
@@ -272,6 +300,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_CONFIG_INCOMPLETE: (
             "Configuración de modelo de rol incompleta. Por favor configure: {missing_roles}. "
             "Abra el Panel de Control Web: {web_url}"
+        ),
+        MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
+            "Esta solicitud está en un modo no-Agent de Cursor (Ask/Plan/Debug). "
+            "La ejecución requiere el modo Agent. Cambie a Agent y confirme de nuevo."
         ),
 
         # Provider Manager Errors (Fallback to English)
@@ -289,13 +321,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
-            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
             "approaching budget limit. This request may exceed monthly budget.\n"
-            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+            "> View usage details in Control Panel -> Usage page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED: (
-            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
-            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+            "\n> **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
@@ -327,22 +359,27 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "fr": {
-        MessageKey.DIVERGENCE_START: "> 🟢 **[Arbitre]**: Démarrage de l'analyse parallèle du problème...\n",
-        MessageKey.DIVERGENCE_ANALYSIS: "> 🔵 **[{ternion_id}]**: {preview}\n",
-        MessageKey.CONVERGENCE_START: "> 🟢 **[Arbitre]**: Synthèse des opinions, génération du rapport...\n",
-        MessageKey.CONVERGENCE_COMPLETE: "> 📋 **[Arbitre]**: Rapport complet : {preview}\n",
-        MessageKey.CONVERGENCE_ERROR: "> ❌ **[Arbitre]**: Erreur pendant la convergence : {error}\n",
-        MessageKey.EXECUTION_START: "> ✍️ **[Rédacteur]**: Génération du code à partir du rapport d'analyse...\n",
-        MessageKey.EXECUTION_COMPLETE: "> ✅ **[Rédacteur]**: Génération de code terminée\n",
-        MessageKey.EXECUTION_ERROR: "> ❌ **[Rédacteur]**: Erreur pendant l'exécution : {error}\n",
-        MessageKey.REVIEW_START: "> 🔍 **[Réviseur]**: Vérification de la sécurité et de la logique du code...\n",
-        MessageKey.REVIEW_APPROVED: "> ✅ **[Réviseur]**: Révision approuvée\n",
-        MessageKey.REVIEW_REVISION: "> 🔄 **[Réviseur]**: Révision nécessaire, retour à Rédacteur...\n",
-        MessageKey.FINAL_CHECK_ERROR: "> ❌ **[Réviseur]**: Erreur pendant la révision : {error}\n",
+        MessageKey.DIVERGENCE_START: "> **[Arbitre]**: Démarrage de l'analyse parallèle du problème...\n",
+        MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.CONVERGENCE_START: "> **[Arbitre]**: Synthèse des opinions, génération du rapport...\n",
+        MessageKey.CONVERGENCE_COMPLETE: "> **[Arbitre]**: Rapport complet : {preview}\n",
+        MessageKey.CONVERGENCE_ERROR: "> **[Arbitre]**: Erreur pendant la convergence : {error}\n",
+        MessageKey.EXECUTION_START: "> **[Rédacteur]**: Génération du code à partir du rapport d'analyse...\n",
+        MessageKey.EXECUTION_COMPLETE: "> **[Rédacteur]**: Génération de code terminée\n",
+        MessageKey.EXECUTION_ERROR: "> **[Rédacteur]**: Erreur pendant l'exécution : {error}\n",
+        MessageKey.OPTIMIZER_START: "> **[Optimiseur]**: Validation et amélioration de l’implémentation...\n",
+        MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR: (
+            "\n[Ternion] Erreur de protocole de sortie de l’optimiseur : bloc de résumé utilisateur manquant. "
+            "Le rapport interne de l’optimiseur a été capturé. Veuillez réessayer.\n"
+        ),
+        MessageKey.REVIEW_START: "> **[Réviseur]**: Vérification de la sécurité et de la logique du code...\n",
+        MessageKey.REVIEW_APPROVED: "> **[Réviseur]**: Révision approuvée\n",
+        MessageKey.REVIEW_REVISION: "> **[Réviseur]**: Révision nécessaire, retour à Rédacteur...\n",
+        MessageKey.FINAL_CHECK_ERROR: "> **[Réviseur]**: Erreur pendant la révision : {error}\n",
 
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
-            "> ⚠️ **Note**: Ce rapport a été généré en utilisant une seule analyse (mode de repli) "
+            "> **Note**: Ce rapport a été généré en utilisant une seule analyse (mode de repli) "
             "car la synthèse de l'Arbitre a échoué. L'analyse peut être moins complète que d'habitude."
         ),
         MessageKey.CONVERGENCE_FALLBACK_CONFIRM: (
@@ -358,6 +395,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_CONFIG_INCOMPLETE: (
             "Configuration du modèle de rôle incomplète. Veuillez configurer : {missing_roles}. "
             "Ouvrez le Panneau de Contrôle Web : {web_url}"
+        ),
+        MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
+            "Cette requête est dans un mode Cursor non-Agent (Ask/Plan/Debug). "
+            "L’exécution nécessite le mode Agent. Passez en Agent et confirmez à nouveau."
         ),
 
         # Provider Manager Errors (Fallback to English)
@@ -375,13 +416,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
-            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
             "approaching budget limit. This request may exceed monthly budget.\n"
-            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+            "> View usage details in Control Panel -> Usage page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED: (
-            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
-            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+            "\n> **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
@@ -413,22 +454,27 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "de": {
-        MessageKey.DIVERGENCE_START: "> 🟢 **[Schiedsrichter]**: Starte parallele Problemanalyse...\n",
-        MessageKey.DIVERGENCE_ANALYSIS: "> 🔵 **[{ternion_id}]**: {preview}\n",
-        MessageKey.CONVERGENCE_START: "> 🟢 **[Schiedsrichter]**: Meinungen synthetisieren, Bericht erstellen...\n",
-        MessageKey.CONVERGENCE_COMPLETE: "> 📋 **[Schiedsrichter]**: Bericht fertig: {preview}\n",
-        MessageKey.CONVERGENCE_ERROR: "> ❌ **[Schiedsrichter]**: Fehler bei der Konvergenz: {error}\n",
-        MessageKey.EXECUTION_START: "> ✍️ **[Verfasser]**: Code aus Analysebericht generieren...\n",
-        MessageKey.EXECUTION_COMPLETE: "> ✅ **[Verfasser]**: Code-Generierung abgeschlossen\n",
-        MessageKey.EXECUTION_ERROR: "> ❌ **[Verfasser]**: Fehler bei der Ausführung: {error}\n",
-        MessageKey.REVIEW_START: "> 🔍 **[Prüfer]**: Code-Sicherheit und Logik überprüfen...\n",
-        MessageKey.REVIEW_APPROVED: "> ✅ **[Prüfer]**: Überprüfung bestanden\n",
-        MessageKey.REVIEW_REVISION: "> 🔄 **[Prüfer]**: Revision erforderlich, zurück zu Verfasser...\n",
-        MessageKey.FINAL_CHECK_ERROR: "> ❌ **[Prüfer]**: Fehler bei der Überprüfung: {error}\n",
+        MessageKey.DIVERGENCE_START: "> **[Schiedsrichter]**: Starte parallele Problemanalyse...\n",
+        MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.CONVERGENCE_START: "> **[Schiedsrichter]**: Meinungen synthetisieren, Bericht erstellen...\n",
+        MessageKey.CONVERGENCE_COMPLETE: "> **[Schiedsrichter]**: Bericht fertig: {preview}\n",
+        MessageKey.CONVERGENCE_ERROR: "> **[Schiedsrichter]**: Fehler bei der Konvergenz: {error}\n",
+        MessageKey.EXECUTION_START: "> **[Verfasser]**: Code aus Analysebericht generieren...\n",
+        MessageKey.EXECUTION_COMPLETE: "> **[Verfasser]**: Code-Generierung abgeschlossen\n",
+        MessageKey.EXECUTION_ERROR: "> **[Verfasser]**: Fehler bei der Ausführung: {error}\n",
+        MessageKey.OPTIMIZER_START: "> **[Optimierer]**: Implementierung prüfen und verbessern...\n",
+        MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR: (
+            "\n[Ternion] Protokollfehler in der Optimizer-Ausgabe: Benutzer-Zusammenfassungsblock fehlt. "
+            "Der interne Optimizer-Report wurde erfasst. Bitte erneut versuchen.\n"
+        ),
+        MessageKey.REVIEW_START: "> **[Prüfer]**: Code-Sicherheit und Logik überprüfen...\n",
+        MessageKey.REVIEW_APPROVED: "> **[Prüfer]**: Überprüfung bestanden\n",
+        MessageKey.REVIEW_REVISION: "> **[Prüfer]**: Revision erforderlich, zurück zu Verfasser...\n",
+        MessageKey.FINAL_CHECK_ERROR: "> **[Prüfer]**: Fehler bei der Überprüfung: {error}\n",
 
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
-            "> ⚠️ **Hinweis**: Dieser Bericht wurde mit einer einzelnen Analyse (Fallback-Modus) erstellt, "
+            "> **Hinweis**: Dieser Bericht wurde mit einer einzelnen Analyse (Fallback-Modus) erstellt, "
             "da die Synthese des Schiedsrichters fehlgeschlagen ist. Die Analyse ist möglicherweise weniger umfassend als üblich."
         ),
         MessageKey.CONVERGENCE_FALLBACK_CONFIRM: (
@@ -444,6 +490,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_CONFIG_INCOMPLETE: (
             "Rollenmodell-Konfiguration unvollständig. Bitte konfigurieren: {missing_roles}. "
             "Öffnen Sie das Web-Kontrollfeld: {web_url}"
+        ),
+        MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
+            "Diese Anfrage ist in einem nicht-Agent Cursor-Modus (Ask/Plan/Debug). "
+            "Die Ausführung erfordert den Agent-Modus. Bitte zu Agent wechseln und erneut bestätigen."
         ),
 
         # Provider Manager Errors (Fallback to English)
@@ -461,13 +511,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
-            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
             "approaching budget limit. This request may exceed monthly budget.\n"
-            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+            "> View usage details in Control Panel -> Usage page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED: (
-            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
-            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+            "\n> **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
@@ -499,22 +549,27 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "ja": {
-        MessageKey.DIVERGENCE_START: "> 🟢 **[調停者]**: 並列問題分析を開始...\n",
-        MessageKey.DIVERGENCE_ANALYSIS: "> 🔵 **[{ternion_id}]**: {preview}\n",
-        MessageKey.CONVERGENCE_START: "> 🟢 **[調停者]**: 意見を統合し、レポートを作成中...\n",
-        MessageKey.CONVERGENCE_COMPLETE: "> 📋 **[調停者]**: レポート完成: {preview}\n",
-        MessageKey.CONVERGENCE_ERROR: "> ❌ **[調停者]**: 収束中にエラー: {error}\n",
-        MessageKey.EXECUTION_START: "> ✍️ **[執筆者]**: 分析レポートからコードを生成中...\n",
-        MessageKey.EXECUTION_COMPLETE: "> ✅ **[執筆者]**: コード生成完了\n",
-        MessageKey.EXECUTION_ERROR: "> ❌ **[執筆者]**: 実行中にエラー: {error}\n",
-        MessageKey.REVIEW_START: "> 🔍 **[審査者]**: コードのセキュリティとロジックを確認中...\n",
-        MessageKey.REVIEW_APPROVED: "> ✅ **[審査者]**: レビュー通過\n",
-        MessageKey.REVIEW_REVISION: "> 🔄 **[審査者]**: 修正が必要、執筆者に戻ります...\n",
-        MessageKey.FINAL_CHECK_ERROR: "> ❌ **[審査者]**: レビュー中にエラー: {error}\n",
+        MessageKey.DIVERGENCE_START: "> **[調停者]**: 並列問題分析を開始...\n",
+        MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.CONVERGENCE_START: "> **[調停者]**: 意見を統合し、レポートを作成中...\n",
+        MessageKey.CONVERGENCE_COMPLETE: "> **[調停者]**: レポート完成: {preview}\n",
+        MessageKey.CONVERGENCE_ERROR: "> **[調停者]**: 収束中にエラー: {error}\n",
+        MessageKey.EXECUTION_START: "> **[執筆者]**: 分析レポートからコードを生成中...\n",
+        MessageKey.EXECUTION_COMPLETE: "> **[執筆者]**: コード生成完了\n",
+        MessageKey.EXECUTION_ERROR: "> **[執筆者]**: 実行中にエラー: {error}\n",
+        MessageKey.OPTIMIZER_START: "> **[最適化担当]**: 受け入れ基準に基づき実装を検証・改善中...\n",
+        MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR: (
+            "\n[Ternion] 最適化担当の出力プロトコルエラー：ユーザー向けサマリーブロックがありません。"
+            "内部レポートは保存されました。再試行してください。\n"
+        ),
+        MessageKey.REVIEW_START: "> **[審査者]**: コードのセキュリティとロジックを確認中...\n",
+        MessageKey.REVIEW_APPROVED: "> **[審査者]**: レビュー通過\n",
+        MessageKey.REVIEW_REVISION: "> **[審査者]**: 修正が必要、執筆者に戻ります...\n",
+        MessageKey.FINAL_CHECK_ERROR: "> **[審査者]**: レビュー中にエラー: {error}\n",
 
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
-            "> ⚠️ **注意**: このレポートは、調停者の統合が失敗したため、単一の分析（フォールバックモード）を使用して生成されました。"
+            "> **注意**: このレポートは、調停者の統合が失敗したため、単一の分析（フォールバックモード）を使用して生成されました。"
             "分析は通常より包括的でない場合があります。"
         ),
         MessageKey.CONVERGENCE_FALLBACK_CONFIRM: (
@@ -530,6 +585,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_CONFIG_INCOMPLETE: (
             "ロールモデル設定が不完全です。設定が必要：{missing_roles}。"
             "Webコントロールパネルを開いてください：{web_url}"
+        ),
+        MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
+            "このリクエストは Cursor の非 Agent モード（Ask/Plan/Debug）です。"
+            "実行には Agent モードが必要です。Agent に切り替えてから再度確認してください。"
         ),
 
         # Provider Manager Errors (Fallback to English)
@@ -547,13 +606,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
-            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
             "approaching budget limit. This request may exceed monthly budget.\n"
-            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+            "> View usage details in Control Panel -> Usage page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED: (
-            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
-            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+            "\n> **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
@@ -585,22 +644,27 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "ko": {
-        MessageKey.DIVERGENCE_START: "> 🟢 **[중재자]**: 병렬 문제 분석 시작...\n",
-        MessageKey.DIVERGENCE_ANALYSIS: "> 🔵 **[{ternion_id}]**: {preview}\n",
-        MessageKey.CONVERGENCE_START: "> 🟢 **[중재자]**: 의견 종합, 보고서 작성 중...\n",
-        MessageKey.CONVERGENCE_COMPLETE: "> 📋 **[중재자]**: 보고서 완성: {preview}\n",
-        MessageKey.CONVERGENCE_ERROR: "> ❌ **[중재자]**: 수렴 중 오류: {error}\n",
-        MessageKey.EXECUTION_START: "> ✍️ **[작성자]**: 분석 보고서에서 코드 생성 중...\n",
-        MessageKey.EXECUTION_COMPLETE: "> ✅ **[작성자]**: 코드 생성 완료\n",
-        MessageKey.EXECUTION_ERROR: "> ❌ **[작성자]**: 실행 중 오류: {error}\n",
-        MessageKey.REVIEW_START: "> 🔍 **[검토자]**: 코드 보안 및 로직 검토 중...\n",
-        MessageKey.REVIEW_APPROVED: "> ✅ **[검토자]**: 검토 통과\n",
-        MessageKey.REVIEW_REVISION: "> 🔄 **[검토자]**: 수정 필요, 작성자에게 돌아갑니다...\n",
-        MessageKey.FINAL_CHECK_ERROR: "> ❌ **[검토자]**: 검토 중 오류: {error}\n",
+        MessageKey.DIVERGENCE_START: "> **[중재자]**: 병렬 문제 분석 시작...\n",
+        MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.CONVERGENCE_START: "> **[중재자]**: 의견 종합, 보고서 작성 중...\n",
+        MessageKey.CONVERGENCE_COMPLETE: "> **[중재자]**: 보고서 완성: {preview}\n",
+        MessageKey.CONVERGENCE_ERROR: "> **[중재자]**: 수렴 중 오류: {error}\n",
+        MessageKey.EXECUTION_START: "> **[작성자]**: 분석 보고서에서 코드 생성 중...\n",
+        MessageKey.EXECUTION_COMPLETE: "> **[작성자]**: 코드 생성 완료\n",
+        MessageKey.EXECUTION_ERROR: "> **[작성자]**: 실행 중 오류: {error}\n",
+        MessageKey.OPTIMIZER_START: "> **[최적화 담당]**: 수용 기준에 따라 구현을 검증·개선 중...\n",
+        MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR: (
+            "\n[Ternion] 최적화 출력 프로토콜 오류: 사용자 요약 블록이 누락되었습니다. "
+            "내부 최적화 보고서는 캡처되었습니다. 다시 시도해 주세요.\n"
+        ),
+        MessageKey.REVIEW_START: "> **[검토자]**: 코드 보안 및 로직 검토 중...\n",
+        MessageKey.REVIEW_APPROVED: "> **[검토자]**: 검토 통과\n",
+        MessageKey.REVIEW_REVISION: "> **[검토자]**: 수정 필요, 작성자에게 돌아갑니다...\n",
+        MessageKey.FINAL_CHECK_ERROR: "> **[검토자]**: 검토 중 오류: {error}\n",
 
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
-            "> ⚠️ **주의**: 이 보고서는 중재자 합성이 실패하여 단일 분석(폴백 모드)을 사용하여 생성되었습니다. "
+            "> **주의**: 이 보고서는 중재자 합성이 실패하여 단일 분석(폴백 모드)을 사용하여 생성되었습니다. "
             "분석이 평소보다 덜 포괄적일 수 있습니다."
         ),
         MessageKey.CONVERGENCE_FALLBACK_CONFIRM: (
@@ -616,6 +680,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.ROLE_CONFIG_INCOMPLETE: (
             "역할 모델 구성이 불완전합니다. 구성 필요: {missing_roles}. "
             "웹 제어판을 열어주세요: {web_url}"
+        ),
+        MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
+            "이 요청은 Cursor의 비 Agent 모드(Ask/Plan/Debug)입니다. "
+            "실행에는 Agent 모드가 필요합니다. Agent로 전환한 뒤 다시 확인해 주세요."
         ),
 
         # Provider Manager Errors (Fallback to English)
@@ -633,13 +701,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
-            "\n> ⚠️ **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
             "approaching budget limit. This request may exceed monthly budget.\n"
-            "> 📊 View usage details in Control Panel -> Usage page.\n\n"
+            "> View usage details in Control Panel -> Usage page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED: (
-            "\n> 🚫 **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
-            "> 📊 Adjust budget settings in Control Panel -> Config page.\n\n"
+            "\n> **[Ternion Budget Exceeded]**: Monthly budget exhausted, request blocked.\n"
+            "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
