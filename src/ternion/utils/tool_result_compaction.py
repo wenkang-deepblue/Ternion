@@ -8,6 +8,7 @@ the execution session for debugging and reproducibility.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -59,20 +60,31 @@ def compact_tool_result(
     cfg = config or ToolResultCompactionConfig()
     raw = content or ""
 
+    raw_hash = _sha256_16(raw)
+    args_hash = _sha256_16(tool_arguments) if isinstance(tool_arguments, str) else ""
+    digest = _build_digest(tool_name=tool_name or "", args_hash=args_hash, raw_hash=raw_hash)
+
     meta: dict[str, Any] = {
         "tool_name": tool_name or "",
         "original_chars": len(raw),
+        "chars_raw": len(raw),
+        "sha256_16": raw_hash,
+        "args_sha256_16": args_hash,
+        "digest": digest,
         "compacted": False,
         "strategy": "none",
     }
 
     if len(raw) <= cfg.max_chars:
+        meta["compacted_chars"] = len(raw)
+        meta["chars_compacted"] = len(raw)
         return raw, meta
 
     if (tool_name or "") == "read_file":
         compacted, details = _compact_read_file(
             raw=raw,
             tool_arguments=tool_arguments,
+            digest=digest,
             cfg=cfg,
         )
         meta.update(details)
@@ -82,11 +94,17 @@ def compact_tool_result(
         raw=raw,
         tool_name=tool_name or "",
         tool_arguments=tool_arguments,
+        digest=digest,
         cfg=cfg,
     )
+    head_len = min(len(raw), cfg.generic_head_chars)
+    tail_len = min(len(raw), cfg.generic_tail_chars)
     meta["compacted"] = True
     meta["strategy"] = "generic_head_tail"
     meta["compacted_chars"] = len(compacted)
+    meta["chars_compacted"] = len(compacted)
+    meta["head_chars"] = head_len
+    meta["tail_chars"] = tail_len
     return compacted, meta
 
 
@@ -94,6 +112,7 @@ def _compact_read_file(
     *,
     raw: str,
     tool_arguments: str | None,
+    digest: str,
     cfg: ToolResultCompactionConfig,
 ) -> tuple[str, dict[str, Any]]:
     args = _parse_json_object(tool_arguments)
@@ -112,6 +131,7 @@ def _compact_read_file(
         f"offset={offset}" if isinstance(offset, int) else "offset=(unspecified)",
         f"limit={limit}" if isinstance(limit, int) else "limit=(unspecified)",
         f"original_chars={len(raw)}",
+        f"digest={digest}",
         "",
         "Note: The tool output was compacted for context budget. Do not assume omitted content.",
         "Fetch additional context via read_file with offset/limit, ideally after locating the region with grep/codebase_search.",
@@ -123,12 +143,14 @@ def _compact_read_file(
             raw=raw,
             tool_name="read_file",
             tool_arguments=tool_arguments,
+            digest=digest,
             cfg=cfg,
         )
         return compacted, {
             "compacted": True,
             "strategy": "read_file_generic_fallback",
             "compacted_chars": len(compacted),
+            "chars_compacted": len(compacted),
         }
 
     parsed_lines: list[tuple[int, str, str]] = []
@@ -188,6 +210,10 @@ def _compact_read_file(
         "compacted": True,
         "strategy": "read_file_structured",
         "compacted_chars": len(compacted),
+        "chars_compacted": len(compacted),
+        "index_chars": len(index_block),
+        "head_chars": len(head_block),
+        "tail_chars": len(tail_block),
     }
 
 
@@ -196,6 +222,7 @@ def _compact_generic(
     raw: str,
     tool_name: str,
     tool_arguments: str | None,
+    digest: str,
     cfg: ToolResultCompactionConfig,
 ) -> str:
     head = raw[: cfg.generic_head_chars]
@@ -210,6 +237,7 @@ def _compact_generic(
         "[TERNION COMPACTED TOOL RESULT]",
         f"tool={tool_name}" if tool_name else "tool=(unknown)",
         f"original_chars={len(raw)}",
+        f"digest={digest}",
     ]
     if args_preview:
         parts.append("tool_arguments_preview=" + args_preview.replace("\n", "\\n"))
@@ -224,6 +252,19 @@ def _compact_generic(
         "Note: The tool output was compacted for context budget. Do not assume omitted content.",
     ])
     return "\n".join(parts).strip()
+
+
+def _sha256_16(text: str | None) -> str:
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _build_digest(*, tool_name: str, args_hash: str, raw_hash: str) -> str:
+    name = tool_name or "unknown"
+    args_part = args_hash or "noargs"
+    raw_part = raw_hash or "noraw"
+    return f"{name}:{args_part}:{raw_part}"
 
 
 def _parse_json_object(text: str | None) -> dict[str, Any]:

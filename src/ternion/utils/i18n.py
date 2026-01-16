@@ -51,9 +51,15 @@ class MessageKey(str, Enum):
     BUDGET_WARNING = "budget_warning"
     BUDGET_EXCEEDED = "budget_exceeded"
     BUDGET_EXCEEDED_ERROR = "budget_exceeded_error"
+    BUDGET_CONFIRM_REQUIRED = "budget_confirm_required"
     LOG_BUDGET_WARNING = "log_budget_warning"
     LOG_BUDGET_EXCEEDED = "log_budget_exceeded"
     LOG_BUDGET_IMPL_BLOCKED = "log_budget_impl_blocked"
+    LOG_BUDGET_CONFIRM_REQUIRED = "log_budget_confirm_required"
+
+    # Tool Loop Guardrails
+    TOOL_LOOP_FAILSAFE_REACHED = "tool_loop_failsafe_reached"
+    LOG_TOOL_LOOP_FAILSAFE_REACHED = "log_tool_loop_failsafe_reached"
 
     # Report Display (Cursor-facing UI text)
     REPORT_SECTION_ROOT_CAUSE_TITLE = "report_section_root_cause_title"
@@ -141,9 +147,24 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.BUDGET_CONFIRM_REQUIRED: (
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
+            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            "in Control Panel -> Config page.\n"
+        ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
+        MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
+
+        # Tool Loop Guardrails
+        MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
+            "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
+            "Please narrow scope or provide exact file paths/line ranges, then start a new request.\n"
+        ),
+        MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
+            "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
+        ),
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Root Cause",
@@ -236,9 +257,23 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "> 请在 Control Panel 的「配置」页面调整预算设置。\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "月度预算已耗尽，请求已被拦截。请在 Control Panel 的「配置」页面调整预算设置。",
+        MessageKey.BUDGET_CONFIRM_REQUIRED: (
+            "\n> **[Ternion 预算警报]**：当前月度用量已达 **{usage_pct}%**。"
+            "如需继续工具循环，请回复“继续”；或在 Control Panel 的「配置」页面调整预算设置。\n"
+        ),
         MessageKey.LOG_BUDGET_WARNING: "预算警告 | 用量={usage_pct}% | 接近月度上限",
         MessageKey.LOG_BUDGET_EXCEEDED: "预算超限 | 请求已拦截 | 月度上限已达",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "预算超限 | 实现阶段已阻止 | session_id={session_id}",
+        MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "预算警告 | 需要确认继续 | 用量={usage_pct}%",
+
+        # Tool Loop Guardrails
+        MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
+            "\n> **[Ternion]**：工具循环已达到 failsafe 上限（{max_rounds}）。"
+            "请缩小范围或提供精确文件路径/行号范围后重新发起请求。\n"
+        ),
+        MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
+            "工具循环 failsafe 触发 | max_rounds={max_rounds} | session_id={session_id}"
+        ),
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "根因",
@@ -330,9 +365,24 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.BUDGET_CONFIRM_REQUIRED: (
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
+            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            "in Control Panel -> Config page.\n"
+        ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
+        MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
+
+        # Tool Loop Guardrails
+        MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
+            "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
+            "Please narrow scope or provide exact file paths/line ranges, then start a new request.\n"
+        ),
+        MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
+            "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
+        ),
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Causa raíz",
@@ -425,9 +475,24 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.BUDGET_CONFIRM_REQUIRED: (
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
+            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            "in Control Panel -> Config page.\n"
+        ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
+        MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
+
+        # Tool Loop Guardrails
+        MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
+            "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
+            "Please narrow scope or provide exact file paths/line ranges, then start a new request.\n"
+        ),
+        MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
+            "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
+        ),
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Cause racine",
@@ -520,9 +585,24 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.BUDGET_CONFIRM_REQUIRED: (
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
+            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            "in Control Panel -> Config page.\n"
+        ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
+        MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
+
+        # Tool Loop Guardrails
+        MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
+            "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
+            "Please narrow scope or provide exact file paths/line ranges, then start a new request.\n"
+        ),
+        MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
+            "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
+        ),
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Ursache",
@@ -615,9 +695,24 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.BUDGET_CONFIRM_REQUIRED: (
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
+            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            "in Control Panel -> Config page.\n"
+        ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
+        MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
+
+        # Tool Loop Guardrails
+        MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
+            "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
+            "Please narrow scope or provide exact file paths/line ranges, then start a new request.\n"
+        ),
+        MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
+            "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
+        ),
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "根本原因",
@@ -710,9 +805,24 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "> Adjust budget settings in Control Panel -> Config page.\n\n"
         ),
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
+        MessageKey.BUDGET_CONFIRM_REQUIRED: (
+            "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
+            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            "in Control Panel -> Config page.\n"
+        ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
+        MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
+
+        # Tool Loop Guardrails
+        MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
+            "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
+            "Please narrow scope or provide exact file paths/line ranges, then start a new request.\n"
+        ),
+        MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
+            "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
+        ),
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "근본 원인",

@@ -32,6 +32,10 @@ from ternion.utils.cursor_safety import sanitize_for_cursor_display, sanitize_fo
 from ternion.utils.i18n import MessageKey, t
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import format_report_for_display
+from ternion.utils.tool_calls_parser import (
+    build_text_tool_calls_instruction,
+    extract_tool_calls_from_text,
+)
 from ternion.workflow.state import ReviewResult, TernionState, WorkflowPhase
 from ternion.workflow.streaming_events import StreamEventQueue
 
@@ -1032,6 +1036,12 @@ async def execution_node(state: TernionState) -> TernionState:
         tool_context_digest = ""
         truncated_history = False
 
+    cursor_tools = state.get("cursor_tools") or []
+    cursor_tool_choice = state.get("cursor_tool_choice")
+    role_cfg = config_store.get_role_config("writer")
+    provider_name = role_cfg.provider if role_cfg and role_cfg.provider else ""
+    use_text_tool_calls = bool(cursor_tools) and provider_name and provider_name != "openai"
+
     messages = []
 
     # Use Cursor's system prompt if available, otherwise fall back to Ternion's.
@@ -1079,6 +1089,16 @@ async def execution_node(state: TernionState) -> TernionState:
             "\n\n[TERNION TOOL CONTEXT DIGEST]\n\n",
             tool_context_digest,
         ])
+    if use_text_tool_calls:
+        content_parts.extend([
+            "\n\n[NON-OPENAI TOOL CALLS]\n\n",
+            build_text_tool_calls_instruction(cursor_tools),
+        ])
+    if use_text_tool_calls:
+        content_parts.extend([
+            "\n\n[NON-OPENAI TOOL CALLS]\n\n",
+            build_text_tool_calls_instruction(cursor_tools),
+        ])
 
     # If this is a revision round, always include reviewer feedback section
     # Even if feedback is empty, provide a placeholder to prevent Writer confusion
@@ -1117,7 +1137,6 @@ async def execution_node(state: TernionState) -> TernionState:
         provider = provider_manager.get_provider_for_role("writer")
 
         # Get user-configured model from config_store
-        role_cfg = config_store.get_role_config("writer")
         model = role_cfg.model if role_cfg and role_cfg.model else None
 
         # Hard validation: model must be explicitly configured
@@ -1137,9 +1156,9 @@ async def execution_node(state: TernionState) -> TernionState:
         stream_queue: StreamEventQueue | None = state.get("_stream_queue")
         session_id = state.get("session_id", "")
 
-        cursor_tools = state.get("cursor_tools") or []
-        cursor_tool_choice = state.get("cursor_tool_choice")
-        should_use_tool_calls = bool(cursor_tools) and provider.name == "openai"
+        supports_native_tools = provider.name == "openai"
+        supports_text_tools = bool(cursor_tools) and provider.name != "openai"
+        should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
 
         log_manager.emit(
             level="INFO",
@@ -1162,9 +1181,11 @@ async def execution_node(state: TernionState) -> TernionState:
                     phase="execution",
                     message_id=session_id,
                 )
-            extra_kwargs: dict[str, Any] = {"tools": cursor_tools}
-            if cursor_tool_choice is not None:
-                extra_kwargs["tool_choice"] = cursor_tool_choice
+            extra_kwargs: dict[str, Any] = {}
+            if supports_native_tools:
+                extra_kwargs["tools"] = cursor_tools
+                if cursor_tool_choice is not None:
+                    extra_kwargs["tool_choice"] = cursor_tool_choice
             import time
             started = time.monotonic()
             response = await _call_with_timeout(
@@ -1174,6 +1195,11 @@ async def execution_node(state: TernionState) -> TernionState:
                 temperature=0.3,
                 **extra_kwargs,
             )
+            if supports_text_tools and not response.tool_calls:
+                parsed_tool_calls = extract_tool_calls_from_text(response.content)
+                if parsed_tool_calls:
+                    response.tool_calls = parsed_tool_calls
+                    response.content = ""
             elapsed = time.monotonic() - started
             log_manager.emit(
                 level="INFO",
@@ -1635,6 +1661,12 @@ async def optimizer_node(state: TernionState) -> TernionState:
         tool_context_digest = ""
         truncated_history = False
 
+    cursor_tools = state.get("cursor_tools") or []
+    cursor_tool_choice = state.get("cursor_tool_choice")
+    role_cfg = config_store.get_role_config("reviewer")
+    provider_name = role_cfg.provider if role_cfg and role_cfg.provider else ""
+    use_text_tool_calls = bool(cursor_tools) and provider_name and provider_name != "openai"
+
     messages: list[ChatMessage] = [
         ChatMessage(
             role=MessageRole.SYSTEM,
@@ -1707,7 +1739,6 @@ async def optimizer_node(state: TernionState) -> TernionState:
 
     try:
         provider = provider_manager.get_provider_for_role("reviewer")
-        role_cfg = config_store.get_role_config("reviewer")
         model = role_cfg.model if role_cfg and role_cfg.model else None
         if not model:
             logger.error("optimizer_model_not_configured")
@@ -1722,9 +1753,9 @@ async def optimizer_node(state: TernionState) -> TernionState:
                 "current_phase": WorkflowPhase.COMPLETE.value,
             }
 
-        cursor_tools = state.get("cursor_tools") or []
-        cursor_tool_choice = state.get("cursor_tool_choice")
-        should_use_tool_calls = bool(cursor_tools) and provider.name == "openai"
+        supports_native_tools = provider.name == "openai"
+        supports_text_tools = bool(cursor_tools) and provider.name != "openai"
+        should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
 
         session_id = state.get("session_id", "")
         log_manager.emit(
@@ -1751,7 +1782,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
             )
 
         extra_kwargs: dict[str, Any] = {}
-        if should_use_tool_calls:
+        if should_use_tool_calls and supports_native_tools:
             extra_kwargs["tools"] = cursor_tools
             if cursor_tool_choice is not None:
                 extra_kwargs["tool_choice"] = cursor_tool_choice
@@ -1766,6 +1797,11 @@ async def optimizer_node(state: TernionState) -> TernionState:
             temperature=0.2,
             **extra_kwargs,
         )
+        if supports_text_tools and not response.tool_calls:
+            parsed_tool_calls = extract_tool_calls_from_text(response.content)
+            if parsed_tool_calls:
+                response.tool_calls = parsed_tool_calls
+                response.content = ""
         elapsed = time.monotonic() - started
         log_manager.emit(
             level="INFO",

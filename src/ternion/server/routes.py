@@ -66,6 +66,7 @@ _TERNION_TOOL_CALL_ID_SESSION_RE = re.compile(r"\bternion_([a-f0-9]{12})_", re.I
 
 _READ_FILE_DEFAULT_LIMIT = 300
 _READ_FILE_MAX_LIMIT = 400
+_TOOL_LOOP_MAX_ROUNDS = 100
 
 
 _CURSOR_NON_AGENT_MODE_HINTS = (
@@ -124,6 +125,64 @@ def _request_contains_case_insensitive(request: ChatCompletionRequest, needle: s
             if needle_lower in text.lower():
                 return True
     return False
+
+
+def _build_session_markers(session: Session, *, stage: SessionStage | None = None) -> str:
+    stage_value = stage.value if stage is not None else session.stage.value
+    return (
+        f"TERNION_SESSION_ID={session.session_id}\n"
+        f"TERNION_SESSION_STAGE={stage_value}\n"
+        f"TERNION_EXECUTION_MODE={session.execution_mode.value}\n"
+        f"TERNION_REPORT_HASH={session.report_hash}"
+    )
+
+
+def _build_guardrail_response(
+    *,
+    session: Session,
+    content: str,
+    stage: SessionStage = SessionStage.AWAITING_CONFIRMATION,
+) -> str:
+    markers = _build_session_markers(session, stage=stage)
+    return f"{content}\n{markers}"
+
+
+def _budget_confirmation_message(session: Session) -> str:
+    usage_summary = budget_manager.get_usage_summary()
+    usage_pct = str(usage_summary.get("usage_pct", 0))
+    content = t(MessageKey.BUDGET_CONFIRM_REQUIRED, usage_pct=usage_pct)
+    return _build_guardrail_response(session=session, content=content)
+
+
+def _budget_exceeded_message(session: Session) -> str:
+    content = budget_manager.format_budget_warning("BUDGET_EXCEEDED")
+    return _build_guardrail_response(session=session, content=content)
+
+
+def _tool_loop_failsafe_message(session: Session) -> str:
+    content = t(MessageKey.TOOL_LOOP_FAILSAFE_REACHED, max_rounds=_TOOL_LOOP_MAX_ROUNDS)
+    return _build_guardrail_response(session=session, content=content)
+
+
+def _respond_with_text(request: ChatCompletionRequest, content: str) -> Response:
+    if request.stream:
+        return StreamingResponse(
+            create_sse_stream(model=request.model, content=content),
+            media_type="text/event-stream",
+        )
+    return JSONResponse(
+        content=ChatCompletionResponse(
+            model=request.model,
+            choices=[
+                Choice(
+                    message=ChatMessage(
+                        role=MessageRole.ASSISTANT,
+                        content=content,
+                    )
+                )
+            ],
+        ).model_dump()
+    )
 
 
 def _is_high_confidence_non_agent_mode(request: ChatCompletionRequest) -> bool:
@@ -1668,6 +1727,8 @@ async def chat_completions(
 async def handle_execution_followup(
     session: Session,
     request: ChatCompletionRequest,
+    *,
+    skip_budget_confirm: bool = False,
 ) -> Response:
     """
     Handle execution-stage follow-ups for Cursor Agent tool loops.
@@ -1721,9 +1782,10 @@ async def handle_execution_followup(
             content=raw_content,
             tool_arguments=tool_args,
         )
+        meta["source_ref"] = msg.tool_call_id
+        tool_results_meta[msg.tool_call_id] = meta
         if meta.get("compacted") is True:
             tool_results_raw[msg.tool_call_id] = raw_content
-            tool_results_meta[msg.tool_call_id] = meta
         updated_execution_messages.append({
             "role": "tool",
             "content": compacted_content,
@@ -1748,6 +1810,37 @@ async def handle_execution_followup(
         tool_results_raw=tool_results_raw,
         tool_results_meta=tool_results_meta,
     )
+
+    if not skip_budget_confirm:
+        budget_ok, budget_warning = budget_manager.check_budget()
+        if not budget_ok:
+            log_manager.emit(
+                level="WARN",
+                category="BUDGET",
+                message=t(MessageKey.LOG_BUDGET_EXCEEDED),
+            )
+            session_store.update_session(
+                session.session_id,
+                stage=SessionStage.AWAITING_CONFIRMATION,
+                confirmation_reason="budget_exceeded",
+            )
+            return _respond_with_text(request, _budget_exceeded_message(session))
+        if budget_warning == "BUDGET_WARNING":
+            usage_summary = budget_manager.get_usage_summary()
+            log_manager.emit(
+                level="WARN",
+                category="BUDGET",
+                message=t(
+                    MessageKey.LOG_BUDGET_CONFIRM_REQUIRED,
+                    usage_pct=str(usage_summary.get("usage_pct", 0)),
+                ),
+            )
+            session_store.update_session(
+                session.session_id,
+                stage=SessionStage.AWAITING_CONFIRMATION,
+                confirmation_reason="budget",
+            )
+            return _respond_with_text(request, _budget_confirmation_message(session))
 
     initial_state = {
         "cursor_system_prompt": cursor_system_prompt or None,
@@ -1774,6 +1867,23 @@ async def handle_execution_followup(
 
     if pending_tool_calls:
         next_round = (session.round_index or 0) + 1
+        if next_round > _TOOL_LOOP_MAX_ROUNDS:
+            session_store.update_session(
+                session.session_id,
+                stage=SessionStage.AWAITING_CONFIRMATION,
+                confirmation_reason="failsafe",
+                pending_tool_calls=[],
+            )
+            log_manager.emit(
+                level="WARN",
+                category="GUARDRAIL",
+                message=t(
+                    MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED,
+                    max_rounds=str(_TOOL_LOOP_MAX_ROUNDS),
+                    session_id=session.session_id,
+                ),
+            )
+            return _respond_with_text(request, _tool_loop_failsafe_message(session))
         workflow_phase = str(final_state.get("current_phase") or getattr(session, "workflow_phase", "execution") or "execution")
         filtered_tool_calls = list(pending_tool_calls or [])
         todo_written_now = False
@@ -1911,6 +2021,8 @@ async def handle_session_followup(
     Returns:
         Response appropriate for the intent
     """
+    if session.confirmation_reason:
+        return await handle_guardrail_confirmation(session, intent, request)
     if intent == Intent.CONFIRM:
         return await handle_confirmed_session(session, request)
     elif intent == Intent.REJECT:
@@ -1920,6 +2032,41 @@ async def handle_session_followup(
         return await handle_clarify_request(session, user_message, request)
     else:  # UNKNOWN
         return await handle_unknown_intent(session, request)
+
+
+async def handle_guardrail_confirmation(
+    session: Session,
+    intent: Intent,
+    request: ChatCompletionRequest,
+) -> Response:
+    """
+    Handle guardrail confirmations for tool-loop budget and failsafe checks.
+    """
+    reason = session.confirmation_reason or ""
+    if reason == "budget":
+        if intent == Intent.CONFIRM:
+            resume_stage = (
+                SessionStage.OPTIMIZER_IN_PROGRESS
+                if session.workflow_phase == "optimizer"
+                else SessionStage.EXECUTION_IN_PROGRESS
+            )
+            session_store.update_session(
+                session.session_id,
+                stage=resume_stage,
+                confirmation_reason=None,
+            )
+            session.confirmation_reason = None
+            return await handle_execution_followup(
+                session,
+                request,
+                skip_budget_confirm=True,
+            )
+        return _respond_with_text(request, _budget_confirmation_message(session))
+    if reason == "budget_exceeded":
+        return _respond_with_text(request, _budget_exceeded_message(session))
+    if reason == "failsafe":
+        return _respond_with_text(request, _tool_loop_failsafe_message(session))
+    return _respond_with_text(request, _budget_confirmation_message(session))
 
 
 async def handle_confirmed_session(

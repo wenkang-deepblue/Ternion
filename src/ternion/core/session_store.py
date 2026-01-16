@@ -92,6 +92,7 @@ class Session:
     optimizer_review_report: str = ""
     optimizer_todo_written: bool = False
     optimizer_phase_announced: bool = False
+    confirmation_reason: str | None = None
 
     @property
     def ternion_report(self) -> str:
@@ -122,6 +123,8 @@ class Session:
             raw_report = data.pop("ternion_report")
             data["ternion_report_raw"] = raw_report
             data["ternion_report_safe"] = sanitize_for_cursor_display(raw_report)
+
+        data.setdefault("confirmation_reason", None)
 
         return cls(**data)
 
@@ -312,6 +315,7 @@ class SessionStore:
         optimizer_review_report: str | None = None,
         optimizer_todo_written: bool | None = None,
         optimizer_phase_announced: bool | None = None,
+        confirmation_reason: str | None = None,
     ) -> Session | None:
         """
         Update a session with new values.
@@ -373,6 +377,8 @@ class SessionStore:
             session.optimizer_todo_written = optimizer_todo_written
         if optimizer_phase_announced is not None:
             session.optimizer_phase_announced = optimizer_phase_announced
+        if confirmation_reason is not None:
+            session.confirmation_reason = confirmation_reason
 
         session.updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         self._save_session(session)
