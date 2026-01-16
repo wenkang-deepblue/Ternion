@@ -680,10 +680,10 @@ class OpenAIProvider(BaseProvider):
                     function = tc.get("function") if isinstance(tc.get("function"), dict) else {}
                     name = function.get("name")
                     arguments = function.get("arguments")
-                    call_id = tc.get("id")
+                    tc_call_id = tc.get("id")
                     if not isinstance(name, str) or not name.strip():
                         continue
-                    if not isinstance(call_id, str) or not call_id.strip():
+                    if not isinstance(tc_call_id, str) or not tc_call_id.strip():
                         continue
                     if arguments is None:
                         arguments_str = "{}"
@@ -696,8 +696,8 @@ class OpenAIProvider(BaseProvider):
 
                     items.append({
                         "type": "function_call",
-                        "call_id": call_id,
-                        "id": call_id,
+                        "call_id": tc_call_id,
+                        "id": tc_call_id,
                         "name": name,
                         "arguments": arguments_str,
                     })

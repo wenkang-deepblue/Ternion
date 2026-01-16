@@ -4,9 +4,9 @@ Log manager for Ternion observability.
 Provides a centralized logging system for SSE streaming to the Web Control Panel.
 """
 
-import os
 import asyncio
 import contextlib
+import os
 from collections import deque
 from datetime import UTC, datetime
 

@@ -53,7 +53,7 @@ def should_continue_after_execution(state: TernionState) -> str:
     return END
 
 
-def should_continue_after_optimizer(state: TernionState) -> str:
+def should_continue_after_optimizer(_state: TernionState) -> str:
     """
     Determine next step after optimizer.
 

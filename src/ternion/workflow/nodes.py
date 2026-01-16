@@ -1664,8 +1664,6 @@ async def optimizer_node(state: TernionState) -> TernionState:
     cursor_tools = state.get("cursor_tools") or []
     cursor_tool_choice = state.get("cursor_tool_choice")
     role_cfg = config_store.get_role_config("reviewer")
-    provider_name = role_cfg.provider if role_cfg and role_cfg.provider else ""
-    use_text_tool_calls = bool(cursor_tools) and provider_name and provider_name != "openai"
 
     messages: list[ChatMessage] = [
         ChatMessage(

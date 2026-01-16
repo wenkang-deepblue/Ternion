@@ -6,10 +6,10 @@ without going through the full LangGraph workflow. This is used after
 user confirms the analysis report to avoid re-running RCA.
 """
 
+from pathlib import Path
 from typing import Any
 
 import structlog
-from pathlib import Path
 
 from ternion.workflow.nodes import execution_node, optimizer_node
 from ternion.workflow.state import TernionState, WorkflowPhase

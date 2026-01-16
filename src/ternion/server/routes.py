@@ -4,9 +4,9 @@ API routes for Ternion gateway.
 Implements OpenAI-compatible endpoints for chat completions and models listing.
 """
 
-from collections.abc import Iterable
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 import structlog
@@ -38,15 +38,15 @@ from ternion.core.session_store import (
     session_store,
 )
 from ternion.providers.manager import provider_manager
+from ternion.router.context import TernionContext
 from ternion.router.message_router import MessageRouter
-from ternion.utils.cursor_safety import sanitize_for_cursor_display
 from ternion.utils.cursor_request_capture import schedule_cursor_request_capture
+from ternion.utils.cursor_safety import sanitize_for_cursor_display
 from ternion.utils.i18n import MessageKey, get_web_base_url, t
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import parse_structured_report
 from ternion.utils.streaming import (
     create_sse_stream,
-    create_sse_stream_from_queue,
     create_sse_tool_calls_stream,
 )
 from ternion.workflow.streaming_events import StreamEventQueue
@@ -103,11 +103,11 @@ def _iter_message_content_text(content: object) -> Iterable[str]:
             part_type = getattr(part, "type", None)
             if part_type != "text":
                 continue
-            text = getattr(part, "text", None)
-            if isinstance(text, str):
-                text = text.strip()
-                if text:
-                    yield text
+            part_text = getattr(part, "text", None)
+            if isinstance(part_text, str):
+                part_text = part_text.strip()
+                if part_text:
+                    yield part_text
 
 
 def _request_contains_case_insensitive(request: ChatCompletionRequest, needle: str) -> bool:
@@ -771,7 +771,7 @@ async def _run_discussion_streaming(
     from collections.abc import AsyncGenerator
 
     from ternion.workflow.graph import run_discussion
-    from ternion.workflow.streaming_events import StreamEventQueue, StreamEventType
+    from ternion.workflow.streaming_events import StreamEventType
 
     # Create event queue for streaming
     stream_queue = StreamEventQueue()
@@ -818,7 +818,6 @@ async def _run_discussion_streaming(
 
         # Variables for final output assembly
         streamed_content = ""
-        current_phase = ""
 
         try:
             # Consume events from queue
@@ -836,7 +835,6 @@ async def _run_discussion_streaming(
                         yield f"data: {chunk.model_dump_json()}\n\n"
 
                 elif event.event_type == StreamEventType.PHASE_START:
-                    current_phase = event.phase
                     # Optionally emit phase start indicator
                     if show_thinking_logs and event.phase:
                         indicator = _phase_start_indicator_text(event.phase)
@@ -912,7 +910,7 @@ async def _run_discussion_streaming(
                     optimizer_todo_written=(
                         True if todo_written_now else getattr(session, "optimizer_todo_written", False)
                     ),
-                    optimizer_phase_announced=True if workflow_phase == "optimizer" else False,
+                    optimizer_phase_announced=workflow_phase == "optimizer",
                 )
 
                 tool_chunk = ChatCompletionChunk(
@@ -1022,7 +1020,7 @@ async def _run_implementation_streaming(
     from collections.abc import AsyncGenerator
 
     from ternion.workflow.implementation_stage import run_implementation_stage
-    from ternion.workflow.streaming_events import StreamEventQueue, StreamEventType
+    from ternion.workflow.streaming_events import StreamEventType
 
     # Create event queue for streaming
     stream_queue = StreamEventQueue()
@@ -1158,9 +1156,6 @@ async def _run_implementation_streaming(
         media_type="text/event-stream",
     )
 
-
-# Import for type hints
-from ternion.router.context import TernionContext
 
 
 @router.get("/health")
@@ -1643,7 +1638,7 @@ async def chat_completions(
                 modified_files=modified_files,
                 baseline_file_snapshots=baseline,
                 optimizer_todo_written=bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now,
-                optimizer_phase_announced=True if workflow_phase == "optimizer" else False,
+                optimizer_phase_announced=workflow_phase == "optimizer",
             )
             return JSONResponse(
                 content=ChatCompletionResponse(
@@ -1692,9 +1687,9 @@ async def chat_completions(
             if errors:
                 output_parts.append("\n\n[Ternion] Errors:\n")
                 for err in errors:
-                    msg = sanitize_for_cursor_display(str(err))
-                    if msg:
-                        output_parts.append(f"- {msg}\n")
+                    err_msg = sanitize_for_cursor_display(str(err))
+                    if err_msg:
+                        output_parts.append(f"- {err_msg}\n")
 
         output = "".join(output_parts)
 
@@ -1735,8 +1730,8 @@ async def handle_execution_followup(
 
     This branch is identified via tool_call_id, not via plain-text session markers.
     """
-    from ternion.workflow.implementation_stage import run_implementation_stage
     from ternion.utils.tool_result_compaction import compact_tool_result
+    from ternion.workflow.implementation_stage import run_implementation_stage
 
     # Refresh tool definitions on every request if present.
     cursor_tools = list(request.tools or []) or list(session.cursor_tools or [])

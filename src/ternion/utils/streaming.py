@@ -16,7 +16,7 @@ import structlog
 from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
 
 if TYPE_CHECKING:
-    from ternion.workflow.streaming_events import StreamEvent, StreamEventQueue
+    from ternion.workflow.streaming_events import StreamEventQueue
 
 logger = structlog.get_logger(__name__)
 

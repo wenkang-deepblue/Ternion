@@ -198,11 +198,7 @@ class ChatCompletionRequest(BaseModel):
         if isinstance(input_value, str):
             return [{"role": "user", "content": input_value}]
 
-        items: list[Any]
-        if isinstance(input_value, list):
-            items = input_value
-        else:
-            items = [input_value]
+        items: list[Any] = input_value if isinstance(input_value, list) else [input_value]
 
         messages: list[dict[str, Any]] = []
         for item in items:

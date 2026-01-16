@@ -126,7 +126,7 @@ def _compact_read_file(
 
     header_lines = [
         "[TERNION COMPACTED TOOL RESULT]",
-        f"tool=read_file",
+        "tool=read_file",
         f"target_file={target_file}" if target_file else "target_file=(unknown)",
         f"offset={offset}" if isinstance(offset, int) else "offset=(unspecified)",
         f"limit={limit}" if isinstance(limit, int) else "limit=(unspecified)",
