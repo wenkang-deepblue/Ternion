@@ -59,6 +59,11 @@ class TestModelsEndpoint:
         model_ids = [m["id"] for m in data["data"]]
         assert "ternion-team" in model_ids
 
+    def test_head_models(self, client: TestClient) -> None:
+        """HEAD /v1/models should succeed for strict clients (API-002)."""
+        response = client.head("/v1/models")
+        assert response.status_code == 200
+
 
 class TestChatCompletions:
     """Tests for chat completions endpoint."""
@@ -261,6 +266,157 @@ class TestChatCompletions:
             tool_calls = data["choices"][0]["message"]["tool_calls"]
             assert tool_calls[0]["id"] == "ternion_0123456789ab_r0001_c00"
             assert tool_calls[0]["function"]["name"] == "codebase_search"
+
+    def test_responses_alias_accepts_input_payload(self, client: TestClient) -> None:
+        """
+        /v1/responses should accept OpenAI Responses-style payloads (API-004),
+        coercing `input` into Chat Completions `messages`.
+        """
+        mock_result = {
+            "final_output": "PONG",
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = True
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "ternion-team",
+                    "input": "REGTEST_CASE=API-004\n\nPing",
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["model"] == "ternion-team"
+            assert data["choices"][0]["message"]["content"] == "PONG"
+
+    def test_streaming_tool_calls_finishes_with_tool_calls(
+        self, client: TestClient
+    ) -> None:
+        """When streaming returns tool_calls, SSE must end with finish_reason=tool_calls."""
+        import json as json_lib
+
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = True
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "REPORT",
+            "pending_tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {"name": "codebase_search", "arguments": "{\"query\":\"foo\"}"},
+                }
+            ],
+            "conversation_history": [],
+            "current_phase": "execution",
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": True,
+                },
+            ) as response:
+                assert response.status_code == 200
+                assert "text/event-stream" in response.headers["content-type"]
+
+                chunks: list[dict] = []
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line.removeprefix("data: ").strip()
+                    if payload == "[DONE]":
+                        break
+                    chunks.append(json_lib.loads(payload))
+
+                assert chunks, "Expected at least one SSE data chunk"
+
+                saw_tool_calls = any(
+                    isinstance(c.get("choices", [{}])[0].get("delta", {}).get("tool_calls"), list)
+                    for c in chunks
+                )
+                assert saw_tool_calls, "Expected a delta.tool_calls chunk in SSE stream"
+
+                saw_finish = any(
+                    c.get("choices", [{}])[0].get("finish_reason") == "tool_calls"
+                    for c in chunks
+                )
+                assert saw_finish, "Expected a finish_reason='tool_calls' final SSE chunk"
 
     def test_execution_followup_routes_by_tool_call_id(self, client: TestClient) -> None:
         """Execution follow-ups should be routed via tool_call_id even without session markers."""

@@ -1094,11 +1094,6 @@ async def execution_node(state: TernionState) -> TernionState:
             "\n\n[NON-OPENAI TOOL CALLS]\n\n",
             build_text_tool_calls_instruction(cursor_tools),
         ])
-    if use_text_tool_calls:
-        content_parts.extend([
-            "\n\n[NON-OPENAI TOOL CALLS]\n\n",
-            build_text_tool_calls_instruction(cursor_tools),
-        ])
 
     # If this is a revision round, always include reviewer feedback section
     # Even if feedback is empty, provide a placeholder to prevent Writer confusion
