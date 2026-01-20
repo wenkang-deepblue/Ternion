@@ -326,7 +326,7 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
             <button
               onClick={() => setDownloadError(null)}
               className="text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors"
-              title="Dismiss"
+              title={t.logsDismiss}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -358,7 +358,7 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
               <button
                 onClick={() => setLastDownload(null)}
                 className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
-                title="Dismiss"
+                title={t.logsDismiss}
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

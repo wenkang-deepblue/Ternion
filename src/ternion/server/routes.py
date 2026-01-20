@@ -66,6 +66,7 @@ _TERNION_TOOL_CALL_ID_SESSION_RE = re.compile(r"\bternion_([a-f0-9]{12})_", re.I
 
 _READ_FILE_DEFAULT_LIMIT = 300
 _READ_FILE_MAX_LIMIT = 400
+_READ_FILE_EVIDENCE_MAX_LIMIT = 2000
 _TOOL_LOOP_MAX_ROUNDS = 100
 
 
@@ -278,12 +279,20 @@ def _rewrite_tool_call_ids(
     *,
     session_id: str,
     round_index: int,
+    workflow_phase: str | None = None,
 ) -> list[dict]:
     """
     Rewrite tool_call ids to embed session_id for stable follow-up routing.
 
     Cursor will echo these ids back as `tool_call_id` in tool-role messages.
     """
+    phase = (workflow_phase or "").strip().lower()
+    read_file_max_limit = (
+        _READ_FILE_EVIDENCE_MAX_LIMIT
+        if "evidence" in phase
+        else _READ_FILE_MAX_LIMIT
+    )
+
     rewritten: list[dict] = []
     for idx, tc in enumerate(tool_calls or []):
         if not isinstance(tc, dict):
@@ -305,7 +314,10 @@ def _rewrite_tool_call_ids(
             arguments_str = json.dumps(arguments, ensure_ascii=False)
 
         if name == "read_file":
-            arguments_str = _enforce_read_file_pagination(arguments_str)
+            arguments_str = _enforce_read_file_pagination(
+                arguments_str,
+                max_limit=read_file_max_limit,
+            )
 
         new_id = f"ternion_{session_id}_r{round_index:04d}_c{idx:02d}"
         rewritten.append({
@@ -320,7 +332,7 @@ def _rewrite_tool_call_ids(
     return rewritten
 
 
-def _enforce_read_file_pagination(arguments_json: str) -> str:
+def _enforce_read_file_pagination(arguments_json: str, *, max_limit: int) -> str:
     """
     Enforce read_file pagination (offset/limit) to avoid oversized contexts.
 
@@ -336,6 +348,9 @@ def _enforce_read_file_pagination(arguments_json: str) -> str:
     if not isinstance(args, dict):
         return arguments_json
 
+    if not isinstance(max_limit, int) or max_limit < 1:
+        max_limit = _READ_FILE_MAX_LIMIT
+
     offset = args.get("offset")
     limit = args.get("limit")
 
@@ -344,8 +359,8 @@ def _enforce_read_file_pagination(arguments_json: str) -> str:
 
     if not isinstance(limit, int) or limit < 1:
         args["limit"] = _READ_FILE_DEFAULT_LIMIT
-    elif limit > _READ_FILE_MAX_LIMIT:
-        args["limit"] = _READ_FILE_MAX_LIMIT
+    elif limit > max_limit:
+        args["limit"] = max_limit
 
     return json.dumps(args, ensure_ascii=False)
 
@@ -876,6 +891,11 @@ async def _run_discussion_streaming(
                     cursor_tool_choice=getattr(context, "cursor_tool_choice", None),
                     execution_messages=list(final_state.get("conversation_history", []) or []),
                     workflow_phase=workflow_phase,
+                    # Phase 1.5 evidence state (required for report_evidence follow-ups)
+                    evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
+                    evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
+                    evidence_requests=str(final_state.get("evidence_requests", "") or ""),
+                    ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
                 )
                 filtered_tool_calls = list(pending_tool_calls or [])
                 todo_written_now = False
@@ -892,6 +912,7 @@ async def _run_discussion_streaming(
                     filtered_tool_calls,
                     session_id=session.session_id,
                     round_index=1,
+                    workflow_phase=workflow_phase,
                 )
                 execution_messages = list(session.execution_messages or [])
                 execution_messages.append({
@@ -1343,6 +1364,11 @@ async def chat_completions(
             SessionStage.REVIEW_IN_PROGRESS,
             SessionStage.OPTIMIZER_IN_PROGRESS,
         ):
+            workflow_phase = str(getattr(session, "workflow_phase", "") or "").lower()
+            if workflow_phase == "report_evidence":
+                return await handle_report_evidence_followup(session, request)
+            if workflow_phase == "evidence":
+                return await handle_evidence_followup(session, request)
             return await handle_execution_followup(session, request)
 
     # Check for existing session in conversation history (Human-in-the-Loop)
@@ -1604,6 +1630,11 @@ async def chat_completions(
                 cursor_tool_choice=request.tool_choice,
                 execution_messages=list(final_state.get("conversation_history", []) or []),
                 workflow_phase=workflow_phase,
+                # Phase 1.5 evidence state (P0-1 fix)
+                evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
+                evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
+                evidence_requests=str(final_state.get("evidence_requests", "") or ""),
+                ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
             )
             filtered_tool_calls = list(pending_tool_calls or [])
             todo_written_now = False
@@ -1622,6 +1653,7 @@ async def chat_completions(
                 filtered_tool_calls,
                 session_id=session.session_id,
                 round_index=1,
+                workflow_phase=workflow_phase,
             )
             execution_messages = list(session.execution_messages or [])
             execution_messages.append({
@@ -1683,9 +1715,10 @@ async def chat_completions(
         if final_code:
             output_parts.append(final_code)
         else:
-            output_parts.append("[Ternion] Discussion completed but no output was generated.")
+            output_parts.append(t(MessageKey.DISCUSSION_NO_OUTPUT))
             if errors:
-                output_parts.append("\n\n[Ternion] Errors:\n")
+                output_parts.append("\n\n")
+                output_parts.append(t(MessageKey.DISCUSSION_ERRORS_HEADER))
                 for err in errors:
                     err_msg = sanitize_for_cursor_display(str(err))
                     if err_msg:
@@ -1717,6 +1750,611 @@ async def chat_completions(
                 }
             },
         )
+
+
+async def handle_report_evidence_followup(
+    session: Session,
+    request: ChatCompletionRequest,
+) -> Response:
+    """
+    Handle Phase 1.5 (Report Evidence) follow-ups for Cursor Agent tool loops.
+
+    This branch is identified via tool_call_id and workflow_phase == "report_evidence".
+    It uses resume_report_evidence to preserve Phase 0/1 evidence state.
+    """
+    from ternion.workflow.graph import resume_report_evidence
+
+    cursor_tools = list(request.tools or []) or list(session.cursor_tools or [])
+    cursor_tool_choice = request.tool_choice if request.tool_choice is not None else session.cursor_tool_choice
+
+    context = message_router.extract_context(request.messages)
+    cursor_system_prompt = session.cursor_system_prompt
+    if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str):
+        cursor_system_prompt = context.cursor_system_prompt.content
+
+    updated_execution_messages = list(session.execution_messages or [])
+    existing_tool_ids = {
+        m.get("tool_call_id")
+        for m in (session.execution_messages or [])
+        if isinstance(m, dict) and m.get("role") == "tool" and isinstance(m.get("tool_call_id"), str)
+    }
+    for msg in request.messages:
+        if msg.role != MessageRole.TOOL:
+            continue
+        if not isinstance(msg.tool_call_id, str):
+            continue
+        if msg.tool_call_id in existing_tool_ids:
+            continue
+        match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(msg.tool_call_id)
+        if not match or match.group(1).lower() != session.session_id.lower():
+            continue
+        raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        updated_execution_messages.append({
+            "role": "tool",
+            "content": raw_content,
+            "tool_call_id": msg.tool_call_id,
+        })
+        existing_tool_ids.add(msg.tool_call_id)
+
+    # Update session for Phase 1.5
+    session_store.update_session(
+        session.session_id,
+        stage=SessionStage.AWAITING_TOOL_RESULTS,
+        cursor_system_prompt=cursor_system_prompt,
+        cursor_tools=list(cursor_tools or []),
+        cursor_tool_choice=cursor_tool_choice,
+        execution_messages=updated_execution_messages,
+        pending_tool_calls=[],
+        workflow_phase="report_evidence",  # Explicitly Phase 1.5
+        # Persist existing evidence state
+        evidence_bundle=session.evidence_bundle,
+        evidence_gaps=session.evidence_gaps,
+        evidence_requests=session.evidence_requests,
+        ternion_analyses=session.ternion_analyses,
+    )
+
+    budget_ok, budget_warning = budget_manager.check_budget()
+    if not budget_ok:
+        log_manager.emit(
+            level="WARN",
+            category="BUDGET",
+            message=t(MessageKey.LOG_BUDGET_EXCEEDED),
+        )
+        session_store.update_session(
+            session.session_id,
+            stage=SessionStage.AWAITING_CONFIRMATION,
+            confirmation_reason="budget_exceeded",
+        )
+        return _respond_with_text(request, _budget_exceeded_message(session))
+    if budget_warning == "BUDGET_WARNING":
+        usage_summary = budget_manager.get_usage_summary()
+        log_manager.emit(
+            level="WARN",
+            category="BUDGET",
+            message=t(
+                MessageKey.LOG_BUDGET_CONFIRM_REQUIRED,
+                usage_pct=str(usage_summary.get("usage_pct", 0)),
+            ),
+        )
+        session_store.update_session(
+            session.session_id,
+            stage=SessionStage.AWAITING_CONFIRMATION,
+            confirmation_reason="budget",
+        )
+        return _respond_with_text(request, _budget_confirmation_message(session))
+
+    user_config = config_store.load()
+    is_agent_request = _is_cursor_agent_request(request)
+    await_confirmation = user_config.execution_mode != "ternion_full"
+    if not is_agent_request:
+        await_confirmation = True
+    if is_agent_request and user_config.execution_mode == "cursor_handoff":
+        log_manager.emit(
+            level="INFO",
+            category="USER_ACTION",
+            message=(
+                "Cursor Agent mode detected | auto-switch execution_mode: cursor_handoff -> ternion_full "
+                "(confirmation gate disabled for this request)"
+            ),
+        )
+        user_config.execution_mode = "ternion_full"
+        config_store.save(user_config)
+        await_confirmation = False
+
+    system_message = (
+        ChatMessage(role=MessageRole.SYSTEM, content=cursor_system_prompt)
+        if cursor_system_prompt
+        else None
+    )
+    conversation_history: list[ChatMessage] = []
+    for msg in updated_execution_messages:
+        role_value = msg.get("role")
+        if not isinstance(role_value, str):
+            continue
+        try:
+            role = MessageRole(role_value)
+        except ValueError:
+            continue
+        conversation_history.append(
+            ChatMessage(
+                role=role,
+                content=msg.get("content"),
+                name=msg.get("name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        )
+
+    evidence_context = TernionContext(
+        cursor_system_prompt=system_message,
+        conversation_history=conversation_history,
+        has_images=False,
+        cursor_tools=list(cursor_tools or []),
+        cursor_tool_choice=cursor_tool_choice,
+        session_id=session.session_id,
+        await_confirmation=await_confirmation,
+        execution_mode=user_config.execution_mode,
+    )
+
+    # Resume from report_evidence with preserved Phase 0/1 state
+    final_state = await resume_report_evidence(
+        evidence_context,
+        evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
+        evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
+        evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
+        ternion_analyses=list(getattr(session, "ternion_analyses", []) or []),
+    )
+
+    pending_tool_calls = final_state.get("pending_tool_calls") or []
+    workflow_phase = str(final_state.get("current_phase") or "report_evidence")
+
+    if pending_tool_calls:
+        execution_mode_str = str(
+            final_state.get("execution_mode") or user_config.execution_mode or "ternion_full"
+        )
+        execution_mode = (
+            ExecutionMode(execution_mode_str)
+            if execution_mode_str in ("cursor_handoff", "ternion_full")
+            else ExecutionMode.TERNION_FULL
+        )
+        tool_session = session_store.create_session(
+            ternion_report=final_state.get("ternion_report", "") or "",
+            execution_mode=execution_mode,
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            cursor_system_prompt=cursor_system_prompt,
+            cursor_tools=list(cursor_tools or []),
+            cursor_tool_choice=cursor_tool_choice,
+            execution_messages=list(final_state.get("conversation_history", []) or []),
+            workflow_phase=workflow_phase,
+            # Phase 1.5 evidence state (required for reliable follow-ups)
+            evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
+            evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
+            evidence_requests=str(final_state.get("evidence_requests", "") or ""),
+            ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
+        )
+        filtered_tool_calls = list(pending_tool_calls or [])
+        todo_written_now = False
+        announce_text: str | None = None
+        if workflow_phase == "optimizer":
+            filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                tool_session,
+                filtered_tool_calls,
+            )
+            announce_text = "\n" + t(MessageKey.OPTIMIZER_START)
+        baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+            tool_session,
+            filtered_tool_calls,
+        )
+        rewritten_tool_calls = _rewrite_tool_call_ids(
+            filtered_tool_calls,
+            session_id=tool_session.session_id,
+            round_index=1,
+            workflow_phase=workflow_phase,
+        )
+        execution_messages = list(tool_session.execution_messages or [])
+        execution_messages.append({
+            "role": "assistant",
+            "content": announce_text,
+            "tool_calls": rewritten_tool_calls,
+        })
+        session_store.update_session(
+            tool_session.session_id,
+            execution_messages=execution_messages,
+            pending_tool_calls=rewritten_tool_calls,
+            round_index=1,
+            workflow_phase=workflow_phase,
+            modified_files=modified_files,
+            baseline_file_snapshots=baseline,
+            optimizer_todo_written=bool(getattr(tool_session, "optimizer_todo_written", False))
+            or todo_written_now,
+            optimizer_phase_announced=workflow_phase == "optimizer",
+        )
+        if request.stream:
+            return StreamingResponse(
+                create_sse_tool_calls_stream(
+                    model=request.model,
+                    tool_calls=rewritten_tool_calls,
+                    content=announce_text,
+                ),
+                media_type="text/event-stream",
+            )
+        return JSONResponse(
+            content=ChatCompletionResponse(
+                model=request.model,
+                choices=[
+                    Choice(
+                        finish_reason="tool_calls",
+                        message=ChatMessage(
+                            role=MessageRole.ASSISTANT,
+                            content=announce_text,
+                            tool_calls=rewritten_tool_calls,
+                        ),
+                    )
+                ],
+            ).model_dump()
+        )
+
+    thinking_logs = final_state.get("thinking_logs", [])
+    errors = final_state.get("errors", []) or []
+    final_code = final_state.get("final_output", "") or final_state.get("generated_code", "")
+    is_patch_output = _is_patch_or_diff_output(final_code)
+    _emit_thinking_logs_to_observability(
+        thinking_logs,
+        session_id=final_state.get("session_id") or None,
+        context="discussion_output",
+        suppressed_from_chat=is_patch_output,
+    )
+
+    output_parts = []
+    if thinking_logs and user_config.show_thinking_logs and not is_patch_output:
+        output_parts.append("".join(thinking_logs))
+        output_parts.append("\n---\n\n")
+    if final_code:
+        output_parts.append(final_code)
+    else:
+        output_parts.append(t(MessageKey.DISCUSSION_NO_OUTPUT))
+        if errors:
+            output_parts.append("\n\n")
+            output_parts.append(t(MessageKey.DISCUSSION_ERRORS_HEADER))
+            for err in errors:
+                err_msg = sanitize_for_cursor_display(str(err))
+                if err_msg:
+                    output_parts.append(f"- {err_msg}\n")
+
+    return _respond_with_text(request, "".join(output_parts))
+
+
+async def handle_evidence_followup(
+    session: Session,
+    request: ChatCompletionRequest,
+) -> Response:
+    """
+    Handle Phase 0 (Evidence) follow-ups for Cursor Agent tool loops.
+
+    This branch is identified via tool_call_id and workflow_phase == "evidence".
+    Runs full workflow from evidence node.
+    """
+    from ternion.workflow.graph import run_discussion
+
+    cursor_tools = list(request.tools or []) or list(session.cursor_tools or [])
+    cursor_tool_choice = request.tool_choice if request.tool_choice is not None else session.cursor_tool_choice
+
+    context = message_router.extract_context(request.messages)
+    cursor_system_prompt = session.cursor_system_prompt
+    if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str):
+        cursor_system_prompt = context.cursor_system_prompt.content
+
+    updated_execution_messages = list(session.execution_messages or [])
+    existing_tool_ids = {
+        m.get("tool_call_id")
+        for m in (session.execution_messages or [])
+        if isinstance(m, dict) and m.get("role") == "tool" and isinstance(m.get("tool_call_id"), str)
+    }
+    for msg in request.messages:
+        if msg.role != MessageRole.TOOL:
+            continue
+        if not isinstance(msg.tool_call_id, str):
+            continue
+        if msg.tool_call_id in existing_tool_ids:
+            continue
+        match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(msg.tool_call_id)
+        if not match or match.group(1).lower() != session.session_id.lower():
+            continue
+        raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        updated_execution_messages.append({
+            "role": "tool",
+            "content": raw_content,
+            "tool_call_id": msg.tool_call_id,
+        })
+        existing_tool_ids.add(msg.tool_call_id)
+
+    # Preserve the original workflow_phase (critical for P0-1 fix)
+    original_workflow_phase = str(getattr(session, "workflow_phase", "") or "evidence")
+    session_store.update_session(
+        session.session_id,
+        stage=SessionStage.AWAITING_TOOL_RESULTS,
+        cursor_system_prompt=cursor_system_prompt,
+        cursor_tools=list(cursor_tools or []),
+        cursor_tool_choice=cursor_tool_choice,
+        execution_messages=updated_execution_messages,
+        pending_tool_calls=[],
+        workflow_phase=original_workflow_phase,  # Preserve, not hardcode "evidence"
+    )
+
+    budget_ok, budget_warning = budget_manager.check_budget()
+    if not budget_ok:
+        log_manager.emit(
+            level="WARN",
+            category="BUDGET",
+            message=t(MessageKey.LOG_BUDGET_EXCEEDED),
+        )
+        session_store.update_session(
+            session.session_id,
+            stage=SessionStage.AWAITING_CONFIRMATION,
+            confirmation_reason="budget_exceeded",
+        )
+        return _respond_with_text(request, _budget_exceeded_message(session))
+    if budget_warning == "BUDGET_WARNING":
+        usage_summary = budget_manager.get_usage_summary()
+        log_manager.emit(
+            level="WARN",
+            category="BUDGET",
+            message=t(
+                MessageKey.LOG_BUDGET_CONFIRM_REQUIRED,
+                usage_pct=str(usage_summary.get("usage_pct", 0)),
+            ),
+        )
+        session_store.update_session(
+            session.session_id,
+            stage=SessionStage.AWAITING_CONFIRMATION,
+            confirmation_reason="budget",
+        )
+        return _respond_with_text(request, _budget_confirmation_message(session))
+
+    user_config = config_store.load()
+    is_agent_request = _is_cursor_agent_request(request)
+    await_confirmation = user_config.execution_mode != "ternion_full"
+    if not is_agent_request:
+        await_confirmation = True
+    if is_agent_request and user_config.execution_mode == "cursor_handoff":
+        log_manager.emit(
+            level="INFO",
+            category="USER_ACTION",
+            message=(
+                "Cursor Agent mode detected | auto-switch execution_mode: cursor_handoff -> ternion_full "
+                "(confirmation gate disabled for this request)"
+            ),
+        )
+        user_config.execution_mode = "ternion_full"
+        config_store.save(user_config)
+        await_confirmation = False
+
+    system_message = (
+        ChatMessage(role=MessageRole.SYSTEM, content=cursor_system_prompt)
+        if cursor_system_prompt
+        else None
+    )
+    conversation_history: list[ChatMessage] = []
+    for msg in updated_execution_messages:
+        role_value = msg.get("role")
+        if not isinstance(role_value, str):
+            continue
+        try:
+            role = MessageRole(role_value)
+        except ValueError:
+            continue
+        conversation_history.append(
+            ChatMessage(
+                role=role,
+                content=msg.get("content"),
+                name=msg.get("name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        )
+
+    evidence_context = TernionContext(
+        cursor_system_prompt=system_message,
+        conversation_history=conversation_history,
+        has_images=False,
+        cursor_tools=list(cursor_tools or []),
+        cursor_tool_choice=cursor_tool_choice,
+        session_id=session.session_id,
+        await_confirmation=await_confirmation,
+        execution_mode=user_config.execution_mode,
+    )
+
+    # Run full workflow from evidence node (Phase 0)
+    final_state = await run_discussion(evidence_context)
+
+    pending_tool_calls = final_state.get("pending_tool_calls") or []
+    workflow_phase = str(final_state.get("current_phase") or "evidence")
+    if pending_tool_calls:
+        execution_mode_str = str(
+            final_state.get("execution_mode") or user_config.execution_mode or "ternion_full"
+        )
+        execution_mode = (
+            ExecutionMode(execution_mode_str)
+            if execution_mode_str in ("cursor_handoff", "ternion_full")
+            else ExecutionMode.TERNION_FULL
+        )
+        tool_session = session_store.create_session(
+            ternion_report=final_state.get("ternion_report", "") or "",
+            execution_mode=execution_mode,
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            cursor_system_prompt=cursor_system_prompt,
+            cursor_tools=list(cursor_tools or []),
+            cursor_tool_choice=cursor_tool_choice,
+            execution_messages=list(final_state.get("conversation_history", []) or []),
+            workflow_phase=workflow_phase,
+            # Phase 1.5 evidence state will be populated by new session creation logic if applicable
+            # but usually Phase 0 results -> Phase 1.5 start -> new tool calls with phase=report_evidence
+            evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
+            evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
+            evidence_requests=str(final_state.get("evidence_requests", "") or ""),
+            ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
+        )
+        filtered_tool_calls = list(pending_tool_calls or [])
+        todo_written_now = False
+        announce_text: str | None = None
+        if workflow_phase == "optimizer":
+            filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                tool_session,
+                filtered_tool_calls,
+            )
+            announce_text = "\n" + t(MessageKey.OPTIMIZER_START)
+        baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+            tool_session,
+            filtered_tool_calls,
+        )
+        rewritten_tool_calls = _rewrite_tool_call_ids(
+            filtered_tool_calls,
+            session_id=tool_session.session_id,
+            round_index=1,
+            workflow_phase=workflow_phase,
+        )
+        execution_messages = list(tool_session.execution_messages or [])
+        execution_messages.append({
+            "role": "assistant",
+            "content": announce_text,
+            "tool_calls": rewritten_tool_calls,
+        })
+        session_store.update_session(
+            tool_session.session_id,
+            execution_messages=execution_messages,
+            pending_tool_calls=rewritten_tool_calls,
+            round_index=1,
+            workflow_phase=workflow_phase,
+            modified_files=modified_files,
+            baseline_file_snapshots=baseline,
+            optimizer_todo_written=bool(getattr(tool_session, "optimizer_todo_written", False))
+            or todo_written_now,
+            optimizer_phase_announced=workflow_phase == "optimizer",
+        )
+        if request.stream:
+            return StreamingResponse(
+                create_sse_tool_calls_stream(
+                    model=request.model,
+                    tool_calls=rewritten_tool_calls,
+                    content=announce_text,
+                ),
+                media_type="text/event-stream",
+            )
+        return JSONResponse(
+            content=ChatCompletionResponse(
+                model=request.model,
+                choices=[
+                    Choice(
+                        finish_reason="tool_calls",
+                        message=ChatMessage(
+                            role=MessageRole.ASSISTANT,
+                            content=announce_text,
+                            tool_calls=rewritten_tool_calls,
+                        ),
+                    )
+                ],
+            ).model_dump()
+        )
+
+        next_round = (session.round_index or 0) + 1
+        if next_round > _TOOL_LOOP_MAX_ROUNDS:
+            session_store.update_session(
+                session.session_id,
+                stage=SessionStage.AWAITING_CONFIRMATION,
+                confirmation_reason="failsafe",
+                pending_tool_calls=[],
+            )
+            log_manager.emit(
+                level="WARN",
+                category="GUARDRAIL",
+                message=t(
+                    MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED,
+                    max_rounds=str(_TOOL_LOOP_MAX_ROUNDS),
+                    session_id=session.session_id,
+                ),
+            )
+            return _respond_with_text(request, _tool_loop_failsafe_message(session))
+        filtered_tool_calls = list(pending_tool_calls or [])
+        baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+            session,
+            filtered_tool_calls,
+        )
+        rewritten_tool_calls = _rewrite_tool_call_ids(
+            filtered_tool_calls,
+            session_id=session.session_id,
+            round_index=next_round,
+            workflow_phase=workflow_phase,
+        )
+        execution_messages = list(updated_execution_messages)
+        execution_messages.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": rewritten_tool_calls,
+        })
+        session_store.update_session(
+            session.session_id,
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_messages=execution_messages,
+            pending_tool_calls=rewritten_tool_calls,
+            round_index=next_round,
+            workflow_phase=workflow_phase,
+            modified_files=modified_files,
+            baseline_file_snapshots=baseline,
+        )
+
+        if request.stream:
+            return StreamingResponse(
+                create_sse_tool_calls_stream(
+                    model=request.model,
+                    tool_calls=rewritten_tool_calls,
+                    content=None,
+                ),
+                media_type="text/event-stream",
+            )
+        return JSONResponse(
+            content=ChatCompletionResponse(
+                model=request.model,
+                choices=[
+                    Choice(
+                        finish_reason="tool_calls",
+                        message=ChatMessage(
+                            role=MessageRole.ASSISTANT,
+                            content=None,
+                            tool_calls=rewritten_tool_calls,
+                        ),
+                    )
+                ],
+            ).model_dump()
+        )
+
+    thinking_logs = final_state.get("thinking_logs", [])
+    errors = final_state.get("errors", []) or []
+    final_code = final_state.get("final_output", "") or final_state.get("generated_code", "")
+    is_patch_output = _is_patch_or_diff_output(final_code)
+    _emit_thinking_logs_to_observability(
+        thinking_logs,
+        session_id=final_state.get("session_id") or None,
+        context="discussion_output",
+        suppressed_from_chat=is_patch_output,
+    )
+
+    output_parts = []
+    if thinking_logs and user_config.show_thinking_logs and not is_patch_output:
+        output_parts.append("".join(thinking_logs))
+        output_parts.append("\n---\n\n")
+    if final_code:
+        output_parts.append(final_code)
+    else:
+        output_parts.append(t(MessageKey.DISCUSSION_NO_OUTPUT))
+        if errors:
+            output_parts.append("\n\n")
+            output_parts.append(t(MessageKey.DISCUSSION_ERRORS_HEADER))
+            for err in errors:
+                err_msg = sanitize_for_cursor_display(str(err))
+                if err_msg:
+                    output_parts.append(f"- {err_msg}\n")
+
+    return _respond_with_text(request, "".join(output_parts))
 
 
 async def handle_execution_followup(
@@ -1901,6 +2539,7 @@ async def handle_execution_followup(
             filtered_tool_calls,
             session_id=session.session_id,
             round_index=next_round,
+            workflow_phase=workflow_phase,
         )
         updated_execution_messages.append({
             "role": "assistant",

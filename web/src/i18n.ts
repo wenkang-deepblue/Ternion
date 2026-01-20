@@ -108,6 +108,7 @@ export interface Translations {
   code_BUDGET_WARNING: string;
   code_STREAM_INTERRUPTED: string;
   code_ROLES_INCOMPLETE: string;
+  code_ROLES_INCOMPLETE_SUFFIX: string;
   saveChanges: string;
   saving: string;
   noApiKey: string;
@@ -175,6 +176,7 @@ export interface Translations {
 
   // Footer
   footerApiDocs: string;
+  footerVersion: string;
 
   // Language toggle
   languageToggle: string;
@@ -195,6 +197,7 @@ export interface Translations {
   logsDownloadedTo: string;
   logsEntriesCount: string;
   logsOpenFile: string;
+  logsDismiss: string;
 
   // Settings Dropdown
   settingsTitle: string;
@@ -394,6 +397,7 @@ const EN: Translations = {
   code_BUDGET_WARNING: 'Approaching budget limit',
   code_STREAM_INTERRUPTED: 'Stream interrupted, please retry',
   code_ROLES_INCOMPLETE: 'Please configure all roles before saving',
+  code_ROLES_INCOMPLETE_SUFFIX: ' (missing: {roles})',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Unknown error',
@@ -405,6 +409,7 @@ const EN: Translations = {
 
   // Footer
   footerApiDocs: 'API Docs',
+  footerVersion: 'Ternion v0.4.8',
 
   // Language toggle
   languageToggle: 'Language',
@@ -425,6 +430,7 @@ const EN: Translations = {
   logsDownloadedTo: 'Saved to',
   logsEntriesCount: 'entries',
   logsOpenFile: 'Show in File Manager',
+  logsDismiss: 'Dismiss',
 
   // Settings Dropdown
   settingsTitle: 'Settings',
@@ -620,6 +626,7 @@ const ZH: Translations = {
   code_BUDGET_WARNING: '接近预算上限，请注意控制用量',
   code_STREAM_INTERRUPTED: '流式传输中断，请重试',
   code_ROLES_INCOMPLETE: '请先完成所有角色的模型选择',
+  code_ROLES_INCOMPLETE_SUFFIX: '（缺少：{roles}）',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '未知错误',
@@ -631,6 +638,7 @@ const ZH: Translations = {
 
   // Footer
   footerApiDocs: 'API 文档',
+  footerVersion: 'Ternion v0.4.8',
 
   // Language toggle
   languageToggle: '语言',
@@ -651,6 +659,7 @@ const ZH: Translations = {
   logsDownloadedTo: '已保存至',
   logsEntriesCount: '条记录',
   logsOpenFile: '在文件管理器中显示',
+  logsDismiss: '关闭',
 
   // Settings Dropdown
   settingsTitle: '设置',
@@ -844,6 +853,7 @@ const ES: Translations = {
   code_BUDGET_WARNING: 'Acercándose al límite de presupuesto',
   code_STREAM_INTERRUPTED: 'Transmisión interrumpida, por favor reintente',
   code_ROLES_INCOMPLETE: 'Configure todos los roles antes de guardar',
+  code_ROLES_INCOMPLETE_SUFFIX: ' (faltan: {roles})',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Error desconocido',
@@ -855,6 +865,7 @@ const ES: Translations = {
 
   // Footer
   footerApiDocs: 'Documentación API',
+  footerVersion: 'Ternion v0.4.8',
 
   // Language toggle
   languageToggle: 'Idioma',
@@ -875,6 +886,7 @@ const ES: Translations = {
   logsDownloadedTo: 'Guardado en',
   logsEntriesCount: 'entradas',
   logsOpenFile: 'Mostrar en Administrador de archivos',
+  logsDismiss: 'Cerrar',
 
   // Settings Dropdown
   settingsTitle: 'Configuración',
@@ -1070,6 +1082,7 @@ const FR: Translations = {
   code_BUDGET_WARNING: 'Approche de la limite de budget',
   code_STREAM_INTERRUPTED: 'Transmission interrompue, veuillez réessayer',
   code_ROLES_INCOMPLETE: 'Veuillez configurer tous les rôles avant d\'enregistrer',
+  code_ROLES_INCOMPLETE_SUFFIX: ' (manquant: {roles})',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Erreur inconnue',
@@ -1081,6 +1094,7 @@ const FR: Translations = {
 
   // Footer
   footerApiDocs: 'Documentation API',
+  footerVersion: 'Ternion v0.4.8',
 
   // Language toggle
   languageToggle: 'Langue',
@@ -1101,6 +1115,7 @@ const FR: Translations = {
   logsDownloadedTo: 'Enregistré dans',
   logsEntriesCount: 'entrées',
   logsOpenFile: 'Afficher dans le gestionnaire de fichiers',
+  logsDismiss: 'Fermer',
 
   // Settings Dropdown
   settingsTitle: 'Paramètres',
@@ -1296,6 +1311,7 @@ const DE: Translations = {
   code_BUDGET_WARNING: 'Budget-Limit nähert sich',
   code_STREAM_INTERRUPTED: 'Übertragung unterbrochen, bitte erneut versuchen',
   code_ROLES_INCOMPLETE: 'Bitte konfigurieren Sie alle Rollen, bevor Sie speichern',
+  code_ROLES_INCOMPLETE_SUFFIX: ' (fehlend: {roles})',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Unbekannter Fehler',
@@ -1307,6 +1323,7 @@ const DE: Translations = {
 
   // Footer
   footerApiDocs: 'API-Dokumentation',
+  footerVersion: 'Ternion v0.4.8',
 
   // Language toggle
   languageToggle: 'Sprache',
@@ -1327,6 +1344,7 @@ const DE: Translations = {
   logsDownloadedTo: 'Gespeichert unter',
   logsEntriesCount: 'Einträge',
   logsOpenFile: 'Im Dateimanager anzeigen',
+  logsDismiss: 'Schließen',
 
   // Settings Dropdown
   settingsTitle: 'Einstellungen',
@@ -1522,6 +1540,7 @@ const JA: Translations = {
   code_BUDGET_WARNING: '予算上限に近づいています',
   code_STREAM_INTERRUPTED: '伝送中断、再試行してください',
   code_ROLES_INCOMPLETE: '保存する前にすべてのロールを設定してください',
+  code_ROLES_INCOMPLETE_SUFFIX: '（不足：{roles}）',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '不明なエラー',
@@ -1533,6 +1552,7 @@ const JA: Translations = {
 
   // Footer
   footerApiDocs: 'APIドキュメント',
+  footerVersion: 'Ternion v0.4.8',
 
   // Language toggle
   languageToggle: '言語',
@@ -1553,6 +1573,7 @@ const JA: Translations = {
   logsDownloadedTo: '保存先',
   logsEntriesCount: '件',
   logsOpenFile: 'ファイルマネージャーで表示',
+  logsDismiss: '閉じる',
 
   // Settings Dropdown
   settingsTitle: '設定',
@@ -1748,6 +1769,7 @@ const KO: Translations = {
   code_BUDGET_WARNING: '예산 한도 근접',
   code_STREAM_INTERRUPTED: '전송 중단, 다시 시도해 주세요',
   code_ROLES_INCOMPLETE: '저장하기 전에 모든 역할을 구성하세요',
+  code_ROLES_INCOMPLETE_SUFFIX: '（누락：{roles}）',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '알 수 없는 오류',
@@ -1759,6 +1781,7 @@ const KO: Translations = {
 
   // Footer
   footerApiDocs: 'API 문서',
+  footerVersion: 'Ternion v0.4.8',
 
   // Language toggle
   languageToggle: '언어',
@@ -1779,6 +1802,7 @@ const KO: Translations = {
   logsDownloadedTo: '저장 위치',
   logsEntriesCount: '개 항목',
   logsOpenFile: '파일 관리자에서 보기',
+  logsDismiss: '닫기',
 
   // Settings Dropdown
   settingsTitle: '설정',
@@ -1903,9 +1927,11 @@ export function getErrorMessage(t: Translations, errorCode: string, language?: L
 
     const baseKey = `code_ROLES_INCOMPLETE` as keyof Translations;
     const base = (t[baseKey] as unknown as string) || 'ROLES_INCOMPLETE';
-    const suffix = missingDisplay
-      ? (isCJK ? `（缺少：${missingDisplay}）` : ` (missing: ${missingDisplay})`)
-      : '';
+    
+    // Get localized suffix template from translations
+    const suffixKey = `code_ROLES_INCOMPLETE_SUFFIX` as keyof Translations;
+    const suffixTemplate = (t[suffixKey] as unknown as string) || ' (missing: {roles})';
+    const suffix = missingDisplay ? suffixTemplate.replace('{roles}', missingDisplay) : '';
     return `${base}${suffix}`;
   }
 

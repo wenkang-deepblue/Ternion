@@ -21,6 +21,8 @@ from ternion.core.session_store import (
 from ternion.providers.base import ProviderResponse
 from ternion.providers.manager import provider_manager
 from ternion.router.prompts import (
+    ARBITER_EVIDENCE_PROMPT,
+    ARBITER_REPORT_EVIDENCE_PROMPT,
     CONVERGENCE_PROMPT,
     DIVERGENCE_PROMPT,
     EXECUTION_PROMPT,
@@ -36,6 +38,10 @@ from ternion.utils.tool_calls_parser import (
     build_text_tool_calls_instruction,
     extract_tool_calls_from_text,
 )
+from ternion.utils.workflow_prompt_capture import (
+    build_workflow_prompt_payload,
+    schedule_workflow_prompt_capture,
+)
 from ternion.workflow.state import ReviewResult, TernionState, WorkflowPhase
 from ternion.workflow.streaming_events import StreamEventQueue
 
@@ -47,8 +53,19 @@ _OPTIMIZER_INTERNAL_END = "TERNION_OPTIMIZER_INTERNAL_REPORT_END"
 _OPTIMIZER_USER_BEGIN = "TERNION_OPTIMIZER_USER_SUMMARY_BEGIN"
 _OPTIMIZER_USER_END = "TERNION_OPTIMIZER_USER_SUMMARY_END"
 
+_ROLE_DISPLAY_NAMES = {
+    "ternion_a": "Ternion A",
+    "ternion_b": "Ternion B",
+    "ternion_c": "Ternion C",
+    "arbiter": "Arbiter",
+    "writer": "Writer",
+    "reviewer": "Reviewer",
+    "optimizer": "Optimizer",
+}
+
 # Default timeout for provider calls (CR-030)
 DEFAULT_TIMEOUT_SECONDS = settings.discussion.timeout_seconds
+WRITER_TIMEOUT_SECONDS = max(DEFAULT_TIMEOUT_SECONDS, settings.discussion.writer_timeout_seconds)
 
 
 async def _call_with_timeout(
@@ -270,6 +287,323 @@ def _parse_review_status(review_content: str) -> ReviewResult:
     return ReviewResult.REVISION_NEEDED
 
 
+def _format_role_names(role_ids: list[str]) -> str:
+    names = [_ROLE_DISPLAY_NAMES.get(role_id, role_id) for role_id in role_ids]
+    return ", ".join([name for name in names if name])
+
+
+def _format_evidence_section(
+    lines: list[str],
+    *,
+    header: str,
+    default_line: str,
+) -> str:
+    if not any(line.strip() for line in lines):
+        return f"{header}\n{default_line}"
+    return "\n".join([header, *lines]).rstrip()
+
+
+def _parse_evidence_output(content: str) -> tuple[str, str]:
+    text = (content or "").strip()
+    bundle_header = "EVIDENCE_BUNDLE:"
+    gaps_header = "EVIDENCE_GAPS:"
+    bundle_lines: list[str] = []
+    gaps_lines: list[str] = []
+    section: str | None = None
+    found_bundle = False
+    found_gaps = False
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == bundle_header:
+            section = "bundle"
+            found_bundle = True
+            continue
+        if stripped == gaps_header:
+            section = "gaps"
+            found_gaps = True
+            continue
+        if section == "bundle":
+            bundle_lines.append(line)
+        elif section == "gaps":
+            gaps_lines.append(line)
+
+    if not found_bundle and not found_gaps:
+        fallback = text if text else "- None"
+        return (
+            f"{bundle_header}\n{fallback}".rstrip(),
+            f"{gaps_header}\n- None",
+        )
+
+    bundle = _format_evidence_section(
+        bundle_lines,
+        header=bundle_header,
+        default_line="- None",
+    )
+    gaps = _format_evidence_section(
+        gaps_lines,
+        header=gaps_header,
+        default_line="- None",
+    )
+    return bundle, gaps
+
+
+def _extract_evidence_requests(analyses: list[dict[str, Any]]) -> str:
+    def is_none_marker(line: str) -> bool:
+        normalized = line.strip()
+        if not normalized:
+            return False
+        normalized = normalized.lower()
+        return normalized in ("- [p0] none", "[p0] none")
+
+    requests: list[str] = []
+    for analysis in analyses:
+        text = (analysis.get("analysis") or "").splitlines()
+        capture = False
+        for line in text:
+            stripped = line.strip()
+            if stripped.lower().startswith("### 5. evidence_requests"):
+                capture = True
+                continue
+            if capture and stripped.startswith("###"):
+                break
+            if capture and stripped:
+                requests.append(stripped)
+    if not requests:
+        return "- [P0] None"
+
+    # Canonicalize the empty marker to avoid downstream heuristic ambiguity.
+    non_empty = [line for line in requests if line.strip()]
+    if non_empty and all(is_none_marker(line) for line in non_empty):
+        return "- [P0] None"
+    return "\n".join(requests)
+
+
+def _filter_conversation_history_for_analysis(
+    history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Filter conversation history for analysis/report phases.
+
+    This removes tool-result messages and tool-call artifacts so that:
+    - Council/Arbiter only see user/assistant dialogue context
+    - Evidence is provided exclusively via evidence_bundle/evidence_gaps
+    - Token usage stays predictable (avoid carrying raw tool outputs)
+
+    Args:
+        history: Conversation history list (OpenAI-compatible message dicts).
+
+    Returns:
+        Filtered history containing only user/assistant messages with content.
+    """
+    filtered: list[dict[str, Any]] = []
+    for msg in history:
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+
+        content = msg.get("content")
+        if content is None:
+            continue
+        if isinstance(content, str) and not content.strip():
+            continue
+
+        filtered.append(
+            {
+                "role": role,
+                "content": content,
+                "name": msg.get("name"),
+                # Intentionally omit tool_calls/tool_call_id to keep downstream context clean.
+            }
+        )
+    return filtered
+
+
+async def evidence_node(state: TernionState) -> TernionState:
+    """
+    Phase 0: Evidence Gathering - Arbiter collects minimal code evidence.
+
+    Uses tool calls only. Outputs evidence_bundle and evidence_gaps.
+    """
+    logger.info("workflow_evidence_start")
+    log_manager.emit(
+        level="INFO",
+        category="WORKFLOW",
+        message="Evidence phase started | Arbiter collecting evidence",
+    )
+
+    thinking_logs = list(state.get("thinking_logs", []))
+
+    history = state.get("conversation_history", [])
+    session_id = str(state.get("session_id") or "").strip()
+    history_for_prompt = history
+    if not session_id:
+        # For a new evidence run, strip any prior tool artifacts from the inbound history.
+        # Evidence should be re-collected via tools and represented in the evidence bundle.
+        history_for_prompt = _filter_conversation_history_for_analysis(history)
+
+    system_prompt = _prepend_global_security_rules(ARBITER_EVIDENCE_PROMPT)
+    messages: list[ChatMessage] = [
+        ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
+    ]
+    for msg in history_for_prompt:
+        messages.append(
+            ChatMessage(
+                role=MessageRole(msg["role"]),
+                content=msg.get("content"),
+                name=msg.get("name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        )
+
+    cursor_tools = state.get("cursor_tools") or []
+    cursor_tool_choice = state.get("cursor_tool_choice")
+    role_cfg = config_store.get_role_config("arbiter")
+    provider_name = role_cfg.provider if role_cfg and role_cfg.provider else ""
+    use_text_tool_calls = bool(cursor_tools) and provider_name and provider_name != "openai"
+
+    if use_text_tool_calls:
+        messages.append(
+            ChatMessage(
+                role=MessageRole.USER,
+                content=(
+                    "[NON-OPENAI TOOL CALLS]\n\n"
+                    f"{build_text_tool_calls_instruction(cursor_tools)}"
+                ),
+            )
+        )
+
+    try:
+        provider = provider_manager.get_provider_for_role("arbiter")
+        model = role_cfg.model if role_cfg and role_cfg.model else None
+        if not model:
+            logger.error("arbiter_model_not_configured")
+            error_msg = t(
+                MessageKey.ROLE_CONFIG_INCOMPLETE,
+                missing_roles=_format_role_names(["arbiter"]),
+            )
+            return {
+                **state,
+                "errors": state.get("errors", []) + [
+                    error_msg
+                ],
+                "thinking_logs": thinking_logs + [
+                    t(MessageKey.CONVERGENCE_ERROR, error=error_msg)
+                ],
+            }
+
+        supports_native_tools = provider.name == "openai"
+        supports_text_tools = bool(cursor_tools) and provider.name != "openai"
+        should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
+
+        schedule_workflow_prompt_capture(
+            build_workflow_prompt_payload(
+                phase="evidence",
+                role="arbiter_evidence",
+                provider=provider.name,
+                model=model,
+                messages=messages,
+                temperature=0.2,
+                session_id=state.get("session_id", ""),
+            )
+        )
+        extra_kwargs: dict[str, Any] = {}
+        if should_use_tool_calls and supports_native_tools:
+            extra_kwargs["tools"] = cursor_tools
+            if cursor_tool_choice is not None:
+                extra_kwargs["tool_choice"] = cursor_tool_choice
+
+        response = await _call_with_timeout(
+            provider=provider,
+            messages=messages,
+            model=model,
+            temperature=0.2,
+            **extra_kwargs,
+        )
+        tool_calls = response.tool_calls if isinstance(response.tool_calls, list) else None
+        if supports_text_tools and not tool_calls:
+            parsed_tool_calls = extract_tool_calls_from_text(response.content)
+            if parsed_tool_calls:
+                response.tool_calls = parsed_tool_calls
+                response.content = ""
+                tool_calls = parsed_tool_calls
+
+        usage = response.usage or {}
+        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        completion_tokens = (
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or 0
+        )
+        thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
+        output_for_cost = (
+            completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        )
+        budget_manager.record_usage(
+            provider=provider.name,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_for_cost,
+            thoughts_tokens=thoughts_tokens,
+            context_length=usage.get("total_tokens", 0),
+        )
+        if input_tokens or output_for_cost or thoughts_tokens:
+            log_manager.emit(
+                level="INFO",
+                category="WORKFLOW",
+                message=(
+                    f"evidence_usage | provider={provider.name} | "
+                    f"model={model} | "
+                    f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
+                    f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
+                ),
+            )
+
+        if tool_calls:
+            log_manager.emit(
+                level="INFO",
+                category="WORKFLOW",
+                message=(
+                    "evidence_tool_calls_ready | "
+                    f"session_id={state.get('session_id', '')} | "
+                    f"count={len(tool_calls)}"
+                ),
+            )
+            return {
+                **state,
+                "current_phase": WorkflowPhase.EVIDENCE.value,
+                "pending_tool_calls": tool_calls,
+                "thinking_logs": thinking_logs,
+            }
+
+        evidence_bundle, evidence_gaps = _parse_evidence_output(response.content)
+        cleaned_history = _filter_conversation_history_for_analysis(history)
+        return {
+            **state,
+            "current_phase": WorkflowPhase.DIVERGENCE.value,
+            "conversation_history": cleaned_history,
+            "evidence_bundle": evidence_bundle,
+            "evidence_gaps": evidence_gaps,
+            "thinking_logs": thinking_logs,
+        }
+    except Exception as e:
+        logger.warning("evidence_collection_failed", error=str(e))
+        log_manager.emit(
+            level="WARN",
+            category="WORKFLOW",
+            message=f"Evidence collection failed: {str(e)[:120]}",
+        )
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "errors": state.get("errors", []) + [
+                t(MessageKey.EVIDENCE_COLLECTION_FAILED, error=str(e))
+            ],
+            "thinking_logs": thinking_logs,
+        }
+
+
 def _split_optimizer_output(text: str) -> tuple[str, str]:
     """
     Split Optimizer output into internal and user-visible sections.
@@ -310,8 +644,8 @@ async def divergence_node(state: TernionState) -> TernionState:
     """
     Step 1: The Divergence - Parallel Root Cause Analysis.
 
-    Three ternion members (Gemini, GPT, Claude) analyze the problem
-    concurrently, focusing on root cause analysis without writing code.
+    Three user-configured ternion members analyze the problem concurrently,
+    focusing on root cause analysis without writing code.
 
     Args:
         state: Current workflow state
@@ -331,13 +665,21 @@ async def divergence_node(state: TernionState) -> TernionState:
 
     # Build messages for ternion - use Ternion RCA prompt, not Cursor's
     history = state.get("conversation_history", [])
-    system_prompt = _prepend_global_security_rules(DIVERGENCE_PROMPT)
+    history_for_prompt = _filter_conversation_history_for_analysis(history)
+    evidence_bundle = state.get("evidence_bundle") or "EVIDENCE_BUNDLE:\n- None"
+    evidence_gaps = state.get("evidence_gaps") or "EVIDENCE_GAPS:\n- None"
+    evidence_block = f"[EVIDENCE]\n\n{evidence_bundle}\n\n{evidence_gaps}"
+    system_prompt = _prepend_global_security_rules(f"{DIVERGENCE_PROMPT}\n\n{evidence_block}")
     ternion_messages = [
         ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
     ]
-    for msg in history:
+    for msg in history_for_prompt:
         ternion_messages.append(
-            ChatMessage(role=MessageRole(msg["role"]), content=msg["content"])
+            ChatMessage(
+                role=MessageRole(msg["role"]),
+                content=msg.get("content"),
+                name=msg.get("name"),
+            )
         )
 
     # Read ternion configurations from config_store
@@ -358,7 +700,10 @@ async def divergence_node(state: TernionState) -> TernionState:
 
     # Check if any ternions are not configured
     if unconfigured:
-        error_msg = f"Ternion models not configured: {', '.join(unconfigured)}. Please configure in Web Control Panel."
+        error_msg = t(
+            MessageKey.ROLE_CONFIG_INCOMPLETE,
+            missing_roles=_format_role_names(unconfigured),
+        )
         logger.warning("ternion_not_configured", unconfigured=unconfigured)
         thinking_logs.append(f"⚠️ {error_msg}")
         return {
@@ -376,13 +721,29 @@ async def divergence_node(state: TernionState) -> TernionState:
         try:
             provider = provider_manager.get_provider(provider_name)
             if not provider:
+                role_name = _ROLE_DISPLAY_NAMES.get(ternion_id, ternion_id)
                 return {
                     "ternion_id": ternion_id,
                     "provider": provider_name,
                     "analysis": "",
-                    "error": f"Provider {provider_name} not configured",
+                    "error": t(
+                        MessageKey.PROVIDER_UNAVAILABLE,
+                        role=role_name,
+                        provider=provider_name,
+                    ),
                 }
 
+            schedule_workflow_prompt_capture(
+                build_workflow_prompt_payload(
+                    phase="divergence",
+                    role=ternion_id,
+                    provider=provider_name,
+                    model=model,
+                    messages=ternion_messages,
+                    temperature=0.7,
+                    session_id=state.get("session_id", ""),
+                )
+            )
             response = await _call_with_timeout(
                 provider=provider,
                 messages=ternion_messages,
@@ -460,12 +821,306 @@ async def divergence_node(state: TernionState) -> TernionState:
         preview = sanitize_for_preview(a["analysis"], max_length=100)
         thinking_logs.append(t(MessageKey.DIVERGENCE_ANALYSIS, ternion_id=a['ternion_id'], preview=preview))
 
+    # Extract evidence requests from all analyses for Phase 1.5
+    evidence_requests = _extract_evidence_requests(successful)
+
     return {
         **state,
-        "current_phase": WorkflowPhase.CONVERGENCE.value,
+        "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
         "ternion_analyses": list(analyses),
+        "evidence_requests": evidence_requests,
         "thinking_logs": thinking_logs,
     }
+
+
+def _has_real_evidence_requests(requests: str) -> bool:
+    """
+    Check if evidence_requests contains real requests (not just '- [P0] None').
+
+    Args:
+        requests: The extracted evidence_requests string.
+
+    Returns:
+        True if there are real evidence requests, False otherwise.
+    """
+    text = (requests or "").strip()
+    if not text:
+        return False
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+
+    # Strict empty marker protocol (case-insensitive).
+    if len(lines) == 1 and lines[0].lower() in ("- [p0] none", "[p0] none"):
+        return False
+    return True
+
+
+async def report_evidence_node(state: TernionState) -> TernionState:
+    """
+    Phase 1.5: Report Evidence Verification - Arbiter collects requested evidence.
+
+    This node collects additional evidence based on evidence_requests from council
+    members before generating the final report. Uses tool calls only. Appends to
+    existing evidence_bundle and evidence_gaps.
+
+    Args:
+        state: Current workflow state with evidence_requests from divergence.
+
+    Returns:
+        Updated state with appended evidence, ready for convergence.
+    """
+    evidence_requests = state.get("evidence_requests", "")
+    thinking_logs = list(state.get("thinking_logs", []))
+
+    # Skip if no real evidence requests
+    if not _has_real_evidence_requests(evidence_requests):
+        logger.info("report_evidence_skip", reason="no_real_requests")
+        log_manager.emit(
+            level="INFO",
+            category="WORKFLOW",
+            message="Phase 1.5 skipped | No real evidence requests from council",
+        )
+        return {
+            **state,
+            "current_phase": WorkflowPhase.CONVERGENCE.value,
+            "thinking_logs": thinking_logs,
+        }
+
+    logger.info("workflow_report_evidence_start")
+    log_manager.emit(
+        level="INFO",
+        category="WORKFLOW",
+        message="Phase 1.5 started | Arbiter collecting requested evidence",
+    )
+
+    session_id = str(state.get("session_id") or "").strip()
+
+    system_prompt = _prepend_global_security_rules(ARBITER_REPORT_EVIDENCE_PROMPT)
+    messages: list[ChatMessage] = [
+        ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
+    ]
+
+    # Add evidence_requests as user message (this is the only input the prompt needs)
+    messages.append(
+        ChatMessage(
+            role=MessageRole.USER,
+            content=f"[EVIDENCE_REQUESTS]\n{evidence_requests}",
+        )
+    )
+
+    cursor_tools = state.get("cursor_tools") or []
+    cursor_tool_choice = state.get("cursor_tool_choice")
+    role_cfg = config_store.get_role_config("arbiter")
+    provider_name = role_cfg.provider if role_cfg and role_cfg.provider else ""
+    use_text_tool_calls = bool(cursor_tools) and provider_name and provider_name != "openai"
+
+    if use_text_tool_calls:
+        messages.append(
+            ChatMessage(
+                role=MessageRole.USER,
+                content=(
+                    "[NON-OPENAI TOOL CALLS]\n\n"
+                    f"{build_text_tool_calls_instruction(cursor_tools)}"
+                ),
+            )
+        )
+
+    history = state.get("conversation_history", [])
+    for msg in history:
+        role = msg.get("role")
+        if role == "assistant":
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                messages.append(
+                    ChatMessage(
+                        role=MessageRole.ASSISTANT,
+                        content=msg.get("content"),
+                        name=msg.get("name"),
+                        tool_calls=tool_calls,
+                    )
+                )
+        elif role == "tool":
+            tool_call_id = msg.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                messages.append(
+                    ChatMessage(
+                        role=MessageRole.TOOL,
+                        content=msg.get("content"),
+                        name=msg.get("name"),
+                        tool_call_id=tool_call_id,
+                    )
+                )
+
+    try:
+        provider = provider_manager.get_provider_for_role("arbiter")
+        model = role_cfg.model if role_cfg and role_cfg.model else None
+        if not model:
+            logger.error("arbiter_model_not_configured_report_evidence")
+            error_msg = t(
+                MessageKey.ROLE_CONFIG_INCOMPLETE,
+                missing_roles=_format_role_names(["arbiter"]),
+            )
+            return {
+                **state,
+                # Keep phase at REPORT_EVIDENCE since error occurred here (phase consistency fix)
+                "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                "errors": state.get("errors", []) + [error_msg],
+                "thinking_logs": thinking_logs,
+            }
+
+        supports_native_tools = provider.name == "openai"
+        supports_text_tools = bool(cursor_tools) and provider.name != "openai"
+        should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
+
+        schedule_workflow_prompt_capture(
+            build_workflow_prompt_payload(
+                phase="report_evidence",
+                role="arbiter_report_evidence",
+                provider=provider.name,
+                model=model,
+                messages=messages,
+                temperature=0.2,
+                session_id=session_id,
+            )
+        )
+        extra_kwargs: dict[str, Any] = {}
+        if should_use_tool_calls and supports_native_tools:
+            extra_kwargs["tools"] = cursor_tools
+            if cursor_tool_choice is not None:
+                extra_kwargs["tool_choice"] = cursor_tool_choice
+
+        response = await _call_with_timeout(
+            provider=provider,
+            messages=messages,
+            model=model,
+            temperature=0.2,
+            **extra_kwargs,
+        )
+        tool_calls = response.tool_calls if isinstance(response.tool_calls, list) else None
+        if supports_text_tools and not tool_calls:
+            parsed_tool_calls = extract_tool_calls_from_text(response.content)
+            if parsed_tool_calls:
+                response.tool_calls = parsed_tool_calls
+                response.content = ""
+                tool_calls = parsed_tool_calls
+
+        usage = response.usage or {}
+        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        completion_tokens = (
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or 0
+        )
+        thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
+        output_for_cost = (
+            completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        )
+        budget_manager.record_usage(
+            provider=provider.name,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_for_cost,
+            thoughts_tokens=thoughts_tokens,
+            context_length=usage.get("total_tokens", 0),
+        )
+        if input_tokens or output_for_cost or thoughts_tokens:
+            log_manager.emit(
+                level="INFO",
+                category="WORKFLOW",
+                message=(
+                    f"report_evidence_usage | provider={provider.name} | "
+                    f"model={model} | "
+                    f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
+                    f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
+                ),
+            )
+
+        if tool_calls:
+            log_manager.emit(
+                level="INFO",
+                category="WORKFLOW",
+                message=(
+                    "report_evidence_tool_calls_ready | "
+                    f"session_id={session_id} | "
+                    f"count={len(tool_calls)}"
+                ),
+            )
+            return {
+                **state,
+                "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                "pending_tool_calls": tool_calls,
+                "thinking_logs": thinking_logs,
+            }
+
+        # Parse and append evidence
+        new_bundle, new_gaps = _parse_evidence_output(response.content)
+        existing_bundle = state.get("evidence_bundle") or ""
+        existing_gaps = state.get("evidence_gaps") or ""
+
+        # Append new evidence to existing bundle (P1-1 fix: avoid duplicate headers)
+        if new_bundle and "- None" not in new_bundle:
+            # Strip EVIDENCE_BUNDLE: header from new_bundle to avoid duplicate headers
+            new_bundle_content = new_bundle
+            if new_bundle_content.startswith("EVIDENCE_BUNDLE:"):
+                new_bundle_content = new_bundle_content[len("EVIDENCE_BUNDLE:"):].lstrip("\n")
+            if existing_bundle and "- None" not in existing_bundle:
+                # Append new evidence lines to existing bundle (after the header)
+                updated_bundle = f"{existing_bundle}\n\n{new_bundle_content}"
+            else:
+                updated_bundle = new_bundle  # Use full new_bundle with header if no existing
+        else:
+            updated_bundle = existing_bundle
+
+        # Merge gaps: preserve existing gaps and append new ones (P1-2 fix)
+        # This prevents losing Phase 0 gaps that council didn't re-raise
+        if new_gaps and "- None" not in new_gaps:
+            if existing_gaps and "- None" not in existing_gaps:
+                # Strip EVIDENCE_GAPS: header from new_gaps before merging
+                new_gaps_content = new_gaps
+                if new_gaps_content.startswith("EVIDENCE_GAPS:"):
+                    new_gaps_content = new_gaps_content[len("EVIDENCE_GAPS:"):].lstrip("\n")
+                # Merge: existing gaps + new gaps (dedupe handled by uniqueness of evidence items)
+                updated_gaps = f"{existing_gaps}\n{new_gaps_content}"
+            else:
+                updated_gaps = new_gaps  # Use full new_gaps with header if no existing
+        else:
+            updated_gaps = existing_gaps
+
+        log_manager.emit(
+            level="INFO",
+            category="WORKFLOW",
+            message="Phase 1.5 complete | Evidence collected and appended",
+        )
+
+        return {
+            **state,
+            "current_phase": WorkflowPhase.CONVERGENCE.value,
+            "evidence_bundle": updated_bundle,
+            "evidence_gaps": updated_gaps,
+            "conversation_history": _filter_conversation_history_for_analysis(
+                state.get("conversation_history", [])
+            ),
+            "thinking_logs": thinking_logs,
+        }
+    except Exception as e:
+        logger.warning("report_evidence_collection_failed", error=str(e))
+        log_manager.emit(
+            level="WARN",
+            category="WORKFLOW",
+            message=f"Phase 1.5 evidence collection failed: {str(e)[:120]}",
+        )
+        # On failure, stop at this phase (not convergence) for consistency
+        return {
+            **state,
+            # Keep phase at REPORT_EVIDENCE since error occurred here (phase consistency fix)
+            "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+            "errors": state.get("errors", []) + [
+                t(MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED, error=str(e))
+            ],
+            "thinking_logs": thinking_logs,
+        }
 
 
 async def convergence_node(state: TernionState) -> TernionState:
@@ -496,10 +1151,11 @@ async def convergence_node(state: TernionState) -> TernionState:
 
     if not successful_analyses:
         logger.error("no_successful_analyses")
+        error_msg = t(MessageKey.NO_TERNION_ANALYSES_AVAILABLE)
         return {
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
-            "errors": state.get("errors", []) + ["No ternion analyses available"],
+            "errors": state.get("errors", []) + [error_msg],
             "ternion_report": "",
             "is_consensus": False,
         }
@@ -528,18 +1184,41 @@ async def convergence_node(state: TernionState) -> TernionState:
     # Build synthesis prompt with language instruction
     convergence_prompt_with_lang = CONVERGENCE_PROMPT.format(language_instruction=language_instruction)
 
-    synthesis_content = "Council Analyses:\n\n"
+    evidence_bundle = state.get("evidence_bundle") or "EVIDENCE_BUNDLE:\n- None"
+    evidence_gaps = state.get("evidence_gaps") or "EVIDENCE_GAPS:\n- None"
+    evidence_requests = _extract_evidence_requests(successful_analyses)
+
+    synthesis_content = (
+        f"{evidence_bundle}\n\n"
+        f"{evidence_gaps}\n\n"
+        "EVIDENCE_REQUESTS:\n"
+        f"{evidence_requests}\n\n"
+        "Council Analyses:\n\n"
+    )
     for analysis in successful_analyses:
         synthesis_content += f"### {analysis['ternion_id'].upper()}\n"
         synthesis_content += f"{analysis['analysis']}\n\n"
 
-    messages = [
+    messages: list[ChatMessage] = [
         ChatMessage(
             role=MessageRole.SYSTEM,
             content=_prepend_global_security_rules(convergence_prompt_with_lang),
-        ),
-        ChatMessage(role=MessageRole.USER, content=synthesis_content),
+        )
     ]
+
+    history = state.get("conversation_history", [])
+    for msg in history:
+        messages.append(
+            ChatMessage(
+                role=MessageRole(msg["role"]),
+                content=msg.get("content"),
+                name=msg.get("name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        )
+
+    messages.append(ChatMessage(role=MessageRole.USER, content=synthesis_content))
 
     # Use Arbiter (Gemini with fallback)
     try:
@@ -552,13 +1231,17 @@ async def convergence_node(state: TernionState) -> TernionState:
         # Hard validation: model must be explicitly configured
         if not model:
             logger.error("arbiter_model_not_configured")
+            error_msg = t(
+                MessageKey.ROLE_CONFIG_INCOMPLETE,
+                missing_roles=_format_role_names(["arbiter"]),
+            )
             return {
                 **state,
                 "errors": state.get("errors", []) + [
-                    "Arbiter model not configured. Please configure it in the Web Control Panel."
+                    error_msg
                 ],
                 "thinking_logs": thinking_logs + [
-                    t(MessageKey.CONVERGENCE_ERROR, error="Arbiter model not configured")
+                    t(MessageKey.CONVERGENCE_ERROR, error=error_msg)
                 ],
             }
 
@@ -567,6 +1250,17 @@ async def convergence_node(state: TernionState) -> TernionState:
         session_id = state.get("session_id", "")
 
         # Use streaming call if queue is available, otherwise fall back to non-streaming
+        schedule_workflow_prompt_capture(
+            build_workflow_prompt_payload(
+                phase="convergence",
+                role="arbiter",
+                provider=provider.name,
+                model=model,
+                messages=messages,
+                temperature=0.5,
+                session_id=session_id,
+            )
+        )
         response = await _call_with_stream(
             provider=provider,
             messages=messages,
@@ -589,15 +1283,15 @@ async def convergence_node(state: TernionState) -> TernionState:
         )
         thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
         output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
-        budget_manager.record_usage(
-            provider=provider.name,
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_for_cost,
-            thoughts_tokens=thoughts_tokens,
-            context_length=usage.get("total_tokens", 0),
-        )
         if input_tokens or output_for_cost or thoughts_tokens:
+            budget_manager.record_usage(
+                provider=provider.name,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_for_cost,
+                thoughts_tokens=thoughts_tokens,
+                context_length=usage.get("total_tokens", 0),
+            )
             log_manager.emit(
                 level="INFO",
                 category="WORKFLOW",
@@ -759,6 +1453,17 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     message=f"Trying fallback Arbiter: {fallback_cfg['ternion_id']} ({fallback_cfg['provider']}/{fallback_cfg['model']})",
                 )
 
+                schedule_workflow_prompt_capture(
+                    build_workflow_prompt_payload(
+                        phase="convergence_fallback",
+                        role=fallback_cfg["ternion_id"],
+                        provider=fallback_cfg["provider"],
+                        model=fallback_cfg["model"],
+                        messages=messages,
+                        temperature=0.5,
+                        session_id=state.get("session_id", ""),
+                    )
+                )
                 fallback_response = await _call_with_timeout(
                     provider=fallback_provider,
                     messages=messages,
@@ -914,7 +1619,8 @@ TERNION_REPORT_HASH={session.report_hash}"""
 
         # All fallbacks failed - use raw analysis as last resort
         fallback_report = successful_analyses[0]["analysis"]
-        thinking_logs.append(t(MessageKey.CONVERGENCE_ERROR, error="All Arbiters failed, using raw analysis"))
+        fallback_error = t(MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED)
+        thinking_logs.append(t(MessageKey.CONVERGENCE_ERROR, error=fallback_error))
         log_manager.emit(
             level="WARN",
             category="WORKFLOW",
@@ -1137,13 +1843,17 @@ async def execution_node(state: TernionState) -> TernionState:
         # Hard validation: model must be explicitly configured
         if not model:
             logger.error("writer_model_not_configured")
+            error_msg = t(
+                MessageKey.ROLE_CONFIG_INCOMPLETE,
+                missing_roles=_format_role_names(["writer"]),
+            )
             return {
                 **state,
                 "errors": state.get("errors", []) + [
-                    "Writer model not configured. Please configure it in the Web Control Panel."
+                    error_msg
                 ],
                 "thinking_logs": thinking_logs + [
-                    t(MessageKey.EXECUTION_ERROR, error="Writer model not configured")
+                    t(MessageKey.EXECUTION_ERROR, error=error_msg)
                 ],
             }
 
@@ -1154,6 +1864,7 @@ async def execution_node(state: TernionState) -> TernionState:
         supports_native_tools = provider.name == "openai"
         supports_text_tools = bool(cursor_tools) and provider.name != "openai"
         should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
+        writer_timeout = WRITER_TIMEOUT_SECONDS
 
         log_manager.emit(
             level="INFO",
@@ -1165,7 +1876,8 @@ async def execution_node(state: TernionState) -> TernionState:
                 f"history_truncated={truncated_history} | "
                 f"digest_chars={len(tool_context_digest)} | "
                 f"tools={len(cursor_tools)} | "
-                f"revision_count={revision_count}"
+                f"revision_count={revision_count} | "
+                f"timeout_seconds={writer_timeout}"
             ),
         )
 
@@ -1188,6 +1900,7 @@ async def execution_node(state: TernionState) -> TernionState:
                 messages=messages,
                 model=model,
                 temperature=0.3,
+                timeout_seconds=writer_timeout,
                 **extra_kwargs,
             )
             if supports_text_tools and not response.tool_calls:
@@ -1284,6 +1997,7 @@ async def execution_node(state: TernionState) -> TernionState:
             stream_queue=stream_queue,
             phase="execution",
             message_id=session_id,
+            timeout_seconds=writer_timeout,
         )
         if not (response.content or "").strip():
             raise ValueError("writer_returned_empty_output")
@@ -1300,15 +2014,15 @@ async def execution_node(state: TernionState) -> TernionState:
         )
         thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
         output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
-        budget_manager.record_usage(
-            provider=provider.name,
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_for_cost,
-            thoughts_tokens=thoughts_tokens,
-            context_length=usage.get("total_tokens", 0),
-        )
         if input_tokens or output_for_cost or thoughts_tokens:
+            budget_manager.record_usage(
+                provider=provider.name,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_for_cost,
+                thoughts_tokens=thoughts_tokens,
+                context_length=usage.get("total_tokens", 0),
+            )
             log_manager.emit(
                 level="INFO",
                 category="WORKFLOW",
@@ -1438,13 +2152,17 @@ async def final_check_node(state: TernionState) -> TernionState:
         # Hard validation: model must be explicitly configured
         if not model:
             logger.error("reviewer_model_not_configured")
+            error_msg = t(
+                MessageKey.ROLE_CONFIG_INCOMPLETE,
+                missing_roles=_format_role_names(["reviewer"]),
+            )
             return {
                 **state,
                 "errors": state.get("errors", []) + [
-                    "Reviewer model not configured. Please configure it in the Web Control Panel."
+                    error_msg
                 ],
                 "thinking_logs": thinking_logs + [
-                    t(MessageKey.FINAL_CHECK_ERROR, error="Reviewer model not configured")
+                    t(MessageKey.FINAL_CHECK_ERROR, error=error_msg)
                 ],
             }
 
@@ -1467,15 +2185,15 @@ async def final_check_node(state: TernionState) -> TernionState:
         )
         thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
         output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
-        budget_manager.record_usage(
-            provider=provider.name,
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_for_cost,
-            thoughts_tokens=thoughts_tokens,
-            context_length=usage.get("total_tokens", 0),
-        )
         if input_tokens or output_for_cost or thoughts_tokens:
+            budget_manager.record_usage(
+                provider=provider.name,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_for_cost,
+                thoughts_tokens=thoughts_tokens,
+                context_length=usage.get("total_tokens", 0),
+            )
             log_manager.emit(
                 level="INFO",
                 category="WORKFLOW",
@@ -1735,13 +2453,17 @@ async def optimizer_node(state: TernionState) -> TernionState:
         model = role_cfg.model if role_cfg and role_cfg.model else None
         if not model:
             logger.error("optimizer_model_not_configured")
+            error_msg = t(
+                MessageKey.ROLE_CONFIG_INCOMPLETE,
+                missing_roles=_format_role_names(["optimizer"]),
+            )
             return {
                 **state,
                 "errors": state.get("errors", []) + [
-                    "Optimizer model not configured. Please configure it in the Web Control Panel."
+                    error_msg
                 ],
                 "thinking_logs": thinking_logs + [
-                    t(MessageKey.FINAL_CHECK_ERROR, error="Optimizer model not configured")
+                    t(MessageKey.FINAL_CHECK_ERROR, error=error_msg)
                 ],
                 "current_phase": WorkflowPhase.COMPLETE.value,
             }

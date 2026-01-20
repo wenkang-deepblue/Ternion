@@ -93,6 +93,11 @@ class Session:
     optimizer_todo_written: bool = False
     optimizer_phase_announced: bool = False
     confirmation_reason: str | None = None
+    # Phase 1.5 evidence state (for report_evidence tool loop)
+    evidence_bundle: str = ""
+    evidence_gaps: str = ""
+    evidence_requests: str = ""
+    ternion_analyses: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def ternion_report(self) -> str:
@@ -183,6 +188,10 @@ class SessionStore:
         optimizer_review_report: str = "",
         optimizer_todo_written: bool = False,
         optimizer_phase_announced: bool = False,
+        evidence_bundle: str = "",
+        evidence_gaps: str = "",
+        evidence_requests: str = "",
+        ternion_analyses: list[dict[str, Any]] | None = None,
     ) -> Session:
         """
         Create a new session after Ternion report generation.
@@ -232,6 +241,10 @@ class SessionStore:
             optimizer_review_report=optimizer_review_report,
             optimizer_todo_written=optimizer_todo_written,
             optimizer_phase_announced=optimizer_phase_announced,
+            evidence_bundle=evidence_bundle,
+            evidence_gaps=evidence_gaps,
+            evidence_requests=evidence_requests,
+            ternion_analyses=list(ternion_analyses or []),
         )
 
         self._save_session(session)
@@ -316,6 +329,10 @@ class SessionStore:
         optimizer_todo_written: bool | None = None,
         optimizer_phase_announced: bool | None = None,
         confirmation_reason: str | None = None,
+        evidence_bundle: str | None = None,
+        evidence_gaps: str | None = None,
+        evidence_requests: str | None = None,
+        ternion_analyses: list[dict[str, Any]] | None = None,
     ) -> Session | None:
         """
         Update a session with new values.
@@ -379,6 +396,14 @@ class SessionStore:
             session.optimizer_phase_announced = optimizer_phase_announced
         if confirmation_reason is not None:
             session.confirmation_reason = confirmation_reason
+        if evidence_bundle is not None:
+            session.evidence_bundle = evidence_bundle
+        if evidence_gaps is not None:
+            session.evidence_gaps = evidence_gaps
+        if evidence_requests is not None:
+            session.evidence_requests = evidence_requests
+        if ternion_analyses is not None:
+            session.ternion_analyses = ternion_analyses
 
         session.updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         self._save_session(session)

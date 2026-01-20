@@ -16,11 +16,16 @@ Language = Literal["en", "zh", "es", "fr", "de", "ja", "ko"]
 class MessageKey(str, Enum):
     """Keys for localized messages (logs, errors, UI text)."""
 
+    # Evidence Stage Errors
+    EVIDENCE_COLLECTION_FAILED = "evidence_collection_failed"
+    REPORT_EVIDENCE_COLLECTION_FAILED = "report_evidence_collection_failed"
+
     DIVERGENCE_START = "divergence_start"
     DIVERGENCE_ANALYSIS = "divergence_analysis"
     CONVERGENCE_START = "convergence_start"
     CONVERGENCE_COMPLETE = "convergence_complete"
     CONVERGENCE_ERROR = "convergence_error"
+    CONVERGENCE_ALL_ARBITERS_FAILED = "convergence_all_arbiters_failed"
     EXECUTION_START = "execution_start"
     EXECUTION_COMPLETE = "execution_complete"
     EXECUTION_ERROR = "execution_error"
@@ -46,6 +51,7 @@ class MessageKey(str, Enum):
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     EXECUTION_MODE_NOT_CONFIGURED = "execution_mode_not_configured"
     UNSUPPORTED_MODEL = "unsupported_model"
+    NO_TERNION_ANALYSES_AVAILABLE = "no_ternion_analyses_available"
 
     # Budget Alerts
     BUDGET_WARNING = "budget_warning"
@@ -60,6 +66,10 @@ class MessageKey(str, Enum):
     # Tool Loop Guardrails
     TOOL_LOOP_FAILSAFE_REACHED = "tool_loop_failsafe_reached"
     LOG_TOOL_LOOP_FAILSAFE_REACHED = "log_tool_loop_failsafe_reached"
+
+    # Discussion Output (Cursor-facing UI text)
+    DISCUSSION_NO_OUTPUT = "discussion_no_output"
+    DISCUSSION_ERRORS_HEADER = "discussion_errors_header"
 
     # Report Display (Cursor-facing UI text)
     REPORT_SECTION_ROOT_CAUSE_TITLE = "report_section_root_cause_title"
@@ -79,11 +89,16 @@ class MessageKey(str, Enum):
 
 TRANSLATIONS: dict[Language, dict[str, str]] = {
     "en": {
+        # Evidence Stage Errors
+        MessageKey.EVIDENCE_COLLECTION_FAILED: "Evidence collection failed: {error}",
+        MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "Report evidence collection failed: {error}",
+
         MessageKey.DIVERGENCE_START: "> **[Arbiter]**: Starting parallel problem analysis...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.CONVERGENCE_START: "> **[Arbiter]**: Synthesizing opinions, generating report...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[Arbiter]**: Report complete: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[Arbiter]**: Error during convergence: {error}\n",
+        MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "All Arbiters failed; using raw analysis.",
         MessageKey.EXECUTION_START: "> **[Writer]**: Generating code from analysis report...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Writer]**: Code generation complete\n",
         MessageKey.EXECUTION_ERROR: "> **[Writer]**: Error during execution: {error}\n",
@@ -135,6 +150,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(Settings --> Models --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
             "If you intended to use Ternion, switch the model to 'ternion-team'."
         ),
+        MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "No ternion analyses available.",
 
         # Budget Alerts
         MessageKey.BUDGET_WARNING: (
@@ -166,6 +182,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        # Discussion Output (Cursor-facing UI text)
+        MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] Discussion completed but no output was generated.",
+        MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Errors:\n",
+
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Root Cause",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "Evidence / Logs",
@@ -191,11 +211,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "zh": {
+        # Evidence Stage Errors
+        MessageKey.EVIDENCE_COLLECTION_FAILED: "证据采集失败：{error}",
+        MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "报告阶段证据补齐失败：{error}",
+
         MessageKey.DIVERGENCE_START: "> **[Arbiter]**: 开始并发问题分析...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.CONVERGENCE_START: "> **[Arbiter]**: 综合分析各方意见，生成报告...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[Arbiter]**: 报告生成完成: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[Arbiter]**: 综合分析错误: {error}\n",
+        MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "所有 Arbiter 失败，使用原始分析作为回退。",
         MessageKey.EXECUTION_START: "> **[Writer]**: 基于分析报告生成代码中...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Writer]**: 代码生成完成\n",
         MessageKey.EXECUTION_ERROR: "> **[Writer]**: 代码生成错误: {error}\n",
@@ -245,6 +270,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(设置 --> Models --> \"OpenAI API Key\" & \"Override OpenAI Base URL\")。"
             "如果你想使用 Ternion，请将模型切换为 'ternion-team'。"
         ),
+        MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "没有可用的 Ternion 分析结果。",
 
         # Budget Alerts
         MessageKey.BUDGET_WARNING: (
@@ -275,6 +301,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "工具循环 failsafe 触发 | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        # Discussion Output (Cursor-facing UI text)
+        MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] 流程已完成，但未生成任何输出。",
+        MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] 错误：\n",
+
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "根因",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "证据/日志",
@@ -299,11 +329,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "es": {
+        # Evidence Stage Errors
+        MessageKey.EVIDENCE_COLLECTION_FAILED: "La recopilación de evidencias falló: {error}",
+        MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "La verificación de evidencias del informe falló: {error}",
+
         MessageKey.DIVERGENCE_START: "> **[Árbitro]**: Iniciando análisis paralelo del problema...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.CONVERGENCE_START: "> **[Árbitro]**: Sintetizando opiniones, generando informe...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[Árbitro]**: Informe completo: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[Árbitro]**: Error durante convergencia: {error}\n",
+        MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "Todos los Árbitros fallaron; usando el análisis en bruto.",
         MessageKey.EXECUTION_START: "> **[Escritor]**: Generando código del informe de análisis...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Escritor]**: Generación de código completa\n",
         MessageKey.EXECUTION_ERROR: "> **[Escritor]**: Error durante ejecución: {error}\n",
@@ -353,6 +388,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(Configuración --> Modelos --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
             "Si desea usar Ternion, cambie el modelo a 'ternion-team'."
         ),
+        MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "No hay análisis de Ternion disponibles.",
 
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
@@ -384,6 +420,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        # Discussion Output (Cursor-facing UI text)
+        MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] La discusión finalizó pero no se generó ninguna salida.",
+        MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Errores:\n",
+
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Causa raíz",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "Evidencia / Registros",
@@ -409,11 +449,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "fr": {
+        # Evidence Stage Errors
+        MessageKey.EVIDENCE_COLLECTION_FAILED: "La collecte de preuves a échoué : {error}",
+        MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "La collecte de preuves pour le rapport a échoué : {error}",
+
         MessageKey.DIVERGENCE_START: "> **[Arbitre]**: Démarrage de l'analyse parallèle du problème...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.CONVERGENCE_START: "> **[Arbitre]**: Synthèse des opinions, génération du rapport...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[Arbitre]**: Rapport complet : {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[Arbitre]**: Erreur pendant la convergence : {error}\n",
+        MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "Tous les Arbitres ont échoué ; utilisation de l'analyse brute.",
         MessageKey.EXECUTION_START: "> **[Rédacteur]**: Génération du code à partir du rapport d'analyse...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Rédacteur]**: Génération de code terminée\n",
         MessageKey.EXECUTION_ERROR: "> **[Rédacteur]**: Erreur pendant l'exécution : {error}\n",
@@ -463,6 +508,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(Paramètres --> Modèles --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
             "Si vous souhaitez utiliser Ternion, basculez vers le modèle 'ternion-team'."
         ),
+        MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "Aucune analyse Ternion disponible.",
 
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
@@ -494,6 +540,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        # Discussion Output (Cursor-facing UI text)
+        MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] La discussion est terminée mais aucune sortie n’a été générée.",
+        MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Erreurs :\n",
+
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Cause racine",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "Preuves / Logs",
@@ -519,11 +569,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "de": {
+        # Evidence Stage Errors
+        MessageKey.EVIDENCE_COLLECTION_FAILED: "Beweissammlung fehlgeschlagen: {error}",
+        MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "Beweissammlung für den Bericht fehlgeschlagen: {error}",
+
         MessageKey.DIVERGENCE_START: "> **[Schiedsrichter]**: Starte parallele Problemanalyse...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.CONVERGENCE_START: "> **[Schiedsrichter]**: Meinungen synthetisieren, Bericht erstellen...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[Schiedsrichter]**: Bericht fertig: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[Schiedsrichter]**: Fehler bei der Konvergenz: {error}\n",
+        MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "Alle Arbiter sind fehlgeschlagen; es wird die Roh-Analyse verwendet.",
         MessageKey.EXECUTION_START: "> **[Verfasser]**: Code aus Analysebericht generieren...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Verfasser]**: Code-Generierung abgeschlossen\n",
         MessageKey.EXECUTION_ERROR: "> **[Verfasser]**: Fehler bei der Ausführung: {error}\n",
@@ -573,6 +628,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(Einstellungen --> Modelle --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
             "Wenn Sie Ternion verwenden möchten, wechseln Sie zum Modell 'ternion-team'."
         ),
+        MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "Keine Ternion-Analysen verfügbar.",
 
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
@@ -604,6 +660,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        # Discussion Output (Cursor-facing UI text)
+        MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] Die Diskussion ist abgeschlossen, aber es wurde keine Ausgabe erzeugt.",
+        MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Fehler:\n",
+
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Ursache",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "Evidenz / Logs",
@@ -629,11 +689,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "ja": {
+        # Evidence Stage Errors
+        MessageKey.EVIDENCE_COLLECTION_FAILED: "証拠収集に失敗しました: {error}",
+        MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "レポート段階の証拠補完に失敗しました: {error}",
+
         MessageKey.DIVERGENCE_START: "> **[調停者]**: 並列問題分析を開始...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.CONVERGENCE_START: "> **[調停者]**: 意見を統合し、レポートを作成中...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[調停者]**: レポート完成: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[調停者]**: 収束中にエラー: {error}\n",
+        MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "すべてのアービターが失敗したため、生の分析を使用します。",
         MessageKey.EXECUTION_START: "> **[執筆者]**: 分析レポートからコードを生成中...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[執筆者]**: コード生成完了\n",
         MessageKey.EXECUTION_ERROR: "> **[執筆者]**: 実行中にエラー: {error}\n",
@@ -683,6 +748,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(設定 --> モデル --> \"OpenAI API Key\" & \"Override OpenAI Base URL\")。"
             "Ternionを使用する場合は、モデルを 'ternion-team' に切り替えてください。"
         ),
+        MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "利用可能なTernion分析がありません。",
 
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
@@ -714,6 +780,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        # Discussion Output (Cursor-facing UI text)
+        MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] ディスカッションは完了しましたが、出力が生成されませんでした。",
+        MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] エラー:\n",
+
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "根本原因",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "証拠 / ログ",
@@ -739,11 +809,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         ),
     },
     "ko": {
+        # Evidence Stage Errors
+        MessageKey.EVIDENCE_COLLECTION_FAILED: "증거 수집에 실패했습니다: {error}",
+        MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "보고서 단계 증거 보완에 실패했습니다: {error}",
+
         MessageKey.DIVERGENCE_START: "> **[중재자]**: 병렬 문제 분석 시작...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.CONVERGENCE_START: "> **[중재자]**: 의견 종합, 보고서 작성 중...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[중재자]**: 보고서 완성: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[중재자]**: 수렴 중 오류: {error}\n",
+        MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "모든 Arbiter가 실패하여 원본 분석을 사용합니다.",
         MessageKey.EXECUTION_START: "> **[작성자]**: 분석 보고서에서 코드 생성 중...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[작성자]**: 코드 생성 완료\n",
         MessageKey.EXECUTION_ERROR: "> **[작성자]**: 실행 중 오류: {error}\n",
@@ -793,6 +868,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "(설정 --> 모델 --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
             "Ternion을 사용하려면 모델을 'ternion-team'으로 전환하세요."
         ),
+        MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "사용 가능한 Ternion 분석이 없습니다.",
 
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
@@ -823,6 +899,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
+
+        # Discussion Output (Cursor-facing UI text)
+        MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] 토론이 완료되었지만 출력이 생성되지 않았습니다.",
+        MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] 오류:\n",
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "근본 원인",

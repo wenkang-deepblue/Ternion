@@ -12,7 +12,9 @@ from typing import Any, TypedDict
 class WorkflowPhase(str, Enum):
     """Current phase of the workflow."""
 
+    EVIDENCE = "evidence"
     DIVERGENCE = "divergence"
+    REPORT_EVIDENCE = "report_evidence"  # Phase 1.5: collect evidence for council requests
     CONVERGENCE = "convergence"
     EXECUTION = "execution"
     FINAL_CHECK = "final_check"
@@ -67,6 +69,10 @@ class TernionState(TypedDict, total=False):
     # Current phase
     current_phase: str
 
+    # Evidence gathering outputs
+    evidence_bundle: str
+    evidence_gaps: str
+
     # Session management (Human-in-the-Loop)
     session_id: str  # Unique session identifier
     await_confirmation: bool  # If True, stop after convergence for user confirmation
@@ -75,6 +81,7 @@ class TernionState(TypedDict, total=False):
 
     # Step 1: Divergence outputs
     ternion_analyses: list[dict[str, Any]]  # List of analysis results as dicts
+    evidence_requests: str  # Evidence requested by council members for Phase 1.5
 
     # Step 2: Convergence outputs
     is_consensus: bool

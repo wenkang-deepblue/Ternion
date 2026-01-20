@@ -311,7 +311,7 @@ function AppContent() {
       <footer className="border-t border-slate-200 dark:border-slate-700 py-6 mt-12">
         <div className="max-w-5xl mx-auto px-4 text-center text-sm text-slate-500">
           <p>
-            Ternion v0.4.8 • {t.appSubtitle} •{' '}
+            {t.footerVersion} • {t.appSubtitle} •{' '}
             <a
               href={`http://localhost:${config?.ports?.backend || 9110}/docs`}
               target="_blank"

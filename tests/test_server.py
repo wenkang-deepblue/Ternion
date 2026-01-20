@@ -349,7 +349,11 @@ class TestChatCompletions:
                 }
             ],
             "conversation_history": [],
-            "current_phase": "execution",
+            "current_phase": "report_evidence",
+            "evidence_bundle": "EVIDENCE_BUNDLE:\n- [FILE_EXCERPT] path=foo.py | lines=1-2",
+            "evidence_gaps": "EVIDENCE_GAPS:\n- None",
+            "evidence_requests": "- [P0] path=foo.py:1-2",
+            "ternion_analyses": [{"ternion_id": "ternion_a", "analysis": "A"}],
             "thinking_logs": [],
             "errors": [],
         }
@@ -418,6 +422,15 @@ class TestChatCompletions:
                 )
                 assert saw_finish, "Expected a finish_reason='tool_calls' final SSE chunk"
 
+            # Streaming tool-loop sessions must persist Phase 1.5 evidence state.
+            mock_session_store.create_session.assert_called_once()
+            kwargs = mock_session_store.create_session.call_args.kwargs
+            assert kwargs.get("workflow_phase") == "report_evidence"
+            assert kwargs.get("evidence_bundle") == mock_result["evidence_bundle"]
+            assert kwargs.get("evidence_gaps") == mock_result["evidence_gaps"]
+            assert kwargs.get("evidence_requests") == mock_result["evidence_requests"]
+            assert kwargs.get("ternion_analyses") == mock_result["ternion_analyses"]
+
     def test_execution_followup_routes_by_tool_call_id(self, client: TestClient) -> None:
         """Execution follow-ups should be routed via tool_call_id even without session markers."""
         mock_user_config = MagicMock()
@@ -480,6 +493,128 @@ class TestChatCompletions:
             assert response.status_code == 200
             assert response.json() == {"ok": True}
             mock_handler.assert_awaited()
+
+    def test_report_evidence_followup_routes_and_persists_tool_loop(
+        self, client: TestClient
+    ) -> None:
+        """Phase 1.5 follow-ups should route and persist tool loop state."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = True
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        resume_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+            workflow_phase="report_evidence",
+            cursor_system_prompt="SYS",
+            execution_messages=[],
+            evidence_bundle="EVIDENCE_BUNDLE:\n- [FILE_EXCERPT] path=foo.py | lines=1-2",
+            evidence_gaps="EVIDENCE_GAPS:\n- None",
+            evidence_requests="- [P0] path=foo.py:1-2",
+            ternion_analyses=[{"ternion_id": "ternion_a", "analysis": "A"}],
+        )
+        tool_session = Session(
+            session_id="fedcba987654",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash2",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+        mock_final_state = {
+            "current_phase": "report_evidence",
+            "execution_mode": "ternion_full",
+            "ternion_report": "REPORT",
+            "pending_tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {"name": "codebase_search", "arguments": "{\"query\":\"foo\"}"},
+                }
+            ],
+            "conversation_history": [],
+            "evidence_bundle": resume_session.evidence_bundle,
+            "evidence_gaps": resume_session.evidence_gaps,
+            "evidence_requests": resume_session.evidence_requests,
+            "ternion_analyses": resume_session.ternion_analyses,
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+            patch("ternion.server.routes.budget_manager") as mock_budget_manager,
+            patch("ternion.workflow.graph.resume_report_evidence", new_callable=AsyncMock) as mock_resume,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_session_store.load_session.return_value = resume_session
+            mock_session_store.create_session.return_value = tool_session
+            mock_session_store.update_session.return_value = resume_session
+            mock_budget_manager.check_budget.return_value = (True, None)
+            mock_resume.return_value = mock_final_state
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [
+                        {
+                            "role": "tool",
+                            "tool_call_id": "ternion_0123456789ab_r0001_c00",
+                            "content": "RESULT",
+                        }
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["choices"][0]["finish_reason"] == "tool_calls"
+
+            tool_calls = data["choices"][0]["message"]["tool_calls"]
+            assert tool_calls[0]["id"] == "ternion_fedcba987654_r0001_c00"
+            assert tool_calls[0]["function"]["name"] == "codebase_search"
+
+            kwargs = mock_session_store.create_session.call_args.kwargs
+            assert isinstance(kwargs.get("execution_mode"), ExecutionMode)
+            assert kwargs.get("workflow_phase") == "report_evidence"
+            assert kwargs.get("evidence_bundle") == mock_final_state["evidence_bundle"]
+            assert kwargs.get("evidence_gaps") == mock_final_state["evidence_gaps"]
+            assert kwargs.get("evidence_requests") == mock_final_state["evidence_requests"]
+            assert kwargs.get("ternion_analyses") == mock_final_state["ternion_analyses"]
+
+            saw_tool_session_update = any(
+                call.args
+                and call.args[0] == tool_session.session_id
+                and call.kwargs.get("round_index") == 1
+                and isinstance(call.kwargs.get("pending_tool_calls"), list)
+                for call in mock_session_store.update_session.call_args_list
+            )
+            assert saw_tool_session_update
 
     def test_read_file_tool_call_is_paginated_by_server(self, client: TestClient) -> None:
         """Server should enforce offset/limit on read_file tool calls."""
