@@ -611,6 +611,7 @@ class PreferencesUpdateRequest(BaseModel):
     language: str | None = None  # "auto", "en", "zh", "es", "fr", "de", "ja", "ko"
     browser_language: str | None = None  # Detected browser language (used when language="auto")
     hide_usage_disclaimer: bool | None = None  # Hide usage disclaimer warning
+    show_phase_indicators: bool | None = None  # Show phase indicators in streaming output
 
 
 @router.put("/preferences")
@@ -645,6 +646,9 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
     if request.hide_usage_disclaimer is not None:
         config.hide_usage_disclaimer = request.hide_usage_disclaimer
 
+    if request.show_phase_indicators is not None:
+        config.show_phase_indicators = request.show_phase_indicators
+
     # Store browser-detected language (used when language="auto")
     if request.browser_language is not None and request.browser_language in ("en", "zh", "es", "fr", "de", "ja", "ko"):
         config.browser_language = request.browser_language
@@ -660,6 +664,7 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
             "language": config.language,
             "browser_language": config.browser_language,
             "hide_usage_disclaimer": config.hide_usage_disclaimer,
+            "show_phase_indicators": config.show_phase_indicators,
         },
     }
 

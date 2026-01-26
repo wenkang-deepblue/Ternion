@@ -9,7 +9,47 @@ from typing import Any
 
 TOOL_CALLS_BEGIN = "TERNION_TOOL_CALLS_BEGIN"
 TOOL_CALLS_END = "TERNION_TOOL_CALLS_END"
+STREAM_TOOL_CALLS_PREFIX = "TERNION_STREAM_TOOL_CALLS_JSON:"
 _MAX_SCHEMA_CHARS = 1200
+
+
+def encode_stream_tool_calls(tool_calls: list[dict[str, Any]]) -> str:
+    """
+    Encode tool calls into an internal streaming marker string.
+
+    This is a server-internal protocol used to transport tool-calls metadata through
+    provider streaming generators without changing the public provider interface.
+    The marker must NEVER be forwarded to users.
+    """
+    try:
+        payload = json.dumps(tool_calls or [], ensure_ascii=False)
+    except Exception:
+        payload = "[]"
+    return f"{STREAM_TOOL_CALLS_PREFIX}{payload}"
+
+
+def decode_stream_tool_calls(text: str | None) -> list[dict[str, Any]] | None:
+    """
+    Decode tool calls from an internal streaming marker string.
+
+    Returns None if the text is not a tool-calls marker.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    if not text.startswith(STREAM_TOOL_CALLS_PREFIX):
+        return None
+    payload = text[len(STREAM_TOOL_CALLS_PREFIX):].strip()
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return None
+    if not isinstance(data, list):
+        return None
+    out: list[dict[str, Any]] = []
+    for item in data:
+        if isinstance(item, dict):
+            out.append(item)
+    return out or None
 
 
 def build_text_tool_calls_instruction(cursor_tools: list[dict[str, Any]]) -> str:

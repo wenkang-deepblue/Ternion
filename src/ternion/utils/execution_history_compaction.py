@@ -8,6 +8,7 @@ Writer context within practical budget limits during multi-round tool loops.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,10 +17,14 @@ from typing import Any
 class ExecutionHistoryCompactionConfig:
     """Configuration for execution history compaction."""
 
-    max_history_chars: int = 80_000
-    max_tail_messages: int = 40
-    max_digest_chars: int = 10_000
-    max_args_chars: int = 300
+    # Keep more recent raw history to reduce re-reads in long tool loops.
+    max_history_chars: int = 160_000
+    max_tail_messages: int = 80
+    max_digest_chars: int = 500_000
+    max_args_chars: int = 600
+    # Include more content per tool result in the digest so the Writer can
+    # avoid repeating the same reads after history truncation.
+    max_result_chars: int = 1200
 
 
 def compact_execution_history_for_writer(
@@ -84,7 +89,7 @@ def _build_tool_context_digest(
     with read_file(offset/limit) when needed.
     """
     call_meta_by_id: dict[str, dict[str, Any]] = {}
-    tool_results: list[tuple[str, str, dict[str, Any]]] = []
+    tool_results: list[tuple[str, str, dict[str, Any], str]] = []
 
     for msg in history or []:
         if not isinstance(msg, dict):
@@ -114,7 +119,9 @@ def _build_tool_context_digest(
             meta = call_meta_by_id.get(tool_call_id, {})
             name = str(meta.get("name") or "")
             args = meta.get("arguments") if isinstance(meta.get("arguments"), str) else ""
-            tool_results.append((tool_call_id, name, _parse_args(args)))
+            content_text = _coerce_tool_content_text(msg.get("content"))
+            result_summary = _summarize_tool_content(content_text, max_len=cfg.max_result_chars)
+            tool_results.append((tool_call_id, name, _parse_args(args), result_summary))
 
     lines: list[str] = [
         "[TERNION TOOL CONTEXT DIGEST]",
@@ -127,16 +134,24 @@ def _build_tool_context_digest(
         return _truncate_text("\n".join(lines).strip(), cfg.max_digest_chars)
 
     # Group by tool for readability.
-    by_tool: dict[str, list[tuple[str, dict[str, Any]]]] = {}
-    for tool_call_id, name, parsed_args in tool_results:
-        by_tool.setdefault(name or "(unknown)", []).append((tool_call_id, parsed_args))
+    by_tool: dict[str, list[tuple[str, dict[str, Any], str]]] = {}
+    for tool_call_id, name, parsed_args, result_summary in tool_results:
+        by_tool.setdefault(name or "(unknown)", []).append((tool_call_id, parsed_args, result_summary))
+
+    # Keep substantially more than the last 10 calls/tool. In long loops,
+    # retaining only 10 makes the Writer re-read the same files repeatedly.
+    max_calls_per_tool = 200
 
     for tool_name, items in sorted(by_tool.items(), key=lambda kv: kv[0]):
         lines.append(f"- tool={tool_name} calls={len(items)}")
-        for tool_call_id, parsed_args in items[-10:]:
+        shown = items[-max_calls_per_tool:] if len(items) > max_calls_per_tool else items
+        for tool_call_id, parsed_args, result_summary in shown:
             args_preview = _format_args_preview(parsed_args, max_len=cfg.max_args_chars)
-            lines.append(f"  - {tool_call_id}: {args_preview}".rstrip())
-        if len(items) > 10:
+            if result_summary:
+                lines.append(f"  - {tool_call_id}: args={args_preview} | result={result_summary}".rstrip())
+            else:
+                lines.append(f"  - {tool_call_id}: args={args_preview}".rstrip())
+        if len(items) > max_calls_per_tool:
             lines.append("  - … (more calls omitted)")
         lines.append("")
 
@@ -244,4 +259,55 @@ def _truncate_text(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 1] + "…"
+
+
+def _coerce_tool_content_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False)
+    except Exception:
+        return str(content)
+
+
+def _summarize_tool_content(text: str, *, max_len: int) -> str:
+    """
+    Produce a compact, one-line-ish summary of a tool result.
+
+    This is intentionally lossy: it's meant to help the Writer avoid repeating
+    the same discovery work after history truncation.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+
+    # If we have a structured compaction header, prefer only the header lines.
+    if raw.startswith("[TERNION COMPACTED TOOL RESULT]"):
+        header_lines: list[str] = []
+        for line in raw.splitlines():
+            s = line.strip()
+            if not s:
+                break
+            header_lines.append(s)
+            if len(header_lines) >= 12:
+                break
+        summary = " | ".join(header_lines)
+        summary = re.sub(r"\s+", " ", summary).strip()
+        return _truncate_text(summary, max_len)
+
+    # Otherwise, keep a few high-signal lines (first non-empty lines).
+    lines: list[str] = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        lines.append(s)
+        if len(lines) >= 12:
+            break
+
+    summary = " | ".join(lines)
+    summary = re.sub(r"\s+", " ", summary).strip()
+    return _truncate_text(summary, max_len)
 

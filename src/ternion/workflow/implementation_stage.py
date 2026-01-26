@@ -11,8 +11,9 @@ from typing import Any
 
 import structlog
 
-from ternion.workflow.nodes import execution_node, optimizer_node
+from ternion.workflow.nodes import execution_node, optimizer_node, report_evidence_node
 from ternion.workflow.state import TernionState, WorkflowPhase
+from ternion.utils.i18n import MessageKey, t
 
 logger = structlog.get_logger(__name__)
 
@@ -56,7 +57,10 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
         missing_fields.append("conversation_history")
 
     if missing_fields:
-        error_msg = f"[Ternion] Implementation stage cannot proceed: missing required fields: {', '.join(missing_fields)}"
+        error_msg = t(
+            MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS,
+            missing_fields=", ".join(missing_fields),
+        )
         logger.error(
             "implementation_stage_validation_failed",
             missing_fields=missing_fields,
@@ -70,13 +74,37 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
 
     # Default to EXECUTION unless caller provides a specific resume phase.
     phase = state.get("current_phase") or WorkflowPhase.EXECUTION.value
-    if phase not in (WorkflowPhase.EXECUTION.value, WorkflowPhase.OPTIMIZER.value):
+    if phase not in (
+        WorkflowPhase.EXECUTION.value,
+        WorkflowPhase.OPTIMIZER.value,
+        WorkflowPhase.REPORT_EVIDENCE.value,
+    ):
         phase = WorkflowPhase.EXECUTION.value
     state["current_phase"] = phase
 
     # Run execution + optimizer loop
     while True:
         phase = state.get("current_phase") or WorkflowPhase.EXECUTION.value
+
+        if phase == WorkflowPhase.REPORT_EVIDENCE.value:
+            # Ensure Phase 1.5 inputs have safe defaults for execution-time top-ups.
+            state.setdefault("evidence_bundle", "EVIDENCE_BUNDLE:\n- None")
+            state.setdefault("evidence_gaps", "EVIDENCE_GAPS:\n- None")
+            state.setdefault("evidence_requests", "- [P0] None")
+
+            state = await report_evidence_node(state)
+
+            # Stop immediately if tool calls are pending (server will route follow-up).
+            if state.get("pending_tool_calls"):
+                return state
+
+            next_phase = state.get("current_phase") or WorkflowPhase.EXECUTION.value
+            if next_phase not in (
+                WorkflowPhase.EXECUTION.value,
+                WorkflowPhase.OPTIMIZER.value,
+            ):
+                state["current_phase"] = WorkflowPhase.EXECUTION.value
+            continue
 
         if phase == WorkflowPhase.EXECUTION.value:
             state = await execution_node(state)

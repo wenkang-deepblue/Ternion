@@ -82,6 +82,11 @@ class TernionState(TypedDict, total=False):
     # Step 1: Divergence outputs
     ternion_analyses: list[dict[str, Any]]  # List of analysis results as dicts
     evidence_requests: str  # Evidence requested by council members for Phase 1.5
+    evidence_chain_index: list[dict[str, Any]]
+    # Step E: Execution/Optimizer evidence top-up (shared counter across phases)
+    evidence_topup_round: int
+    # Step E: When using report_evidence as execution-time top-up, resume to this phase.
+    report_evidence_resume_phase: str
 
     # Step 2: Convergence outputs
     is_consensus: bool
@@ -110,6 +115,7 @@ class TernionState(TypedDict, total=False):
 
     # Final result
     final_output: str
+    final_output_suffix: str
 
     # Streaming event queue (internal, for real-time output forwarding)
     # This is set by routes.py and consumed by nodes for streaming LLM output

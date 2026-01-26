@@ -133,6 +133,10 @@ class UserConfig(BaseModel):
     # Control whether thinking logs are prepended to final output.
     # Set to False for strict system prompts that require only patch/diff output.
     show_thinking_logs: bool = True
+    # Control whether phase indicators (Writer/Optimizer/etc) are shown to users.
+    # This is intentionally independent from show_thinking_logs to support
+    # "minimal logs, but still show phase" UX.
+    show_phase_indicators: bool = True
     # Reserved for future CORS allowlist customization (v1/v1.5 advanced feature).
     # Users can add extra IPs (e.g., "192.168.1.100") for LAN access.
     # Backend will combine these with ports.web to form complete origins.
@@ -321,6 +325,7 @@ class ConfigStore:
                 "browser_language": config.browser_language,
                 "hide_usage_disclaimer": config.hide_usage_disclaimer,
                 "show_thinking_logs": config.show_thinking_logs,
+                "show_phase_indicators": config.show_phase_indicators,
             },
             "execution_mode": config.execution_mode,
             "updated_at": config.updated_at,

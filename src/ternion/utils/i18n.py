@@ -22,6 +22,7 @@ class MessageKey(str, Enum):
 
     DIVERGENCE_START = "divergence_start"
     DIVERGENCE_ANALYSIS = "divergence_analysis"
+    DIVERGENCE_ANALYSIS_FAILED = "divergence_analysis_failed"
     CONVERGENCE_START = "convergence_start"
     CONVERGENCE_COMPLETE = "convergence_complete"
     CONVERGENCE_ERROR = "convergence_error"
@@ -44,6 +45,7 @@ class MessageKey(str, Enum):
     EXECUTION_MODE_MISSING = "execution_mode_missing"
     ROLE_CONFIG_INCOMPLETE = "role_config_incomplete"
     EXECUTION_REQUIRES_AGENT_MODE = "execution_requires_agent_mode"
+    IMPLEMENTATION_STAGE_MISSING_FIELDS = "implementation_stage_missing_fields"
 
     # Provider Manager Errors
     NO_PROVIDERS_CONFIGURED = "no_providers_configured"
@@ -66,10 +68,20 @@ class MessageKey(str, Enum):
     # Tool Loop Guardrails
     TOOL_LOOP_FAILSAFE_REACHED = "tool_loop_failsafe_reached"
     LOG_TOOL_LOOP_FAILSAFE_REACHED = "log_tool_loop_failsafe_reached"
+    DELIVERABLE_POLICY_BLOCKED = "deliverable_policy_blocked"
+    EXECUTION_TOOL_POLICY_BLOCKED = "execution_tool_policy_blocked"
+    EVIDENCE_TOPUP_FINAL_REQUIRED = "evidence_topup_final_required"
+    EVIDENCE_TOPUP_LIMIT_REACHED = "evidence_topup_limit_reached"
+    EVIDENCE_TOPUP_REQUESTS_EMPTY = "evidence_topup_requests_empty"
+    EVIDENCE_TOPUP_PURPOSE_REQUIRED = "evidence_topup_purpose_required"
 
     # Discussion Output (Cursor-facing UI text)
     DISCUSSION_NO_OUTPUT = "discussion_no_output"
     DISCUSSION_ERRORS_HEADER = "discussion_errors_header"
+
+    # Streaming Errors (Cursor-facing UI text)
+    STREAM_ERROR_GENERIC = "stream_error_generic"
+    STREAM_ERROR_INTERRUPTED = "stream_error_interrupted"
 
     # Report Display (Cursor-facing UI text)
     REPORT_SECTION_ROOT_CAUSE_TITLE = "report_section_root_cause_title"
@@ -95,6 +107,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         MessageKey.DIVERGENCE_START: "> **[Arbiter]**: Starting parallel problem analysis...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: Analysis failed ({provider}): {error}\n",
         MessageKey.CONVERGENCE_START: "> **[Arbiter]**: Synthesizing opinions, generating report...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[Arbiter]**: Report complete: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[Arbiter]**: Error during convergence: {error}\n",
@@ -136,6 +149,9 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
             "This request is in a non-Agent Cursor mode (Ask/Plan/Debug). "
             "Execution requires Cursor Agent mode. Please switch to Agent mode and confirm again."
+        ),
+        MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
+            "[Ternion] Implementation stage cannot proceed: missing required fields: {missing_fields}"
         ),
 
         # Provider Manager Errors
@@ -181,10 +197,40 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
+        MessageKey.DELIVERABLE_POLICY_BLOCKED: (
+            "[Ternion] Deliverable policy blocked mutation tool calls.\n"
+            "Deliverable type: {deliverable_type}\n"
+            "Allowed write scope: {allowed_scope}\n"
+            "Blocked targets:\n{blocked_targets}\n"
+            "Note: Mutation targets must be inside the project root and within the allowed write scope.\n"
+        ),
+        MessageKey.EXECUTION_TOOL_POLICY_BLOCKED: (
+            "[Ternion] Tool policy blocked Execution/Optimizer tool calls.\n"
+            "Blocked tools:\n{blocked_tools}\n"
+            "Blocked shell commands:\n{blocked_shell}\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_FINAL_REQUIRED: (
+            "[Ternion] Evidence top-up request rejected: the 2nd request must be marked as the final request.\n"
+            "Please re-issue the request with FINAL_REQUEST: true.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_LIMIT_REACHED: (
+            "[Ternion] Evidence top-up limit reached ({max_rounds}). Further evidence requests are not allowed.\n"
+            "Please proceed with the deliverable using the existing evidence.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_REQUESTS_EMPTY: (
+            "[Ternion] Evidence top-up request rejected: the requests block contains no actionable evidence requests.\n"
+            "Please provide at least one request line and one PURPOSE line per request.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_PURPOSE_REQUIRED: (
+            "[Ternion] Evidence top-up request rejected: every request must include a PURPOSE line.\n"
+            "Missing PURPOSE for:\n{missing_items}\n"
+        ),
 
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] Discussion completed but no output was generated.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Errors:\n",
+        MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Streaming error occurred. Please retry.\n",
+        MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] Streaming interrupted. Please retry.\n",
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Root Cause",
@@ -217,6 +263,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         MessageKey.DIVERGENCE_START: "> **[Arbiter]**: 开始并发问题分析...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: 分析失败（{provider}）：{error}\n",
         MessageKey.CONVERGENCE_START: "> **[Arbiter]**: 综合分析各方意见，生成报告...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[Arbiter]**: 报告生成完成: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[Arbiter]**: 综合分析错误: {error}\n",
@@ -256,6 +303,9 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
             "当前处于 Cursor 的非 Agent 模式（Ask/Plan/Debug）。执行/改代码需要 Cursor Agent 模式。"
             "请切换到 Agent 模式后再次发送确认以继续。"
+        ),
+        MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
+            "[Ternion] 实现阶段无法继续：缺少必需字段：{missing_fields}"
         ),
 
         # Provider Manager Errors
@@ -300,10 +350,40 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
             "工具循环 failsafe 触发 | max_rounds={max_rounds} | session_id={session_id}"
         ),
+        MessageKey.DELIVERABLE_POLICY_BLOCKED: (
+            "[Ternion] 交付物类型策略阻止了本次写入工具调用。\n"
+            "交付物类型：{deliverable_type}\n"
+            "允许写入范围：{allowed_scope}\n"
+            "被阻止的目标：\n{blocked_targets}\n"
+            "说明：所有写入目标必须位于项目根目录内，并且必须符合允许写入范围。\n"
+        ),
+        MessageKey.EXECUTION_TOOL_POLICY_BLOCKED: (
+            "[Ternion] 工具策略阻止了 Execution/Optimizer 的工具调用。\n"
+            "被阻止的工具：\n{blocked_tools}\n"
+            "被阻止的 Shell 命令：\n{blocked_shell}\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_FINAL_REQUIRED: (
+            "[Ternion] 证据补齐请求被拒绝：第 2 次补证据请求必须声明为最后一次。\n"
+            "请在协议块中设置 FINAL_REQUEST: true 后重试。\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_LIMIT_REACHED: (
+            "[Ternion] 证据补齐次数已达到上限（{max_rounds}）。系统将不再进入证据补齐流程。\n"
+            "请基于现有证据继续完成交付。\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_REQUESTS_EMPTY: (
+            "[Ternion] 证据补齐请求被拒绝：协议块中未包含可执行的证据请求。\n"
+            "请至少提供 1 条请求行，并为每条请求紧跟 1 行 PURPOSE。\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_PURPOSE_REQUIRED: (
+            "[Ternion] 证据补齐请求被拒绝：每条请求都必须包含 PURPOSE 行。\n"
+            "缺失 PURPOSE 的请求：\n{missing_items}\n"
+        ),
 
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] 流程已完成，但未生成任何输出。",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] 错误：\n",
+        MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] 流式输出发生错误，请重试。\n",
+        MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] 流式输出中断，请重试。\n",
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "根因",
@@ -335,6 +415,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         MessageKey.DIVERGENCE_START: "> **[Árbitro]**: Iniciando análisis paralelo del problema...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: El análisis falló ({provider}): {error}\n",
         MessageKey.CONVERGENCE_START: "> **[Árbitro]**: Sintetizando opiniones, generando informe...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[Árbitro]**: Informe completo: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[Árbitro]**: Error durante convergencia: {error}\n",
@@ -374,6 +455,9 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
             "Esta solicitud está en un modo no-Agent de Cursor (Ask/Plan/Debug). "
             "La ejecución requiere el modo Agent. Cambie a Agent y confirme de nuevo."
+        ),
+        MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
+            "[Ternion] La etapa de implementación no puede continuar: faltan campos obligatorios: {missing_fields}"
         ),
 
         # Provider Manager Errors (Fallback to English)
@@ -420,9 +504,40 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        MessageKey.DELIVERABLE_POLICY_BLOCKED: (
+            "[Ternion] La política de entregables bloqueó las llamadas de herramientas de escritura.\n"
+            "Tipo de entregable: {deliverable_type}\n"
+            "Alcance de escritura permitido: {allowed_scope}\n"
+            "Objetivos bloqueados:\n{blocked_targets}\n"
+            "Nota: Los destinos de escritura deben estar dentro de la raíz del proyecto y dentro del alcance permitido.\n"
+        ),
+        MessageKey.EXECUTION_TOOL_POLICY_BLOCKED: (
+            "[Ternion] La política de herramientas bloqueó llamadas de Execution/Optimizer.\n"
+            "Herramientas bloqueadas:\n{blocked_tools}\n"
+            "Comandos de Shell bloqueados:\n{blocked_shell}\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_FINAL_REQUIRED: (
+            "[Ternion] Solicitud de ampliación de evidencias rechazada: la 2.ª solicitud debe marcarse como final.\n"
+            "Vuelva a emitir la solicitud con FINAL_REQUEST: true.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_LIMIT_REACHED: (
+            "[Ternion] Se alcanzó el límite de ampliación de evidencias ({max_rounds}). No se permiten más solicitudes de evidencias.\n"
+            "Continúe con el entregable usando las evidencias existentes.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_REQUESTS_EMPTY: (
+            "[Ternion] Solicitud de ampliación de evidencias rechazada: el bloque de solicitudes no contiene solicitudes de evidencias accionables.\n"
+            "Proporcione al menos una línea de solicitud y una línea PURPOSE por cada solicitud.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_PURPOSE_REQUIRED: (
+            "[Ternion] Solicitud de ampliación de evidencias rechazada: cada solicitud debe incluir una línea PURPOSE.\n"
+            "Falta PURPOSE para:\n{missing_items}\n"
+        ),
+
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] La discusión finalizó pero no se generó ninguna salida.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Errores:\n",
+        MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Se produjo un error de streaming. Por favor, inténtalo de nuevo.\n",
+        MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] El streaming se interrumpió. Por favor, inténtalo de nuevo.\n",
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Causa raíz",
@@ -455,6 +570,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         MessageKey.DIVERGENCE_START: "> **[Arbitre]**: Démarrage de l'analyse parallèle du problème...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: L'analyse a échoué ({provider}) : {error}\n",
         MessageKey.CONVERGENCE_START: "> **[Arbitre]**: Synthèse des opinions, génération du rapport...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[Arbitre]**: Rapport complet : {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[Arbitre]**: Erreur pendant la convergence : {error}\n",
@@ -494,6 +610,9 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
             "Cette requête est dans un mode Cursor non-Agent (Ask/Plan/Debug). "
             "L’exécution nécessite le mode Agent. Passez en Agent et confirmez à nouveau."
+        ),
+        MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
+            "[Ternion] L’étape d’implémentation ne peut pas continuer : champs requis manquants : {missing_fields}"
         ),
 
         # Provider Manager Errors (Fallback to English)
@@ -540,9 +659,40 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        MessageKey.DELIVERABLE_POLICY_BLOCKED: (
+            "[Ternion] La politique de livrables a bloqué les appels d’outils de modification.\n"
+            "Type de livrable : {deliverable_type}\n"
+            "Portée d’écriture autorisée : {allowed_scope}\n"
+            "Cibles bloquées :\n{blocked_targets}\n"
+            "Remarque : les cibles de modification doivent se trouver dans la racine du projet et dans la portée d’écriture autorisée.\n"
+        ),
+        MessageKey.EXECUTION_TOOL_POLICY_BLOCKED: (
+            "[Ternion] La politique d’outils a bloqué des appels Execution/Optimizer.\n"
+            "Outils bloqués :\n{blocked_tools}\n"
+            "Commandes Shell bloquées :\n{blocked_shell}\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_FINAL_REQUIRED: (
+            "[Ternion] Demande de complément de preuves rejetée : la 2e demande doit être marquée comme la dernière.\n"
+            "Veuillez réémettre la demande avec FINAL_REQUEST: true.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_LIMIT_REACHED: (
+            "[Ternion] Limite de complément de preuves atteinte ({max_rounds}). Aucune autre demande de preuves n’est autorisée.\n"
+            "Veuillez poursuivre le livrable avec les preuves existantes.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_REQUESTS_EMPTY: (
+            "[Ternion] Demande de complément de preuves rejetée : le bloc de demandes ne contient aucune demande de preuve exploitable.\n"
+            "Veuillez fournir au moins une ligne de demande et une ligne PURPOSE pour chaque demande.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_PURPOSE_REQUIRED: (
+            "[Ternion] Demande de complément de preuves rejetée : chaque demande doit inclure une ligne PURPOSE.\n"
+            "PURPOSE manquant pour :\n{missing_items}\n"
+        ),
+
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] La discussion est terminée mais aucune sortie n’a été générée.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Erreurs :\n",
+        MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Une erreur de streaming s’est produite. Veuillez réessayer.\n",
+        MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] Le streaming a été interrompu. Veuillez réessayer.\n",
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Cause racine",
@@ -575,6 +725,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         MessageKey.DIVERGENCE_START: "> **[Schiedsrichter]**: Starte parallele Problemanalyse...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: Analyse fehlgeschlagen ({provider}): {error}\n",
         MessageKey.CONVERGENCE_START: "> **[Schiedsrichter]**: Meinungen synthetisieren, Bericht erstellen...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[Schiedsrichter]**: Bericht fertig: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[Schiedsrichter]**: Fehler bei der Konvergenz: {error}\n",
@@ -614,6 +765,9 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
             "Diese Anfrage ist in einem nicht-Agent Cursor-Modus (Ask/Plan/Debug). "
             "Die Ausführung erfordert den Agent-Modus. Bitte zu Agent wechseln und erneut bestätigen."
+        ),
+        MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
+            "[Ternion] Implementierungsphase kann nicht fortfahren: erforderliche Felder fehlen: {missing_fields}"
         ),
 
         # Provider Manager Errors (Fallback to English)
@@ -660,9 +814,40 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        MessageKey.DELIVERABLE_POLICY_BLOCKED: (
+            "[Ternion] Die Deliverable-Policy hat Schreib-Tool-Aufrufe blockiert.\n"
+            "Lieferobjekt-Typ: {deliverable_type}\n"
+            "Erlaubter Schreibbereich: {allowed_scope}\n"
+            "Blockierte Ziele:\n{blocked_targets}\n"
+            "Hinweis: Änderungsziele müssen innerhalb des Projekt-Root und innerhalb des erlaubten Schreibbereichs liegen.\n"
+        ),
+        MessageKey.EXECUTION_TOOL_POLICY_BLOCKED: (
+            "[Ternion] Die Tool-Policy hat Execution/Optimizer-Aufrufe blockiert.\n"
+            "Blockierte Tools:\n{blocked_tools}\n"
+            "Blockierte Shell-Befehle:\n{blocked_shell}\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_FINAL_REQUIRED: (
+            "[Ternion] Beweis-Nachforderung abgelehnt: Die 2. Anfrage muss als letzte Anfrage markiert sein.\n"
+            "Bitte senden Sie die Anfrage erneut mit FINAL_REQUEST: true.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_LIMIT_REACHED: (
+            "[Ternion] Limit für Beweis-Nachforderungen erreicht ({max_rounds}). Weitere Beweis-Anfragen sind nicht erlaubt.\n"
+            "Bitte fahren Sie mit dem Deliverable anhand der vorhandenen Beweise fort.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_REQUESTS_EMPTY: (
+            "[Ternion] Beweis-Nachforderung abgelehnt: Der Anfrageblock enthält keine ausführbaren Beweisanfragen.\n"
+            "Bitte geben Sie mindestens eine Anfragezeile und eine PURPOSE-Zeile pro Anfrage an.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_PURPOSE_REQUIRED: (
+            "[Ternion] Beweis-Nachforderung abgelehnt: Jede Anfrage muss eine PURPOSE-Zeile enthalten.\n"
+            "Fehlendes PURPOSE für:\n{missing_items}\n"
+        ),
+
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] Die Diskussion ist abgeschlossen, aber es wurde keine Ausgabe erzeugt.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Fehler:\n",
+        MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Beim Streaming ist ein Fehler aufgetreten. Bitte erneut versuchen.\n",
+        MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] Das Streaming wurde unterbrochen. Bitte erneut versuchen.\n",
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Ursache",
@@ -695,6 +880,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         MessageKey.DIVERGENCE_START: "> **[調停者]**: 並列問題分析を開始...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: 分析に失敗しました（{provider}）：{error}\n",
         MessageKey.CONVERGENCE_START: "> **[調停者]**: 意見を統合し、レポートを作成中...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[調停者]**: レポート完成: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[調停者]**: 収束中にエラー: {error}\n",
@@ -734,6 +920,9 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
             "このリクエストは Cursor の非 Agent モード（Ask/Plan/Debug）です。"
             "実行には Agent モードが必要です。Agent に切り替えてから再度確認してください。"
+        ),
+        MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
+            "[Ternion] 実装ステージを続行できません：必須フィールドが不足しています：{missing_fields}"
         ),
 
         # Provider Manager Errors (Fallback to English)
@@ -780,9 +969,40 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        MessageKey.DELIVERABLE_POLICY_BLOCKED: (
+            "[Ternion] 交付物ポリシーにより書き込みツール呼び出しがブロックされました。\n"
+            "交付物タイプ: {deliverable_type}\n"
+            "許可された書き込み範囲: {allowed_scope}\n"
+            "ブロックされた対象:\n{blocked_targets}\n"
+            "注意: 変更対象はプロジェクトルート内かつ許可された書き込み範囲内である必要があります。\n"
+        ),
+        MessageKey.EXECUTION_TOOL_POLICY_BLOCKED: (
+            "[Ternion] ツールポリシーにより Execution/Optimizer の呼び出しがブロックされました。\n"
+            "ブロックされたツール:\n{blocked_tools}\n"
+            "ブロックされた Shell コマンド:\n{blocked_shell}\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_FINAL_REQUIRED: (
+            "[Ternion] 証拠補完リクエストは拒否されました：2 回目のリクエストは最後のリクエストとして明示する必要があります。\n"
+            "FINAL_REQUEST: true を設定して再リクエストしてください。\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_LIMIT_REACHED: (
+            "[Ternion] 証拠補完の上限に達しました（{max_rounds}）。これ以上の証拠リクエストは許可されません。\n"
+            "既存の証拠に基づいて Deliverable を継続してください。\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_REQUESTS_EMPTY: (
+            "[Ternion] 証拠補完リクエストは拒否されました：リクエストブロックに実行可能な証拠リクエストが含まれていません。\n"
+            "少なくとも 1 行のリクエストと、各リクエストに対して 1 行の PURPOSE を提供してください。\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_PURPOSE_REQUIRED: (
+            "[Ternion] 証拠補完リクエストは拒否されました：各リクエストには PURPOSE 行が必要です。\n"
+            "PURPOSE が欠落しているリクエスト:\n{missing_items}\n"
+        ),
+
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] ディスカッションは完了しましたが、出力が生成されませんでした。",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] エラー:\n",
+        MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] ストリーミング中にエラーが発生しました。もう一度お試しください。\n",
+        MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] ストリーミングが中断されました。もう一度お試しください。\n",
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "根本原因",
@@ -815,6 +1035,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
 
         MessageKey.DIVERGENCE_START: "> **[중재자]**: 병렬 문제 분석 시작...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
+        MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: 분석 실패({provider}): {error}\n",
         MessageKey.CONVERGENCE_START: "> **[중재자]**: 의견 종합, 보고서 작성 중...\n",
         MessageKey.CONVERGENCE_COMPLETE: "> **[중재자]**: 보고서 완성: {preview}\n",
         MessageKey.CONVERGENCE_ERROR: "> **[중재자]**: 수렴 중 오류: {error}\n",
@@ -854,6 +1075,9 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
             "이 요청은 Cursor의 비 Agent 모드(Ask/Plan/Debug)입니다. "
             "실행에는 Agent 모드가 필요합니다. Agent로 전환한 뒤 다시 확인해 주세요."
+        ),
+        MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
+            "[Ternion] 구현 단계를 진행할 수 없습니다: 필수 필드가 누락되었습니다: {missing_fields}"
         ),
 
         # Provider Manager Errors (Fallback to English)
@@ -900,9 +1124,40 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
 
+        MessageKey.DELIVERABLE_POLICY_BLOCKED: (
+            "[Ternion] 전달물 정책으로 인해 쓰기 도구 호출이 차단되었습니다.\n"
+            "전달물 유형: {deliverable_type}\n"
+            "허용된 쓰기 범위: {allowed_scope}\n"
+            "차단된 대상:\n{blocked_targets}\n"
+            "참고: 변경 대상은 프로젝트 루트 내부이며 허용된 쓰기 범위 내여야 합니다.\n"
+        ),
+        MessageKey.EXECUTION_TOOL_POLICY_BLOCKED: (
+            "[Ternion] 도구 정책으로 인해 Execution/Optimizer 호출이 차단되었습니다.\n"
+            "차단된 도구:\n{blocked_tools}\n"
+            "차단된 Shell 명령:\n{blocked_shell}\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_FINAL_REQUIRED: (
+            "[Ternion] 증거 보완 요청이 거부되었습니다: 2번째 요청은 마지막 요청으로 명시되어야 합니다.\n"
+            "FINAL_REQUEST: true 로 다시 요청해 주세요.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_LIMIT_REACHED: (
+            "[Ternion] 증거 보완 횟수 한도에 도달했습니다({max_rounds}). 추가 증거 요청은 허용되지 않습니다.\n"
+            "기존 증거로 Deliverable 을 계속 진행해 주세요.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_REQUESTS_EMPTY: (
+            "[Ternion] 증거 보완 요청이 거부되었습니다: 요청 블록에 실행 가능한 증거 요청이 없습니다.\n"
+            "각 요청마다 최소 1개의 요청 라인과 1개의 PURPOSE 라인을 제공해 주세요.\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_PURPOSE_REQUIRED: (
+            "[Ternion] 증거 보완 요청이 거부되었습니다: 모든 요청에는 PURPOSE 라인이 필요합니다.\n"
+            "PURPOSE 누락 항목:\n{missing_items}\n"
+        ),
+
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] 토론이 완료되었지만 출력이 생성되지 않았습니다.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] 오류:\n",
+        MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] 스트리밍 중 오류가 발생했습니다. 다시 시도해 주세요.\n",
+        MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] 스트리밍이 중단되었습니다. 다시 시도해 주세요.\n",
 
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "근본 원인",

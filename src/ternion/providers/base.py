@@ -66,6 +66,20 @@ class BaseProvider(ABC):
         """Return the default model for this provider."""
         ...
 
+    @property
+    def supports_native_tool_calls(self) -> bool:
+        """
+        Whether this provider supports OpenAI-compatible native tool calling.
+
+        Native tool calling means:
+        - the client can send `tools` / `tool_choice`
+        - the model can return structured `tool_calls` without a text protocol
+
+        Providers that do not support native tool calling should return False and
+        use a text-based tool-call protocol instead.
+        """
+        return False
+
     @abstractmethod
     async def chat_completion(
         self,

@@ -227,6 +227,25 @@ class TestSessionStore:
 
         assert updated.last_user_feedback == "This analysis is incorrect"
 
+    def test_update_session_report_updates_safe_and_hash(self, store):
+        """Should update report fields when report becomes available later."""
+        session = store.create_session(
+            ternion_report="",
+            execution_mode=ExecutionMode.TERNION_FULL,
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+        )
+
+        new_report = "New report with ```code```"
+        updated = store.update_session(
+            session.session_id,
+            ternion_report_raw=new_report,
+        )
+
+        assert updated is not None
+        assert updated.ternion_report_raw == new_report
+        assert updated.ternion_report_safe != new_report
+        assert updated.report_hash == compute_report_hash(new_report)
+
     def test_update_session_not_found(self, store):
         """Should return None when updating non-existent session."""
         result = store.update_session("nonexistent", stage=SessionStage.CONFIRMED)

@@ -5,14 +5,21 @@ Each node represents a step in the 4-step discussion flow.
 """
 
 import asyncio
+import json
+import re
 from typing import Any
 
 import structlog
 
 from ternion.core.budget import budget_manager
 from ternion.core.config import settings
+from ternion.core.deliverable_policy import (
+    format_deliverable_policy_for_prompt,
+    resolve_deliverable_policy,
+)
 from ternion.core.config_store import config_store
 from ternion.core.exceptions import TimeoutError as TernionTimeout
+from ternion.core.intent_classifier import get_latest_user_message
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.core.session_store import (
     ExecutionMode,
@@ -31,11 +38,23 @@ from ternion.router.prompts import (
     OPTIMIZER_PROMPT,
 )
 from ternion.utils.cursor_safety import sanitize_for_cursor_display, sanitize_for_preview
+from ternion.utils.evidence_chain import (
+    merge_missing_purpose_gaps,
+    parse_evidence_requests,
+    reconcile_evidence_chain,
+)
+from ternion.utils.evidence_requests_protocol import (
+    EVIDENCE_REQUESTS_BEGIN,
+    extract_evidence_requests_block,
+)
 from ternion.utils.i18n import MessageKey, t
 from ternion.utils.log_manager import log_manager
-from ternion.utils.report_parser import format_report_for_display
+from ternion.utils.report_parser import format_report_for_display, parse_structured_report
+from ternion.utils.tool_policy import EXECUTION_ALLOWED_TOOL_CANONICAL
 from ternion.utils.tool_calls_parser import (
+    TOOL_CALLS_BEGIN,
     build_text_tool_calls_instruction,
+    decode_stream_tool_calls,
     extract_tool_calls_from_text,
 )
 from ternion.utils.workflow_prompt_capture import (
@@ -63,9 +82,64 @@ _ROLE_DISPLAY_NAMES = {
     "optimizer": "Optimizer",
 }
 
+
+def _extract_report_scope_for_policy(report: str) -> str:
+    """
+    Extract Scope/Non-Goals content for deliverable classification.
+    """
+    parsed = parse_structured_report(report or "")
+    if parsed.is_structured and parsed.scope.strip():
+        return parsed.scope
+    return report or ""
+
 # Default timeout for provider calls (CR-030)
 DEFAULT_TIMEOUT_SECONDS = settings.discussion.timeout_seconds
 WRITER_TIMEOUT_SECONDS = max(DEFAULT_TIMEOUT_SECONDS, settings.discussion.writer_timeout_seconds)
+
+_MAX_EVIDENCE_TOPUP_ROUNDS = 2
+
+
+def _validate_evidence_topup_request(*, used_round: int, final_request: bool) -> str | None:
+    """
+    Validate execution-time evidence top-up guardrails.
+
+    Guardrails (Step E):
+    - Max 2 top-up rounds across Writer + Optimizer.
+    - The 2nd request must be explicitly marked as the final request.
+    """
+    used = int(used_round or 0)
+    if used >= _MAX_EVIDENCE_TOPUP_ROUNDS:
+        return t(
+            MessageKey.EVIDENCE_TOPUP_LIMIT_REACHED,
+            max_rounds=str(_MAX_EVIDENCE_TOPUP_ROUNDS),
+        )
+
+    if used == _MAX_EVIDENCE_TOPUP_ROUNDS - 1 and not final_request:
+        return t(MessageKey.EVIDENCE_TOPUP_FINAL_REQUIRED)
+
+    return None
+
+
+def _validate_evidence_requests_payload(requests_text: str) -> str | None:
+    """
+    Validate evidence_requests payload format for execution-time top-ups.
+
+    Requirements (Step E):
+    - Must contain at least one actionable request.
+    - Each request must include a PURPOSE line (stored as metadata, not excerpt).
+    """
+    entries = parse_evidence_requests(requests_text or "")
+    if not entries:
+        return t(MessageKey.EVIDENCE_TOPUP_REQUESTS_EMPTY)
+
+    missing_purpose = [e.request for e in entries if not (e.purpose or "").strip()]
+    if not missing_purpose:
+        return None
+
+    display = "\n".join(f"- {item}" for item in missing_purpose[:8])
+    if len(missing_purpose) > 8:
+        display += f"\n- ... (+{len(missing_purpose) - 8})"
+    return t(MessageKey.EVIDENCE_TOPUP_PURPOSE_REQUIRED, missing_items=display)
 
 
 async def _call_with_timeout(
@@ -124,6 +198,10 @@ async def _call_with_stream(
     phase: str = "",
     message_id: str = "",
     timeout_seconds: int | None = None,
+    detect_tool_calls: bool = False,
+    tool_calls_guard_chars: int = 256,
+    tool_calls_auto_retry_max: int = 1,
+    **kwargs: Any,
 ) -> ProviderResponse:
     """
     Call provider.chat_completion_stream with real-time token forwarding.
@@ -156,6 +234,7 @@ async def _call_with_stream(
             model=model,
             temperature=temperature,
             timeout_seconds=timeout_seconds,
+            **kwargs,
         )
 
     timeout = timeout_seconds or DEFAULT_TIMEOUT_SECONDS
@@ -170,11 +249,97 @@ async def _call_with_stream(
             messages=messages,
             model=model,
             temperature=temperature,
+            **kwargs,
         )
 
         # Consume stream with an idle timeout between chunks.
-        async def consume_stream() -> str:
+        async def consume_stream() -> ProviderResponse:
             nonlocal full_content
+
+            retry_remaining = max(0, int(tool_calls_auto_retry_max or 0))
+            buffered = ""
+            buffered_flushed = False
+            emitted_any_token = False
+            tool_calls: list[dict[str, Any]] | None = None
+            tool_calls_detected = False
+            full_parts: list[str] = []
+            marker_tail = ""
+            marker_len = len(TOOL_CALLS_BEGIN)
+
+            try:
+                guard_chars = max(0, int(tool_calls_guard_chars))
+            except Exception:
+                guard_chars = 256
+            if not detect_tool_calls:
+                guard_chars = 0
+
+            # Step E (P2-1): Short-window buffering to avoid streaming an invalid
+            # evidence top-up protocol block before guardrails validate it.
+            topup_marker = EVIDENCE_REQUESTS_BEGIN
+            topup_probe_enabled = str(phase or "").strip().lower() in (
+                WorkflowPhase.EXECUTION.value,
+                WorkflowPhase.OPTIMIZER.value,
+            )
+            topup_decision: bool | None = None
+            suppress_stream_tokens = False
+
+            def _maybe_is_evidence_topup_start(text: str) -> bool | None:
+                probe = (text or "").lstrip()
+                if not probe:
+                    return None
+                if probe.startswith(topup_marker):
+                    return True
+                # Keep buffering while the current probe is a prefix of the marker.
+                if topup_marker.startswith(probe) and len(probe) < len(topup_marker):
+                    return None
+                return False
+
+            async def _retry_tool_calls_only() -> list[dict[str, Any]] | None:
+                nonlocal retry_remaining
+                if retry_remaining <= 0:
+                    return None
+                retry_remaining -= 1
+                retry_instruction = (
+                    "[TOOL_CALLS_ONLY_RETRY]\n\n"
+                    "You MUST return tool calls ONLY. The assistant content MUST be empty.\n"
+                    "Do NOT output any prose, analysis, or code fences.\n"
+                    "If native tool calling is available, return tool_calls.\n"
+                    "If you are using a text-based tool-calls protocol, output ONLY the tool-calls block.\n"
+                )
+                retry_messages = list(messages)
+                retry_messages.append(
+                    ChatMessage(
+                        role=MessageRole.USER,
+                        content=retry_instruction,
+                    )
+                )
+                try:
+                    retry_response = await _call_with_timeout(
+                        provider=provider,
+                        messages=retry_messages,
+                        model=model,
+                        temperature=min(float(temperature or 0.2), 0.2),
+                        timeout_seconds=timeout_seconds,
+                        **kwargs,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "tool_calls_only_retry_failed",
+                        phase=phase,
+                        provider=provider.name,
+                        error=str(e),
+                    )
+                    return None
+
+                if retry_response.tool_calls:
+                    return retry_response.tool_calls
+
+                parsed = extract_tool_calls_from_text(retry_response.content)
+                if parsed:
+                    return parsed
+
+                return None
+
             while True:
                 try:
                     chunk = await asyncio.wait_for(stream_gen.__anext__(), timeout=timeout)
@@ -182,15 +347,132 @@ async def _call_with_stream(
                     break
                 if not chunk:
                     continue
-                full_content += chunk
+
+                if detect_tool_calls:
+                    decoded = decode_stream_tool_calls(chunk)
+                    if decoded is not None:
+                        tool_calls_detected = True
+                        tool_calls = decoded
+                        buffered = ""
+                        continue
+
+                full_parts.append(chunk)
+
+                if detect_tool_calls and not tool_calls_detected:
+                    scan = marker_tail + chunk
+                    if TOOL_CALLS_BEGIN in scan:
+                        tool_calls_detected = True
+                        buffered = ""
+                        marker_tail = ""
+                        continue
+                    if marker_len > 1:
+                        marker_tail = scan[-(marker_len - 1):]
+
+                if tool_calls_detected:
+                    continue
+
+                if suppress_stream_tokens:
+                    continue
+
+                if topup_probe_enabled and topup_decision is None and not emitted_any_token:
+                    # Buffer until we can deterministically decide whether the output is a
+                    # top-up protocol block (which must be the first non-empty line).
+                    buffered += chunk
+                    topup_decision = _maybe_is_evidence_topup_start(buffered)
+                    if topup_decision is None:
+                        continue
+                    if topup_decision is True:
+                        # Suppress streaming for this response to avoid UI noise; the caller
+                        # will parse/validate the full content and may soft-retry if needed.
+                        suppress_stream_tokens = True
+                        buffered = ""
+                        buffered_flushed = True
+                        continue
+
+                    # Not a top-up block. Flush (or continue buffering) per the guard_chars policy.
+                    if guard_chars > 0 and not buffered_flushed:
+                        if len(buffered) >= guard_chars:
+                            await stream_queue.put_token(
+                                delta=buffered,
+                                phase=phase,
+                                message_id=message_id,
+                            )
+                            emitted_any_token = True
+                            buffered = ""
+                            buffered_flushed = True
+                        continue
+
+                    await stream_queue.put_token(
+                        delta=buffered,
+                        phase=phase,
+                        message_id=message_id,
+                    )
+                    emitted_any_token = True
+                    buffered = ""
+                    buffered_flushed = True
+                    continue
+
+                if guard_chars > 0 and not buffered_flushed:
+                    buffered += chunk
+                    if len(buffered) >= guard_chars:
+                        await stream_queue.put_token(
+                            delta=buffered,
+                            phase=phase,
+                            message_id=message_id,
+                        )
+                        emitted_any_token = True
+                        buffered = ""
+                        buffered_flushed = True
+                    continue
+
                 await stream_queue.put_token(
                     delta=chunk,
                     phase=phase,
                     message_id=message_id,
                 )
-            return full_content
+                emitted_any_token = True
 
-        full_content = await consume_stream()
+            full_content = "".join(full_parts)
+            if tool_calls_detected:
+                if tool_calls is None:
+                    tool_calls = extract_tool_calls_from_text(full_content)
+
+                mixed_stream = bool(detect_tool_calls and emitted_any_token)
+                if mixed_stream or not tool_calls:
+                    retry_tool_calls = await _retry_tool_calls_only()
+                    if retry_tool_calls:
+                        tool_calls = retry_tool_calls
+                    elif mixed_stream:
+                        logger.warning(
+                            "tool_calls_only_retry_mixed_stream_fallback",
+                            phase=phase,
+                            provider=provider.name,
+                        )
+
+                if tool_calls:
+                    return ProviderResponse(
+                        content="",
+                        finish_reason="tool_calls",
+                        tool_calls=tool_calls,
+                        usage={},
+                    )
+                raise ValueError("stream_detected_tool_calls_but_parse_failed")
+
+            if buffered and not buffered_flushed:
+                await stream_queue.put_token(
+                    delta=buffered,
+                    phase=phase,
+                    message_id=message_id,
+                )
+
+            return ProviderResponse(
+                content=full_content,
+                finish_reason="stop",
+                usage={},
+            )
+
+        response = await consume_stream()
+        full_content = response.content or ""
 
         # Signal completion with final content
         await stream_queue.put_final(
@@ -199,13 +481,8 @@ async def _call_with_stream(
             message_id=message_id,
         )
 
-        # Note: Token usage is tracked inside provider.chat_completion_stream
-        # We return a simplified ProviderResponse here
-        return ProviderResponse(
-            content=full_content,
-            finish_reason="stop",
-            usage={},  # Usage is tracked by provider internally
-        )
+        # Note: Token usage is tracked inside provider.chat_completion_stream.
+        return response
 
     except TimeoutError:
         log_manager.emit(
@@ -223,6 +500,279 @@ async def _call_with_stream(
         ) from None
     except Exception as e:
         logger.exception("stream_error", provider=provider.name, error=str(e))
+        await stream_queue.put_error(str(e), phase=phase)
+        raise
+
+
+async def _call_optimizer_with_stream(
+    provider: Any,
+    messages: list[ChatMessage],
+    model: str,
+    temperature: float,
+    stream_queue: StreamEventQueue | None,
+    *,
+    phase: str,
+    message_id: str,
+    timeout_seconds: int | None = None,
+    detect_tool_calls: bool = False,
+    tool_calls_auto_retry_max: int = 1,
+    **kwargs: Any,
+) -> tuple[ProviderResponse, bool]:
+    """
+    Optimizer-specific streaming wrapper.
+
+    This streams ONLY the user-visible summary section (between the Optimizer wrapper
+    markers) to avoid leaking the internal optimizer report in Cursor chat output.
+    """
+    if stream_queue is None:
+        response = await _call_with_timeout(
+            provider=provider,
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+            **kwargs,
+        )
+        return response, False
+
+    timeout = timeout_seconds or DEFAULT_TIMEOUT_SECONDS
+    full_parts: list[str] = []
+    emitted_any = False
+    retry_remaining = max(0, int(tool_calls_auto_retry_max or 0))
+
+    try:
+        await stream_queue.put_phase_start(phase, provider=provider.name, model=model)
+
+        stream_gen = provider.chat_completion_stream(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            **kwargs,
+        )
+
+        tool_calls: list[dict[str, Any]] | None = None
+        tool_calls_detected = False
+        marker_tail = ""
+        marker_len = len(TOOL_CALLS_BEGIN)
+
+        user_started = False
+        user_done = False
+        begin_tail = ""
+        end_tail = ""
+        begin_len = len(_OPTIMIZER_USER_BEGIN)
+        begin_keep = begin_len - 1 if begin_len > 1 else 0
+        end_len = len(_OPTIMIZER_USER_END)
+        end_keep = end_len - 1 if end_len > 1 else 0
+
+        # Stream-safe sanitization: keep a small tail to prevent cross-chunk trigger formation.
+        tail_len = 32
+        user_emit_buffer_raw = ""
+
+        async def _retry_tool_calls_only() -> list[dict[str, Any]] | None:
+            nonlocal retry_remaining
+            if retry_remaining <= 0:
+                return None
+            retry_remaining -= 1
+            retry_instruction = (
+                "[TOOL_CALLS_ONLY_RETRY]\n\n"
+                "You MUST return tool calls ONLY. The assistant content MUST be empty.\n"
+                "Do NOT output any wrapper markers or prose.\n"
+            )
+            retry_messages = list(messages)
+            retry_messages.append(
+                ChatMessage(
+                    role=MessageRole.USER,
+                    content=retry_instruction,
+                )
+            )
+            try:
+                retry_response = await _call_with_timeout(
+                    provider=provider,
+                    messages=retry_messages,
+                    model=model,
+                    temperature=min(float(temperature or 0.2), 0.2),
+                    timeout_seconds=timeout_seconds,
+                    **kwargs,
+                )
+            except Exception as e:
+                logger.warning(
+                    "optimizer_tool_calls_only_retry_failed",
+                    phase=phase,
+                    provider=provider.name,
+                    error=str(e),
+                )
+                return None
+
+            if retry_response.tool_calls:
+                return retry_response.tool_calls
+
+            parsed = extract_tool_calls_from_text(retry_response.content)
+            if parsed:
+                return parsed
+
+            return None
+
+        while True:
+            try:
+                chunk = await asyncio.wait_for(stream_gen.__anext__(), timeout=timeout)
+            except StopAsyncIteration:
+                break
+            if not chunk:
+                continue
+
+            if detect_tool_calls and not tool_calls_detected:
+                decoded = decode_stream_tool_calls(chunk)
+                if decoded is not None:
+                    tool_calls_detected = True
+                    tool_calls = decoded
+                    continue
+
+            full_parts.append(chunk)
+
+            if detect_tool_calls and not tool_calls_detected:
+                scan = marker_tail + chunk
+                if TOOL_CALLS_BEGIN in scan:
+                    tool_calls_detected = True
+                    marker_tail = ""
+                    continue
+                if marker_len > 1:
+                    marker_tail = scan[-(marker_len - 1):]
+
+            if tool_calls_detected:
+                continue
+
+            if user_done:
+                continue
+
+            visible_chunk = ""
+            if not user_started:
+                scan = begin_tail + chunk
+                idx = scan.find(_OPTIMIZER_USER_BEGIN)
+                if idx < 0:
+                    if begin_keep > 0:
+                        begin_tail = scan[-begin_keep:]
+                    continue
+
+                user_started = True
+                begin_tail = ""
+                visible_chunk = scan[idx + len(_OPTIMIZER_USER_BEGIN):].lstrip("\n\r")
+            else:
+                visible_chunk = chunk
+
+            if not user_started:
+                continue
+
+            if not visible_chunk:
+                continue
+
+            scan = end_tail + visible_chunk
+            end_idx = scan.find(_OPTIMIZER_USER_END)
+            if end_idx < 0:
+                if end_keep > 0:
+                    if len(scan) <= end_keep:
+                        end_tail = scan
+                        continue
+                    visible = scan[:-end_keep]
+                    end_tail = scan[-end_keep:]
+                else:
+                    visible = scan
+                    end_tail = ""
+            else:
+                visible = scan[:end_idx]
+                end_tail = ""
+                user_done = True
+
+            if not visible:
+                continue
+
+            user_emit_buffer_raw += visible
+            if user_done or len(user_emit_buffer_raw) > tail_len:
+                if user_done:
+                    flush_raw = user_emit_buffer_raw
+                    user_emit_buffer_raw = ""
+                else:
+                    flush_raw = user_emit_buffer_raw[:-tail_len]
+                    user_emit_buffer_raw = user_emit_buffer_raw[-tail_len:]
+
+                safe = sanitize_for_cursor_display(flush_raw)
+                if safe:
+                    await stream_queue.put_token(
+                        delta=safe,
+                        phase=phase,
+                        message_id=message_id,
+                    )
+                    emitted_any = True
+
+        full_content = "".join(full_parts)
+        if tool_calls_detected:
+            if tool_calls is None:
+                tool_calls = extract_tool_calls_from_text(full_content)
+            mixed_stream = bool(detect_tool_calls and emitted_any)
+            if mixed_stream or not tool_calls:
+                retry_tool_calls = await _retry_tool_calls_only()
+                if retry_tool_calls:
+                    tool_calls = retry_tool_calls
+                elif mixed_stream:
+                    logger.warning(
+                        "optimizer_tool_calls_only_retry_mixed_stream_fallback",
+                        phase=phase,
+                        provider=provider.name,
+                    )
+            if tool_calls:
+                return (
+                    ProviderResponse(
+                        content="",
+                        finish_reason="tool_calls",
+                        tool_calls=tool_calls,
+                        usage={},
+                    ),
+                    False,
+                )
+            raise ValueError("optimizer_stream_detected_tool_calls_but_parse_failed")
+
+        if user_started and not user_done:
+            if end_tail:
+                user_emit_buffer_raw += end_tail
+                end_tail = ""
+            safe_tail = sanitize_for_cursor_display(user_emit_buffer_raw) if user_emit_buffer_raw else ""
+            if safe_tail:
+                await stream_queue.put_token(
+                    delta=safe_tail,
+                    phase=phase,
+                    message_id=message_id,
+                )
+                emitted_any = True
+
+        await stream_queue.put_final(
+            content="",
+            phase=phase,
+            message_id=message_id,
+        )
+
+        return (
+            ProviderResponse(
+                content=full_content,
+                finish_reason="stop",
+                usage={},
+            ),
+            emitted_any,
+        )
+    except TimeoutError:
+        log_manager.emit(
+            "ERROR",
+            "LLM",
+            f"Provider stream timeout: {provider.name} did not complete within {timeout}s",
+        )
+        await stream_queue.put_error(
+            f"Stream timeout after {timeout}s",
+            phase=phase,
+        )
+        raise TernionTimeout(
+            operation=f"chat_completion_stream ({provider.name})",
+            timeout_seconds=timeout,
+        ) from None
+    except Exception as e:
+        logger.exception("optimizer_stream_error", provider=provider.name, error=str(e))
         await stream_queue.put_error(str(e), phase=phase)
         raise
 
@@ -301,6 +851,49 @@ def _format_evidence_section(
     if not any(line.strip() for line in lines):
         return f"{header}\n{default_line}"
     return "\n".join([header, *lines]).rstrip()
+
+
+def _build_execution_policy_context(
+    *,
+    ternion_report: str,
+    latest_user_message: str,
+    evidence_bundle: str,
+    evidence_gaps: str,
+    evidence_chain_index: list[dict[str, object]],
+    evidence_topup_round: int,
+) -> tuple[str, list[str], list[str]]:
+    report_for_policy = _extract_report_scope_for_policy(ternion_report)
+    deliverable_policy = resolve_deliverable_policy(latest_user_message, report_for_policy)
+    deliverable_policy_text = format_deliverable_policy_for_prompt(deliverable_policy)
+    try:
+        evidence_index_json = json.dumps(evidence_chain_index, ensure_ascii=False, indent=2)
+    except Exception:
+        evidence_index_json = "[]"
+    evidence_chain_lines = [
+        "\n\n[REPORT_EVIDENCE_CHAIN - VERBATIM]\n\n",
+        evidence_bundle,
+        "\n\n",
+        evidence_gaps,
+        "\n\nEVIDENCE_CHAIN_INDEX_JSON:\n",
+        evidence_index_json,
+    ]
+    topup_rounds_remaining = max(0, _MAX_EVIDENCE_TOPUP_ROUNDS - evidence_topup_round)
+    topup_status_lines = [
+        "\n\n[EVIDENCE_TOPUP_STATUS]\n\n",
+        f"TOPUP_ROUND_USED: {evidence_topup_round}\n",
+        f"TOPUP_MAX_ROUNDS: {_MAX_EVIDENCE_TOPUP_ROUNDS}\n",
+        f"TOPUP_ROUNDS_REMAINING: {topup_rounds_remaining}\n",
+        "RULES:\n",
+        "- If evidence is insufficient and TOPUP_ROUNDS_REMAINING > 0, use the Phase 1.5 protocol block.\n",
+        "- Before requesting evidence top-up, you MUST consult EVIDENCE_CHAIN_INDEX_JSON and must NOT request items already satisfied.\n",
+        "- If TOPUP_ROUNDS_REMAINING == 0, you MUST proceed with the requested deliverable using existing evidence.\n",
+        "- If EVIDENCE_GAPS contains [MISSING_PURPOSE], it indicates missing PURPOSE metadata (not missing code). Do NOT request additional code just to satisfy it; if PURPOSE is needed for traceability, request the SAME ref range and include a PURPOSE line.\n",
+    ]
+    if topup_rounds_remaining == 1:
+        topup_status_lines.append(
+            "- This is the LAST allowed top-up. Any top-up request MUST set FINAL_REQUEST: true.\n"
+        )
+    return deliverable_policy_text, evidence_chain_lines, topup_status_lines
 
 
 def _parse_evidence_output(content: str) -> tuple[str, str]:
@@ -419,6 +1012,72 @@ def _filter_conversation_history_for_analysis(
     return filtered
 
 
+def _collect_tool_call_ids(tool_calls: list[dict[str, Any]] | None) -> set[str]:
+    ids: set[str] = set()
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        tc_id = tc.get("id")
+        if isinstance(tc_id, str) and tc_id:
+            ids.add(tc_id)
+    return ids
+
+
+_READ_ONLY_CURSOR_TOOL_CANONICAL = {
+    "read",
+    "readfile",
+    "grep",
+    "glob",
+    "ls",
+    "readlints",
+    "semanticsearch",
+    "codebasesearch",
+}
+
+
+def _filter_read_only_cursor_tools(cursor_tools: list[Any]) -> list[Any]:
+    """
+    Evidence collection must be read-only.
+
+    Cursor-provided tool schemas include both read-only and mutating tools (Write/ApplyPatch/Shell/etc).
+    We must not allow Arbiter evidence phases to mutate the workspace.
+    """
+    filtered: list[Any] = []
+    for tool in cursor_tools or []:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        canonical = re.sub(r"[^a-z0-9]+", "", name.strip().lower())
+        if canonical in _READ_ONLY_CURSOR_TOOL_CANONICAL:
+            filtered.append(tool)
+    return filtered
+
+
+def _filter_execution_cursor_tools(cursor_tools: list[Any]) -> list[Any]:
+    """
+    Execution/Optimizer tools must exclude read/search tools.
+    """
+    filtered: list[Any] = []
+    for tool in cursor_tools or []:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        canonical = re.sub(r"[^a-z0-9]+", "", name.strip().lower())
+        if canonical in EXECUTION_ALLOWED_TOOL_CANONICAL:
+            filtered.append(tool)
+    return filtered
+
+
 async def evidence_node(state: TernionState) -> TernionState:
     """
     Phase 0: Evidence Gathering - Arbiter collects minimal code evidence.
@@ -457,22 +1116,9 @@ async def evidence_node(state: TernionState) -> TernionState:
             )
         )
 
-    cursor_tools = state.get("cursor_tools") or []
+    cursor_tools = _filter_read_only_cursor_tools(state.get("cursor_tools") or [])
     cursor_tool_choice = state.get("cursor_tool_choice")
     role_cfg = config_store.get_role_config("arbiter")
-    provider_name = role_cfg.provider if role_cfg and role_cfg.provider else ""
-    use_text_tool_calls = bool(cursor_tools) and provider_name and provider_name != "openai"
-
-    if use_text_tool_calls:
-        messages.append(
-            ChatMessage(
-                role=MessageRole.USER,
-                content=(
-                    "[NON-OPENAI TOOL CALLS]\n\n"
-                    f"{build_text_tool_calls_instruction(cursor_tools)}"
-                ),
-            )
-        )
 
     try:
         provider = provider_manager.get_provider_for_role("arbiter")
@@ -485,17 +1131,24 @@ async def evidence_node(state: TernionState) -> TernionState:
             )
             return {
                 **state,
-                "errors": state.get("errors", []) + [
-                    error_msg
-                ],
-                "thinking_logs": thinking_logs + [
-                    t(MessageKey.CONVERGENCE_ERROR, error=error_msg)
-                ],
+                "errors": state.get("errors", []) + [error_msg],
+                "thinking_logs": thinking_logs + [t(MessageKey.CONVERGENCE_ERROR, error=error_msg)],
             }
 
-        supports_native_tools = provider.name == "openai"
-        supports_text_tools = bool(cursor_tools) and provider.name != "openai"
+        supports_native_tools = getattr(provider, "supports_native_tool_calls", False) is True
+        supports_text_tools = bool(cursor_tools) and not supports_native_tools
         should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
+
+        if supports_text_tools:
+            messages.append(
+                ChatMessage(
+                    role=MessageRole.USER,
+                    content=(
+                        "[NON-OPENAI TOOL CALLS]\n\n"
+                        f"{build_text_tool_calls_instruction(cursor_tools)}"
+                    ),
+                )
+            )
 
         schedule_workflow_prompt_capture(
             build_workflow_prompt_payload(
@@ -505,7 +1158,7 @@ async def evidence_node(state: TernionState) -> TernionState:
                 model=model,
                 messages=messages,
                 temperature=0.2,
-                session_id=state.get("session_id", ""),
+                session_id=session_id,
             )
         )
         extra_kwargs: dict[str, Any] = {}
@@ -578,6 +1231,10 @@ async def evidence_node(state: TernionState) -> TernionState:
             }
 
         evidence_bundle, evidence_gaps = _parse_evidence_output(response.content)
+        evidence_gaps = merge_missing_purpose_gaps(
+            evidence_bundle=evidence_bundle,
+            evidence_gaps=evidence_gaps,
+        )
         cleaned_history = _filter_conversation_history_for_analysis(history)
         return {
             **state,
@@ -744,12 +1401,40 @@ async def divergence_node(state: TernionState) -> TernionState:
                     session_id=state.get("session_id", ""),
                 )
             )
-            response = await _call_with_timeout(
-                provider=provider,
-                messages=ternion_messages,
-                model=model,
-                temperature=0.7,
-            )
+            response = None
+            max_attempts = 3 if provider.name == "google" else 1
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    response = await _call_with_timeout(
+                        provider=provider,
+                        messages=ternion_messages,
+                        model=model,
+                        temperature=0.7,
+                    )
+                    break
+                except Exception as e:
+                    is_last = attempt >= max_attempts
+                    error_text = str(e)
+                    retryable = (
+                        provider.name == "google"
+                        and ("503" in error_text or "UNAVAILABLE" in error_text or "overloaded" in error_text.lower())
+                    )
+                    if is_last or not retryable:
+                        raise
+                    wait_seconds = 1.5 * attempt
+                    logger.warning(
+                        "ternion_analysis_retry",
+                        ternion_id=ternion_id,
+                        provider=provider_name,
+                        model=model,
+                        attempt=attempt,
+                        wait_seconds=wait_seconds,
+                        error=error_text[:200],
+                    )
+                    await asyncio.sleep(wait_seconds)
+
+            if response is None:
+                raise RuntimeError("divergence_provider_response_missing")
             usage = response.usage or {}
             input_tokens = (
                 usage.get("prompt_tokens")
@@ -821,6 +1506,18 @@ async def divergence_node(state: TernionState) -> TernionState:
         preview = sanitize_for_preview(a["analysis"], max_length=100)
         thinking_logs.append(t(MessageKey.DIVERGENCE_ANALYSIS, ternion_id=a['ternion_id'], preview=preview))
 
+    failed = [a for a in analyses if a.get("error")]
+    for a in failed:
+        err_preview = sanitize_for_preview(str(a.get("error") or ""), max_length=100)
+        thinking_logs.append(
+            t(
+                MessageKey.DIVERGENCE_ANALYSIS_FAILED,
+                ternion_id=str(a.get("ternion_id") or ""),
+                provider=str(a.get("provider") or ""),
+                error=err_preview,
+            )
+        )
+
     # Extract evidence requests from all analyses for Phase 1.5
     evidence_requests = _extract_evidence_requests(successful)
 
@@ -873,6 +1570,14 @@ async def report_evidence_node(state: TernionState) -> TernionState:
     """
     evidence_requests = state.get("evidence_requests", "")
     thinking_logs = list(state.get("thinking_logs", []))
+    resume_phase = str(state.get("report_evidence_resume_phase") or "").strip().lower()
+    next_phase = (
+        WorkflowPhase.OPTIMIZER.value
+        if resume_phase == WorkflowPhase.OPTIMIZER.value
+        else WorkflowPhase.EXECUTION.value
+        if resume_phase == WorkflowPhase.EXECUTION.value
+        else WorkflowPhase.CONVERGENCE.value
+    )
 
     # Skip if no real evidence requests
     if not _has_real_evidence_requests(evidence_requests):
@@ -882,9 +1587,16 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             category="WORKFLOW",
             message="Phase 1.5 skipped | No real evidence requests from council",
         )
+        reconciled_gaps, evidence_chain_index = reconcile_evidence_chain(
+            evidence_bundle=state.get("evidence_bundle") or "",
+            evidence_gaps=state.get("evidence_gaps") or "",
+            evidence_requests=evidence_requests,
+        )
         return {
             **state,
-            "current_phase": WorkflowPhase.CONVERGENCE.value,
+            "current_phase": next_phase,
+            "evidence_gaps": reconciled_gaps,
+            "evidence_chain_index": evidence_chain_index,
             "thinking_logs": thinking_logs,
         }
 
@@ -910,29 +1622,23 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         )
     )
 
-    cursor_tools = state.get("cursor_tools") or []
+    cursor_tools = _filter_read_only_cursor_tools(state.get("cursor_tools") or [])
     cursor_tool_choice = state.get("cursor_tool_choice")
     role_cfg = config_store.get_role_config("arbiter")
-    provider_name = role_cfg.provider if role_cfg and role_cfg.provider else ""
-    use_text_tool_calls = bool(cursor_tools) and provider_name and provider_name != "openai"
-
-    if use_text_tool_calls:
-        messages.append(
-            ChatMessage(
-                role=MessageRole.USER,
-                content=(
-                    "[NON-OPENAI TOOL CALLS]\n\n"
-                    f"{build_text_tool_calls_instruction(cursor_tools)}"
-                ),
-            )
-        )
 
     history = state.get("conversation_history", [])
+    assistant_with_tools_count = 0
+    tool_msg_count = 0
+    raw_tool_msg_count = 0
+    dropped_tool_msg_count = 0
+    pending_tool_call_ids: set[str] = set()
     for msg in history:
         role = msg.get("role")
         if role == "assistant":
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list) and tool_calls:
+                assistant_with_tools_count += 1
+                pending_tool_call_ids = _collect_tool_call_ids(tool_calls)
                 messages.append(
                     ChatMessage(
                         role=MessageRole.ASSISTANT,
@@ -941,17 +1647,56 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                         tool_calls=tool_calls,
                     )
                 )
+            else:
+                pending_tool_call_ids = set()
         elif role == "tool":
             tool_call_id = msg.get("tool_call_id")
             if isinstance(tool_call_id, str) and tool_call_id:
-                messages.append(
-                    ChatMessage(
-                        role=MessageRole.TOOL,
-                        content=msg.get("content"),
-                        name=msg.get("name"),
-                        tool_call_id=tool_call_id,
+                raw_tool_msg_count += 1
+                if tool_call_id in pending_tool_call_ids:
+                    tool_msg_count += 1
+                    messages.append(
+                        ChatMessage(
+                            role=MessageRole.TOOL,
+                            content=msg.get("content"),
+                            name=msg.get("name"),
+                            tool_call_id=tool_call_id,
+                        )
                     )
-                )
+                else:
+                    dropped_tool_msg_count += 1
+        else:
+            pending_tool_call_ids = set()
+
+    # Log message composition for debugging tool_call_id mismatch issues
+    if raw_tool_msg_count > 0:
+        log_manager.emit(
+            level="DEBUG" if assistant_with_tools_count > 0 else "WARN",
+            category="WORKFLOW",
+            message=(
+                f"report_evidence_messages_composed | "
+                f"history_len={len(history)} | "
+                f"assistant_with_tools={assistant_with_tools_count} | "
+                f"tool_msgs={tool_msg_count} | "
+                f"dropped_tool_msgs={dropped_tool_msg_count} | "
+                f"final_msgs_len={len(messages)}"
+            ),
+        )
+        if assistant_with_tools_count == 0 and raw_tool_msg_count > 0:
+            # This will cause OpenAI 400 error - tool messages without preceding assistant tool_calls
+            logger.warning(
+                "report_evidence_tool_messages_without_assistant",
+                history_len=len(history),
+                tool_msg_count=raw_tool_msg_count,
+                history_roles=[msg.get("role") for msg in history],
+                history_has_tool_calls=[bool(msg.get("tool_calls")) for msg in history if msg.get("role") == "assistant"],
+            )
+        if dropped_tool_msg_count > 0:
+            logger.warning(
+                "report_evidence_orphan_tool_messages_dropped",
+                history_len=len(history),
+                dropped_tool_msg_count=dropped_tool_msg_count,
+            )
 
     try:
         provider = provider_manager.get_provider_for_role("arbiter")
@@ -970,9 +1715,20 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                 "thinking_logs": thinking_logs,
             }
 
-        supports_native_tools = provider.name == "openai"
-        supports_text_tools = bool(cursor_tools) and provider.name != "openai"
+        supports_native_tools = getattr(provider, "supports_native_tool_calls", False) is True
+        supports_text_tools = bool(cursor_tools) and not supports_native_tools
         should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
+
+        if supports_text_tools:
+            messages.append(
+                ChatMessage(
+                    role=MessageRole.USER,
+                    content=(
+                        "[NON-OPENAI TOOL CALLS]\n\n"
+                        f"{build_text_tool_calls_instruction(cursor_tools)}"
+                    ),
+                )
+            )
 
         schedule_workflow_prompt_capture(
             build_workflow_prompt_payload(
@@ -1093,12 +1849,18 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             category="WORKFLOW",
             message="Phase 1.5 complete | Evidence collected and appended",
         )
+        reconciled_gaps, evidence_chain_index = reconcile_evidence_chain(
+            evidence_bundle=updated_bundle,
+            evidence_gaps=updated_gaps,
+            evidence_requests=evidence_requests,
+        )
 
         return {
             **state,
-            "current_phase": WorkflowPhase.CONVERGENCE.value,
+            "current_phase": next_phase,
             "evidence_bundle": updated_bundle,
-            "evidence_gaps": updated_gaps,
+            "evidence_gaps": reconciled_gaps,
+            "evidence_chain_index": evidence_chain_index,
             "conversation_history": _filter_conversation_history_for_analysis(
                 state.get("conversation_history", [])
             ),
@@ -1332,6 +2094,11 @@ async def convergence_node(state: TernionState) -> TernionState:
                     "conversation_history": state.get("conversation_history", []),
                     "cursor_system_prompt": state.get("cursor_system_prompt"),
                 },
+                evidence_bundle=str(state.get("evidence_bundle") or ""),
+                evidence_gaps=str(state.get("evidence_gaps") or ""),
+                evidence_requests=str(state.get("evidence_requests") or ""),
+                evidence_chain_index=list(state.get("evidence_chain_index") or []),
+                ternion_analyses=list(state.get("ternion_analyses") or []),
             )
 
             # Log session info and report
@@ -1376,6 +2143,16 @@ TERNION_SESSION_STAGE=AWAITING_CONFIRMATION
 TERNION_EXECUTION_MODE={execution_mode.value}
 TERNION_REPORT_HASH={session.report_hash}"""
 
+            final_output_suffix = f"""
+
+---
+
+{raw_note}
+
+{confirm_prompt}
+
+{session_markers}"""
+
             final_output = f"""{display_report_safe}
 
 ---
@@ -1401,9 +2178,16 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 "session_id": session.session_id,
                 "await_confirmation": True,
                 "final_output": final_output,  # This will be returned to user
+                "final_output_suffix": final_output_suffix,
             }
         else:
             # Direct execution mode (no confirmation required)
+            session_id_str = str(session_id or "").strip()
+            if session_id_str:
+                session_store.update_session(
+                    session_id_str,
+                    ternion_report_raw=response.content,
+                )
             return {
                 **state,
                 "current_phase": WorkflowPhase.EXECUTION.value,
@@ -1552,6 +2336,11 @@ TERNION_REPORT_HASH={session.report_hash}"""
                         "conversation_history": state.get("conversation_history", []),
                         "cursor_system_prompt": state.get("cursor_system_prompt"),
                     },
+                    evidence_bundle=str(state.get("evidence_bundle") or ""),
+                    evidence_gaps=str(state.get("evidence_gaps") or ""),
+                    evidence_requests=str(state.get("evidence_requests") or ""),
+                    evidence_chain_index=list(state.get("evidence_chain_index") or []),
+                    ternion_analyses=list(state.get("ternion_analyses") or []),
                 )
 
                 log_manager.emit(
@@ -1588,6 +2377,16 @@ TERNION_SESSION_STAGE=AWAITING_CONFIRMATION
 TERNION_EXECUTION_MODE={execution_mode.value}
 TERNION_REPORT_HASH={session.report_hash}"""
 
+                final_output_suffix = f"""
+
+---
+
+{raw_note}
+
+{confirm_prompt}
+
+{session_markers}"""
+
                 final_output = f"""{display_report_safe}
 
 ---
@@ -1607,8 +2406,15 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     "session_id": session.session_id,
                     "await_confirmation": True,
                     "final_output": final_output,
+                    "final_output_suffix": final_output_suffix,
                 }
             else:
+                session_id_str = str(state.get("session_id") or "").strip()
+                if session_id_str:
+                    session_store.update_session(
+                        session_id_str,
+                        ternion_report_raw=fallback_response.content,
+                    )
                 return {
                     **state,
                     "current_phase": WorkflowPhase.EXECUTION.value,
@@ -1638,6 +2444,11 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     "conversation_history": state.get("conversation_history", []),
                     "cursor_system_prompt": state.get("cursor_system_prompt"),
                 },
+                evidence_bundle=str(state.get("evidence_bundle") or ""),
+                evidence_gaps=str(state.get("evidence_gaps") or ""),
+                evidence_requests=str(state.get("evidence_requests") or ""),
+                evidence_chain_index=list(state.get("evidence_chain_index") or []),
+                ternion_analyses=list(state.get("ternion_analyses") or []),
             )
 
             log_manager.emit(
@@ -1661,6 +2472,18 @@ TERNION_SESSION_STAGE=AWAITING_CONFIRMATION
 TERNION_EXECUTION_MODE={execution_mode.value}
 TERNION_REPORT_HASH={session.report_hash}"""
 
+            final_output_suffix = f"""
+
+---
+
+{fallback_warning}
+
+{raw_note}
+
+{fallback_confirm}
+
+{session_markers}"""
+
             final_output = f"""{display_report_safe}
 
 ---
@@ -1682,9 +2505,16 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 "session_id": session.session_id,
                 "await_confirmation": True,
                 "final_output": final_output,
+                "final_output_suffix": final_output_suffix,
                 "errors": state.get("errors", []) + [f"All Arbiter fallbacks failed: {str(e)}"],
             }
         else:
+            session_id_str = str(state.get("session_id") or "").strip()
+            if session_id_str:
+                session_store.update_session(
+                    session_id_str,
+                    ternion_report_raw=fallback_report,
+                )
             return {
                 **state,
                 "current_phase": WorkflowPhase.EXECUTION.value,
@@ -1697,9 +2527,9 @@ TERNION_REPORT_HASH={session.report_hash}"""
 
 async def execution_node(state: TernionState) -> TernionState:
     """
-    Step 3: The Execution - Writer Generates Code.
+    Step 3: The Execution - Writer Produces Deliverables.
 
-    The Writer generates the final code fix based on
+    The Writer produces the final deliverable(s) based on
     the Ternion Analysis Report. Uses Cursor's original system
     prompt to ensure output format compatibility.
 
@@ -1707,13 +2537,13 @@ async def execution_node(state: TernionState) -> TernionState:
         state: Current workflow state with analysis report
 
     Returns:
-        Updated state with generated code
+        Updated state with Writer output
     """
     logger.info("workflow_execution_start")
     log_manager.emit(
         level="INFO",
         category="WORKFLOW",
-        message="Execution phase started | Writer generating code",
+        message="Execution phase started | Writer generating deliverable(s)",
     )
 
     thinking_logs = list(state.get("thinking_logs", []))
@@ -1723,6 +2553,7 @@ async def execution_node(state: TernionState) -> TernionState:
     cursor_prompt = state.get("cursor_system_prompt")
     ternion_report = state.get("ternion_report", "")
     history = state.get("conversation_history", [])
+    latest_user_message = get_latest_user_message(history)
     history_len_before = len(history)
     tool_context_digest = ""
     truncated_history = False
@@ -1742,11 +2573,9 @@ async def execution_node(state: TernionState) -> TernionState:
         tool_context_digest = ""
         truncated_history = False
 
-    cursor_tools = state.get("cursor_tools") or []
+    cursor_tools = _filter_execution_cursor_tools(state.get("cursor_tools") or [])
     cursor_tool_choice = state.get("cursor_tool_choice")
     role_cfg = config_store.get_role_config("writer")
-    provider_name = role_cfg.provider if role_cfg and role_cfg.provider else ""
-    use_text_tool_calls = bool(cursor_tools) and provider_name and provider_name != "openai"
 
     messages = []
 
@@ -1784,21 +2613,35 @@ async def execution_node(state: TernionState) -> TernionState:
     review_feedback = state.get("review_feedback", "")
     previous_code = state.get("generated_code", "")
 
+    evidence_bundle = str(state.get("evidence_bundle") or "EVIDENCE_BUNDLE:\n- None")
+    evidence_gaps = str(state.get("evidence_gaps") or "EVIDENCE_GAPS:\n- None")
+    evidence_chain_index = list(state.get("evidence_chain_index") or [])
+    topup_round_used = int(state.get("evidence_topup_round", 0) or 0)
+    deliverable_policy_text, evidence_chain_lines, topup_status_lines = (
+        _build_execution_policy_context(
+            ternion_report=ternion_report,
+            latest_user_message=latest_user_message,
+            evidence_bundle=evidence_bundle,
+            evidence_gaps=evidence_gaps,
+            evidence_chain_index=evidence_chain_index,
+            evidence_topup_round=topup_round_used,
+        )
+    )
+
     content_parts = [
         "[TERNION WRITER INSTRUCTIONS]\n\n",
         writer_instructions,
         "\n\n[TERNION ANALYSIS REPORT]\n\n",
         ternion_report,
+        *evidence_chain_lines,
+        "\n\n[DELIVERABLE POLICY]\n\n",
+        deliverable_policy_text,
+        *topup_status_lines,
     ]
     if tool_context_digest:
         content_parts.extend([
             "\n\n[TERNION TOOL CONTEXT DIGEST]\n\n",
             tool_context_digest,
-        ])
-    if use_text_tool_calls:
-        content_parts.extend([
-            "\n\n[NON-OPENAI TOOL CALLS]\n\n",
-            build_text_tool_calls_instruction(cursor_tools),
         ])
 
     # If this is a revision round, always include reviewer feedback section
@@ -1807,23 +2650,28 @@ async def execution_node(state: TernionState) -> TernionState:
         # Use placeholder if feedback is empty (e.g., truncated or missing)
         feedback_content = review_feedback.strip() if review_feedback else (
             "[NOTE] Reviewer requested revision but feedback content is empty or missing. "
-            "Please carefully review your implementation for potential issues based on "
+            "Please carefully review your deliverable for potential issues based on "
             "the original analysis report."
         )
         # Use placeholder if previous code is empty (edge case)
         code_content = previous_code.strip() if previous_code else (
-            "[NOTE] No previous implementation found. This may indicate an error in the "
-            "workflow. Please generate a fresh implementation based on the analysis report."
+            "[NOTE] No previous deliverable found. This may indicate an error in the "
+            "workflow. Please generate a fresh deliverable based on the analysis report."
         )
         content_parts.extend([
             "\n\n[REVIEWER FEEDBACK - REVISION REQUIRED]\n\n",
             feedback_content,
-            "\n\n[CURRENT IMPLEMENTATION]\n\n",
+            "\n\n[CURRENT DELIVERABLE]\n\n",
             code_content,
-            "\n\nAddress the issues above and revise the implementation.",
+            "\n\nAddress the issues above and revise the deliverable(s) based on the "
+            "report and reviewer feedback, following the deliverable policy and allowed "
+            "write scope.",
         ])
     else:
-        content_parts.append("\n\nProceed with the implementation based on the report above.")
+        content_parts.append(
+            "\n\nProceed with the requested deliverable(s) based on the report above, "
+            "and follow the deliverable policy and allowed write scope."
+        )
 
     # Add the Ternion Analysis Report + Writer instructions as the final instruction.
     messages.append(
@@ -1861,10 +2709,19 @@ async def execution_node(state: TernionState) -> TernionState:
         stream_queue: StreamEventQueue | None = state.get("_stream_queue")
         session_id = state.get("session_id", "")
 
-        supports_native_tools = provider.name == "openai"
-        supports_text_tools = bool(cursor_tools) and provider.name != "openai"
+        supports_native_tools = getattr(provider, "supports_native_tool_calls", False) is True
+        supports_text_tools = bool(cursor_tools) and not supports_native_tools
         should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
         writer_timeout = WRITER_TIMEOUT_SECONDS
+
+        if supports_text_tools and messages:
+            last_msg = messages[-1]
+            if last_msg.role == MessageRole.USER and isinstance(last_msg.content, str):
+                last_msg.content = (
+                    last_msg.content
+                    + "\n\n[NON-OPENAI TOOL CALLS]\n\n"
+                    + build_text_tool_calls_instruction(cursor_tools)
+                )
 
         log_manager.emit(
             level="INFO",
@@ -1882,12 +2739,6 @@ async def execution_node(state: TernionState) -> TernionState:
         )
 
         if should_use_tool_calls:
-            if stream_queue:
-                await stream_queue.put_token(
-                    delta="\n" + t(MessageKey.EXECUTION_START),
-                    phase="execution",
-                    message_id=session_id,
-                )
             extra_kwargs: dict[str, Any] = {}
             if supports_native_tools:
                 extra_kwargs["tools"] = cursor_tools
@@ -1895,14 +2746,28 @@ async def execution_node(state: TernionState) -> TernionState:
                     extra_kwargs["tool_choice"] = cursor_tool_choice
             import time
             started = time.monotonic()
-            response = await _call_with_timeout(
-                provider=provider,
-                messages=messages,
-                model=model,
-                temperature=0.3,
-                timeout_seconds=writer_timeout,
-                **extra_kwargs,
-            )
+            if stream_queue:
+                response = await _call_with_stream(
+                    provider=provider,
+                    messages=messages,
+                    model=model,
+                    temperature=0.3,
+                    stream_queue=stream_queue,
+                    phase="execution",
+                    message_id=session_id,
+                    timeout_seconds=writer_timeout,
+                    detect_tool_calls=True,
+                    **extra_kwargs,
+                )
+            else:
+                response = await _call_with_timeout(
+                    provider=provider,
+                    messages=messages,
+                    model=model,
+                    temperature=0.3,
+                    timeout_seconds=writer_timeout,
+                    **extra_kwargs,
+                )
             if supports_text_tools and not response.tool_calls:
                 parsed_tool_calls = extract_tool_calls_from_text(response.content)
                 if parsed_tool_calls:
@@ -1972,11 +2837,104 @@ async def execution_node(state: TernionState) -> TernionState:
                 }
             if not (response.content or "").strip():
                 raise ValueError("writer_returned_empty_output")
+            topup_block = extract_evidence_requests_block(
+                response.content,
+                default_requester="execution",
+            )
+            if topup_block is not None:
+                used_round = int(state.get("evidence_topup_round", 0) or 0)
+                payload_error = _validate_evidence_requests_payload(topup_block.requests_text)
+                policy_error = _validate_evidence_topup_request(
+                    used_round=used_round,
+                    final_request=topup_block.final_request,
+                )
+                topup_error = payload_error or policy_error
+                if topup_error:
+                    # Soft handling: retry once to avoid an extra user round-trip.
+                    last = messages[-1] if messages else None
+                    if (
+                        last
+                        and last.role == MessageRole.USER
+                        and isinstance(last.content, str)
+                    ):
+                        last.content += (
+                            "\n\n[TERNION EVIDENCE TOP-UP GUARDRAIL]\n\n"
+                            f"{sanitize_for_cursor_display(topup_error)}\n\n"
+                            "Proceed:\n"
+                            "- If you still need evidence and TOPUP_ROUNDS_REMAINING > 0, re-issue the evidence top-up block with correct PURPOSE lines.\n"
+                            "- If TOPUP_ROUNDS_REMAINING == 0, do NOT request more evidence. Proceed with the deliverable using existing evidence.\n"
+                        )
+
+                    response = await _call_with_stream(
+                        provider=provider,
+                        messages=messages,
+                        model=model,
+                        temperature=0.3,
+                        stream_queue=stream_queue,
+                        phase="execution",
+                        message_id=session_id,
+                        timeout_seconds=writer_timeout,
+                        detect_tool_calls=True,
+                        **extra_kwargs,
+                    )
+                    if supports_text_tools and not response.tool_calls:
+                        parsed_tool_calls = extract_tool_calls_from_text(response.content)
+                        if parsed_tool_calls:
+                            response.tool_calls = parsed_tool_calls
+                            response.content = ""
+                    if response.tool_calls:
+                        return {
+                            **state,
+                            "current_phase": WorkflowPhase.EXECUTION.value,
+                            "pending_tool_calls": response.tool_calls,
+                            "thinking_logs": thinking_logs,
+                        }
+                    if not (response.content or "").strip():
+                        raise ValueError("writer_returned_empty_output")
+                    retry_block = extract_evidence_requests_block(
+                        response.content,
+                        default_requester="execution",
+                    )
+                    if retry_block is not None:
+                        used_round = int(state.get("evidence_topup_round", 0) or 0)
+                        payload_error = _validate_evidence_requests_payload(
+                            retry_block.requests_text
+                        )
+                        policy_error = _validate_evidence_topup_request(
+                            used_round=used_round,
+                            final_request=retry_block.final_request,
+                        )
+                        topup_error = payload_error or policy_error
+                        if topup_error:
+                            return {
+                                **state,
+                                "current_phase": WorkflowPhase.COMPLETE.value,
+                                "errors": state.get("errors", []) + [topup_error],
+                                "final_output": sanitize_for_cursor_display(topup_error),
+                                "thinking_logs": thinking_logs,
+                            }
+                        return {
+                            **state,
+                            "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                            "evidence_requests": retry_block.requests_text,
+                            "report_evidence_resume_phase": WorkflowPhase.EXECUTION.value,
+                            "evidence_topup_round": used_round + 1,
+                            "thinking_logs": thinking_logs,
+                        }
+                else:
+                    return {
+                        **state,
+                        "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                        "evidence_requests": topup_block.requests_text,
+                        "report_evidence_resume_phase": WorkflowPhase.EXECUTION.value,
+                        "evidence_topup_round": used_round + 1,
+                        "thinking_logs": thinking_logs,
+                    }
             log_manager.emit(
                 level="INFO",
                 category="WORKFLOW",
                 message=(
-                    "execution_writer_coding_done | "
+                    "execution_writer_deliverable_done | "
                     f"session_id={session_id} | "
                     f"content_chars={len(response.content or '')}"
                 ),
@@ -1993,7 +2951,7 @@ async def execution_node(state: TernionState) -> TernionState:
             provider=provider,
             messages=messages,
             model=model,
-            temperature=0.3,  # Lower temperature for code generation
+            temperature=0.3,  # Lower temperature for deterministic output
             stream_queue=stream_queue,
             phase="execution",
             message_id=session_id,
@@ -2001,6 +2959,83 @@ async def execution_node(state: TernionState) -> TernionState:
         )
         if not (response.content or "").strip():
             raise ValueError("writer_returned_empty_output")
+        topup_block = extract_evidence_requests_block(
+            response.content,
+            default_requester="execution",
+        )
+        if topup_block is not None:
+            used_round = int(state.get("evidence_topup_round", 0) or 0)
+            payload_error = _validate_evidence_requests_payload(topup_block.requests_text)
+            policy_error = _validate_evidence_topup_request(
+                used_round=used_round,
+                final_request=topup_block.final_request,
+            )
+            topup_error = payload_error or policy_error
+            if topup_error:
+                last = messages[-1] if messages else None
+                if (
+                    last
+                    and last.role == MessageRole.USER
+                    and isinstance(last.content, str)
+                ):
+                    last.content += (
+                        "\n\n[TERNION EVIDENCE TOP-UP GUARDRAIL]\n\n"
+                        f"{sanitize_for_cursor_display(topup_error)}\n\n"
+                        "Proceed:\n"
+                        "- If you still need evidence and TOPUP_ROUNDS_REMAINING > 0, re-issue the evidence top-up block with correct PURPOSE lines.\n"
+                        "- If TOPUP_ROUNDS_REMAINING == 0, do NOT request more evidence. Proceed with the deliverable using existing evidence.\n"
+                    )
+                response = await _call_with_stream(
+                    provider=provider,
+                    messages=messages,
+                    model=model,
+                    temperature=0.3,
+                    stream_queue=stream_queue,
+                    phase="execution",
+                    message_id=session_id,
+                    timeout_seconds=writer_timeout,
+                )
+                if not (response.content or "").strip():
+                    raise ValueError("writer_returned_empty_output")
+                retry_block = extract_evidence_requests_block(
+                    response.content,
+                    default_requester="execution",
+                )
+                if retry_block is not None:
+                    used_round = int(state.get("evidence_topup_round", 0) or 0)
+                    payload_error = _validate_evidence_requests_payload(
+                        retry_block.requests_text
+                    )
+                    policy_error = _validate_evidence_topup_request(
+                        used_round=used_round,
+                        final_request=retry_block.final_request,
+                    )
+                    topup_error = payload_error or policy_error
+                    if topup_error:
+                        return {
+                            **state,
+                            "current_phase": WorkflowPhase.COMPLETE.value,
+                            "errors": state.get("errors", []) + [topup_error],
+                            "final_output": sanitize_for_cursor_display(topup_error),
+                            "thinking_logs": thinking_logs,
+                        }
+                    return {
+                        **state,
+                        "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                        "evidence_requests": retry_block.requests_text,
+                        "report_evidence_resume_phase": WorkflowPhase.EXECUTION.value,
+                        "evidence_topup_round": used_round + 1,
+                        "thinking_logs": thinking_logs,
+                    }
+            else:
+                return {
+                    **state,
+                    "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                    "evidence_requests": topup_block.requests_text,
+                    "report_evidence_resume_phase": WorkflowPhase.EXECUTION.value,
+                    "evidence_topup_round": used_round + 1,
+                    "thinking_logs": thinking_logs,
+                }
         usage = response.usage or {}
         input_tokens = (
             usage.get("prompt_tokens")
@@ -2038,7 +3073,7 @@ async def execution_node(state: TernionState) -> TernionState:
             level="INFO",
             category="WORKFLOW",
             message=(
-                "execution_writer_coding_done | "
+                "execution_writer_deliverable_done | "
                 f"session_id={session_id} | "
                 f"content_chars={len(response.content or '')}"
             ),
@@ -2356,6 +3391,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
     writer_output_files = state.get("writer_output_files") or {}
 
     history = state.get("conversation_history", [])
+    latest_user_message = get_latest_user_message(history)
     history_len_before = len(history)
     tool_context_digest = ""
     truncated_history = False
@@ -2374,7 +3410,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
         tool_context_digest = ""
         truncated_history = False
 
-    cursor_tools = state.get("cursor_tools") or []
+    cursor_tools = _filter_execution_cursor_tools(state.get("cursor_tools") or [])
     cursor_tool_choice = state.get("cursor_tool_choice")
     role_cfg = config_store.get_role_config("reviewer")
 
@@ -2397,11 +3433,30 @@ async def optimizer_node(state: TernionState) -> TernionState:
         )
 
     optimizer_instructions = _prepend_global_security_rules(optimizer_prompt_with_lang)
+    evidence_bundle = str(state.get("evidence_bundle") or "EVIDENCE_BUNDLE:\n- None")
+    evidence_gaps = str(state.get("evidence_gaps") or "EVIDENCE_GAPS:\n- None")
+    evidence_chain_index = list(state.get("evidence_chain_index") or [])
+    topup_round_used = int(state.get("evidence_topup_round", 0) or 0)
+    deliverable_policy_text, evidence_chain_lines, topup_status_lines = (
+        _build_execution_policy_context(
+            ternion_report=ternion_report,
+            latest_user_message=latest_user_message,
+            evidence_bundle=evidence_bundle,
+            evidence_gaps=evidence_gaps,
+            evidence_chain_index=evidence_chain_index,
+            evidence_topup_round=topup_round_used,
+        )
+    )
+
     content_parts: list[str] = [
         "[TERNION OPTIMIZER INSTRUCTIONS]\n\n",
         optimizer_instructions,
         "\n\n[TERNION ANALYSIS REPORT]\n\n",
         ternion_report,
+        *evidence_chain_lines,
+        "\n\n[DELIVERABLE POLICY]\n\n",
+        deliverable_policy_text,
+        *topup_status_lines,
     ]
     if tool_context_digest:
         content_parts.extend([
@@ -2468,9 +3523,18 @@ async def optimizer_node(state: TernionState) -> TernionState:
                 "current_phase": WorkflowPhase.COMPLETE.value,
             }
 
-        supports_native_tools = provider.name == "openai"
-        supports_text_tools = bool(cursor_tools) and provider.name != "openai"
+        supports_native_tools = getattr(provider, "supports_native_tool_calls", False) is True
+        supports_text_tools = bool(cursor_tools) and not supports_native_tools
         should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
+
+        if supports_text_tools and messages:
+            last_msg = messages[-1]
+            if last_msg.role == MessageRole.USER and isinstance(last_msg.content, str):
+                last_msg.content = (
+                    last_msg.content
+                    + "\n\n[NON-OPENAI TOOL CALLS]\n\n"
+                    + build_text_tool_calls_instruction(cursor_tools)
+                )
 
         session_id = state.get("session_id", "")
         log_manager.emit(
@@ -2489,12 +3553,6 @@ async def optimizer_node(state: TernionState) -> TernionState:
         )
 
         stream_queue: StreamEventQueue | None = state.get("_stream_queue")
-        if stream_queue:
-            await stream_queue.put_token(
-                delta="\n" + t(MessageKey.OPTIMIZER_START),
-                phase="optimizer",
-                message_id=session_id,
-            )
 
         extra_kwargs: dict[str, Any] = {}
         if should_use_tool_calls and supports_native_tools:
@@ -2505,13 +3563,30 @@ async def optimizer_node(state: TernionState) -> TernionState:
         import time
 
         started = time.monotonic()
-        response = await _call_with_timeout(
-            provider=provider,
-            messages=messages,
-            model=model,
-            temperature=0.2,
-            **extra_kwargs,
-        )
+        optimizer_timeout = WRITER_TIMEOUT_SECONDS
+        streamed_user_summary = False
+        if stream_queue:
+            response, streamed_user_summary = await _call_optimizer_with_stream(
+                provider=provider,
+                messages=messages,
+                model=model,
+                temperature=0.2,
+                stream_queue=stream_queue,
+                phase="optimizer",
+                message_id=session_id,
+                timeout_seconds=optimizer_timeout,
+                detect_tool_calls=should_use_tool_calls,
+                **extra_kwargs,
+            )
+        else:
+            response = await _call_with_timeout(
+                provider=provider,
+                messages=messages,
+                model=model,
+                temperature=0.2,
+                timeout_seconds=optimizer_timeout,
+                **extra_kwargs,
+            )
         if supports_text_tools and not response.tool_calls:
             parsed_tool_calls = extract_tool_calls_from_text(response.content)
             if parsed_tool_calls:
@@ -2538,10 +3613,121 @@ async def optimizer_node(state: TernionState) -> TernionState:
                 "thinking_logs": thinking_logs,
             }
 
+        topup_block = extract_evidence_requests_block(
+            response.content,
+            default_requester="optimizer",
+        )
+        if topup_block is not None:
+            used_round = int(state.get("evidence_topup_round", 0) or 0)
+            payload_error = _validate_evidence_requests_payload(topup_block.requests_text)
+            policy_error = _validate_evidence_topup_request(
+                used_round=used_round,
+                final_request=topup_block.final_request,
+            )
+            topup_error = payload_error or policy_error
+            if topup_error:
+                last = messages[-1] if messages else None
+                if (
+                    last
+                    and last.role == MessageRole.USER
+                    and isinstance(last.content, str)
+                ):
+                    last.content += (
+                        "\n\n[TERNION EVIDENCE TOP-UP GUARDRAIL]\n\n"
+                        f"{sanitize_for_cursor_display(topup_error)}\n\n"
+                        "Proceed:\n"
+                        "- If you still need evidence and TOPUP_ROUNDS_REMAINING > 0, re-issue the evidence top-up block with correct PURPOSE lines.\n"
+                        "- If TOPUP_ROUNDS_REMAINING == 0, do NOT request more evidence. Proceed with the deliverable using existing evidence.\n"
+                    )
+
+                if stream_queue:
+                    response, _streamed_user_summary = await _call_optimizer_with_stream(
+                        provider=provider,
+                        messages=messages,
+                        model=model,
+                        temperature=0.2,
+                        stream_queue=stream_queue,
+                        phase="optimizer",
+                        message_id=session_id,
+                        timeout_seconds=optimizer_timeout,
+                        detect_tool_calls=should_use_tool_calls,
+                        **extra_kwargs,
+                    )
+                else:
+                    response = await _call_with_timeout(
+                        provider=provider,
+                        messages=messages,
+                        model=model,
+                        temperature=0.2,
+                        timeout_seconds=optimizer_timeout,
+                        **extra_kwargs,
+                    )
+                if supports_text_tools and not response.tool_calls:
+                    parsed_tool_calls = extract_tool_calls_from_text(response.content)
+                    if parsed_tool_calls:
+                        response.tool_calls = parsed_tool_calls
+                        response.content = ""
+                if response.tool_calls:
+                    return {
+                        **state,
+                        "current_phase": WorkflowPhase.OPTIMIZER.value,
+                        "pending_tool_calls": response.tool_calls,
+                        "thinking_logs": thinking_logs,
+                    }
+
+                retry_block = extract_evidence_requests_block(
+                    response.content,
+                    default_requester="optimizer",
+                )
+                if retry_block is not None:
+                    used_round = int(state.get("evidence_topup_round", 0) or 0)
+                    payload_error = _validate_evidence_requests_payload(
+                        retry_block.requests_text
+                    )
+                    policy_error = _validate_evidence_topup_request(
+                        used_round=used_round,
+                        final_request=retry_block.final_request,
+                    )
+                    topup_error = payload_error or policy_error
+                    if topup_error:
+                        return {
+                            **state,
+                            "current_phase": WorkflowPhase.COMPLETE.value,
+                            "errors": state.get("errors", []) + [topup_error],
+                            "final_output": sanitize_for_cursor_display(topup_error),
+                            "thinking_logs": thinking_logs,
+                        }
+                    return {
+                        **state,
+                        "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                        "evidence_requests": retry_block.requests_text,
+                        "report_evidence_resume_phase": WorkflowPhase.OPTIMIZER.value,
+                        "evidence_topup_round": used_round + 1,
+                        "thinking_logs": thinking_logs,
+                    }
+            else:
+                return {
+                    **state,
+                    "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                    "evidence_requests": topup_block.requests_text,
+                    "report_evidence_resume_phase": WorkflowPhase.OPTIMIZER.value,
+                    "evidence_topup_round": used_round + 1,
+                    "thinking_logs": thinking_logs,
+                }
+
         internal_report, user_summary = _split_optimizer_output(response.content or "")
         if not (user_summary or "").strip():
             user_summary = t(MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR)
         user_summary_safe = sanitize_for_cursor_display(user_summary)
+        if stream_queue and user_summary_safe and not streamed_user_summary:
+            # Ensure the user-visible summary is streamed even if the optimizer
+            # wrapper markers were missing or not detected during streaming.
+            for i in range(0, len(user_summary_safe), 128):
+                await stream_queue.put_token(
+                    delta=user_summary_safe[i:i + 128],
+                    phase="optimizer",
+                    message_id=session_id,
+                )
 
         try:
             from ternion.utils.reviewer_output_capture import (

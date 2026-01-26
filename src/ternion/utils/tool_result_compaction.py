@@ -80,12 +80,15 @@ def compact_tool_result(
         meta["chars_compacted"] = len(raw)
         return raw, meta
 
-    if (tool_name or "") == "read_file":
+    # Cursor tool naming differs across client versions ("read_file" vs "Read").
+    canonical_tool = re.sub(r"[^a-z0-9]+", "", (tool_name or "").strip().lower())
+    if canonical_tool in {"readfile", "read"}:
         compacted, details = _compact_read_file(
             raw=raw,
             tool_arguments=tool_arguments,
             digest=digest,
             cfg=cfg,
+            tool_display_name=(tool_name or "read_file"),
         )
         meta.update(details)
         return compacted, meta
@@ -114,9 +117,10 @@ def _compact_read_file(
     tool_arguments: str | None,
     digest: str,
     cfg: ToolResultCompactionConfig,
+    tool_display_name: str,
 ) -> tuple[str, dict[str, Any]]:
     args = _parse_json_object(tool_arguments)
-    target_file = str(args.get("target_file") or "")
+    target_file = str(args.get("target_file") or args.get("path") or "")
     offset = args.get("offset")
     limit = args.get("limit")
 
@@ -126,7 +130,7 @@ def _compact_read_file(
 
     header_lines = [
         "[TERNION COMPACTED TOOL RESULT]",
-        "tool=read_file",
+        f"tool={tool_display_name}" if tool_display_name else "tool=read_file",
         f"target_file={target_file}" if target_file else "target_file=(unknown)",
         f"offset={offset}" if isinstance(offset, int) else "offset=(unspecified)",
         f"limit={limit}" if isinstance(limit, int) else "limit=(unspecified)",

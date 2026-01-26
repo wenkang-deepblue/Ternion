@@ -27,6 +27,52 @@ from ternion.utils.log_manager import log_manager
 logger = structlog.get_logger(__name__)
 
 
+def _to_jsonable(value: Any) -> Any:
+    """
+    Convert a value into a JSON-serializable structure.
+
+    This is required because some workflow/session fields may contain Pydantic
+    models (e.g., multimodal content parts) that are not directly serializable
+    by json.dump().
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, Enum):
+        return value.value
+
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+
+    if isinstance(value, list):
+        return [_to_jsonable(v) for v in value]
+
+    if isinstance(value, tuple):
+        return [_to_jsonable(v) for v in value]
+
+    if isinstance(value, set):
+        return [_to_jsonable(v) for v in sorted(value, key=lambda x: str(x))]
+
+    # Pydantic v2 models (e.g., TextContent/ImageContent)
+    if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+        try:
+            return _to_jsonable(value.model_dump())
+        except Exception:
+            return str(value)
+
+    # Pydantic v1 compatibility
+    if hasattr(value, "dict") and callable(getattr(value, "dict")):
+        try:
+            return _to_jsonable(value.dict())
+        except Exception:
+            return str(value)
+
+    return str(value)
+
+
 class SessionStage(str, Enum):
     """Stage of a Ternion session lifecycle."""
 
@@ -90,6 +136,8 @@ class Session:
     baseline_file_snapshots: dict[str, str] = field(default_factory=dict)
     writer_output_files: dict[str, str] = field(default_factory=dict)
     optimizer_review_report: str = ""
+    # Cursor UI: track whether a TodoWrite list has been created in this session.
+    todo_written: bool = False
     optimizer_todo_written: bool = False
     optimizer_phase_announced: bool = False
     confirmation_reason: str | None = None
@@ -97,6 +145,12 @@ class Session:
     evidence_bundle: str = ""
     evidence_gaps: str = ""
     evidence_requests: str = ""
+    evidence_chain_index: list[dict[str, Any]] = field(default_factory=list)
+    # Step E: Execution/Optimizer evidence top-ups via Phase 1.5 (max 2 rounds).
+    evidence_topup_round: int = 0
+    # When report_evidence is used as an execution-time top-up, resume back to this phase.
+    # Valid values: "execution", "optimizer", or empty (default report-stage behavior).
+    report_evidence_resume_phase: str = ""
     ternion_analyses: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -114,7 +168,7 @@ class Session:
         data = asdict(self)
         data["stage"] = self.stage.value
         data["execution_mode"] = self.execution_mode.value
-        return data
+        return _to_jsonable(data)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Session":
@@ -130,6 +184,8 @@ class Session:
             data["ternion_report_safe"] = sanitize_for_cursor_display(raw_report)
 
         data.setdefault("confirmation_reason", None)
+        data.setdefault("evidence_topup_round", 0)
+        data.setdefault("report_evidence_resume_phase", "")
 
         return cls(**data)
 
@@ -191,6 +247,9 @@ class SessionStore:
         evidence_bundle: str = "",
         evidence_gaps: str = "",
         evidence_requests: str = "",
+        evidence_chain_index: list[dict[str, Any]] | None = None,
+        evidence_topup_round: int = 0,
+        report_evidence_resume_phase: str = "",
         ternion_analyses: list[dict[str, Any]] | None = None,
     ) -> Session:
         """
@@ -244,6 +303,9 @@ class SessionStore:
             evidence_bundle=evidence_bundle,
             evidence_gaps=evidence_gaps,
             evidence_requests=evidence_requests,
+            evidence_chain_index=list(evidence_chain_index or []),
+            evidence_topup_round=int(evidence_topup_round or 0),
+            report_evidence_resume_phase=str(report_evidence_resume_phase or ""),
             ternion_analyses=list(ternion_analyses or []),
         )
 
@@ -312,6 +374,7 @@ class SessionStore:
         generated_code: str | None = None,
         review_feedback: str | None = None,
         hash_verified: bool | None = None,
+        ternion_report_raw: str | None = None,
         cursor_system_prompt: str | None = None,
         cursor_tools: list[dict[str, Any]] | None = None,
         cursor_tool_choice: Any | None = None,
@@ -326,12 +389,16 @@ class SessionStore:
         baseline_file_snapshots: dict[str, str] | None = None,
         writer_output_files: dict[str, str] | None = None,
         optimizer_review_report: str | None = None,
+        todo_written: bool | None = None,
         optimizer_todo_written: bool | None = None,
         optimizer_phase_announced: bool | None = None,
         confirmation_reason: str | None = None,
         evidence_bundle: str | None = None,
         evidence_gaps: str | None = None,
         evidence_requests: str | None = None,
+        evidence_chain_index: list[dict[str, Any]] | None = None,
+        evidence_topup_round: int | None = None,
+        report_evidence_resume_phase: str | None = None,
         ternion_analyses: list[dict[str, Any]] | None = None,
     ) -> Session | None:
         """
@@ -362,6 +429,16 @@ class SessionStore:
             session.review_feedback = review_feedback
         if hash_verified is not None:
             session.hash_verified = hash_verified
+        if ternion_report_raw is not None:
+            # Some sessions are created before convergence (e.g., evidence tool loops in ternion_full),
+            # so the report may be initially empty and must be persisted later once available.
+            from ternion.utils.cursor_safety import sanitize_for_cursor_display
+
+            session.ternion_report_raw = ternion_report_raw
+            session.ternion_report_safe = sanitize_for_cursor_display(ternion_report_raw)
+            session.report_hash = compute_report_hash(ternion_report_raw)
+            # Report changed -> previous hash verification is no longer meaningful.
+            session.hash_verified = None
         if cursor_system_prompt is not None:
             session.cursor_system_prompt = cursor_system_prompt
         if cursor_tools is not None:
@@ -390,6 +467,8 @@ class SessionStore:
             session.writer_output_files = writer_output_files
         if optimizer_review_report is not None:
             session.optimizer_review_report = optimizer_review_report
+        if todo_written is not None:
+            session.todo_written = todo_written
         if optimizer_todo_written is not None:
             session.optimizer_todo_written = optimizer_todo_written
         if optimizer_phase_announced is not None:
@@ -402,6 +481,12 @@ class SessionStore:
             session.evidence_gaps = evidence_gaps
         if evidence_requests is not None:
             session.evidence_requests = evidence_requests
+        if evidence_chain_index is not None:
+            session.evidence_chain_index = evidence_chain_index
+        if evidence_topup_round is not None:
+            session.evidence_topup_round = int(evidence_topup_round or 0)
+        if report_evidence_resume_phase is not None:
+            session.report_evidence_resume_phase = str(report_evidence_resume_phase or "")
         if ternion_analyses is not None:
             session.ternion_analyses = ternion_analyses
 

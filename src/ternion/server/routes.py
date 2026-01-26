@@ -6,6 +6,7 @@ Implements OpenAI-compatible endpoints for chat completions and models listing.
 
 import json
 import re
+from functools import lru_cache
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ternion.core.budget import budget_manager
 from ternion.core.config_store import config_store
+from ternion.core.deliverable_policy import DeliverableType, resolve_deliverable_policy
 from ternion.core.intent_classifier import (
     Intent,
     classify_intent_with_fallback,
@@ -45,6 +47,11 @@ from ternion.utils.cursor_safety import sanitize_for_cursor_display
 from ternion.utils.i18n import MessageKey, get_web_base_url, t
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import parse_structured_report
+from ternion.utils.shell_policy import evaluate_shell_command
+from ternion.utils.tool_policy import (
+    EXECUTION_ALLOWED_TOOL_CANONICAL as _EXECUTION_ALLOWED_TOOL_CANONICAL,
+    SHELL_TOOL_CANONICAL as _SHELL_TOOL_CANONICAL,
+)
 from ternion.utils.streaming import (
     create_sse_stream,
     create_sse_tool_calls_stream,
@@ -68,6 +75,42 @@ _READ_FILE_DEFAULT_LIMIT = 300
 _READ_FILE_MAX_LIMIT = 400
 _READ_FILE_EVIDENCE_MAX_LIMIT = 2000
 _TOOL_LOOP_MAX_ROUNDS = 100
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+_STREAM_SANITIZE_TAIL_KEEP = 32
+
+
+def _append_stream_safe_cursor_text(
+    pending_raw: str,
+    chunk: str,
+    *,
+    tail_keep: int = _STREAM_SANITIZE_TAIL_KEEP,
+) -> tuple[str, str]:
+    """
+    Incrementally sanitize text for Cursor display without cross-chunk trigger formation.
+
+    This keeps a small raw tail buffer so patch/code-fence triggers cannot be formed
+    across streamed chunk boundaries.
+    """
+    if not chunk:
+        return "", pending_raw
+
+    pending = (pending_raw or "") + chunk
+    keep = max(0, int(tail_keep))
+    if keep and len(pending) <= keep:
+        return "", pending
+    if keep:
+        safe_raw = pending[:-keep]
+        pending = pending[-keep:]
+    else:
+        safe_raw = pending
+        pending = ""
+    return sanitize_for_cursor_display(safe_raw), pending
 
 
 _CURSOR_NON_AGENT_MODE_HINTS = (
@@ -122,6 +165,9 @@ def _request_contains_case_insensitive(request: ChatCompletionRequest, needle: s
         return False
     needle_lower = needle.lower()
     for msg in request.messages:
+
+        if msg.role != MessageRole.USER:
+            continue
         for text in _iter_message_content_text(msg.content):
             if needle_lower in text.lower():
                 return True
@@ -170,6 +216,7 @@ def _respond_with_text(request: ChatCompletionRequest, content: str) -> Response
         return StreamingResponse(
             create_sse_stream(model=request.model, content=content),
             media_type="text/event-stream",
+            headers=_SSE_HEADERS,
         )
     return JSONResponse(
         content=ChatCompletionResponse(
@@ -313,7 +360,10 @@ def _rewrite_tool_call_ids(
 
             arguments_str = json.dumps(arguments, ensure_ascii=False)
 
-        if name == "read_file":
+        # Cursor tool naming differs across client versions ("read_file" vs "Read").
+        # Enforce pagination for both to avoid oversized contexts.
+        canonical_name = re.sub(r"[^a-z0-9]+", "", name.strip().lower())
+        if canonical_name in {"readfile", "read"}:
             arguments_str = _enforce_read_file_pagination(
                 arguments_str,
                 max_limit=read_file_max_limit,
@@ -366,10 +416,15 @@ def _enforce_read_file_pagination(arguments_json: str, *, max_limit: int) -> str
 
 
 _MUTATING_TOOL_NAMES = {
+    # Legacy snake_case (older Cursor clients / some tests)
     "write",
-    "search_replace",
-    "delete_file",
-    "edit_notebook",
+    "writefile",
+    "searchreplace",
+    "deletefile",
+    "editnotebook",
+    # Newer Cursor TitleCase tools
+    "applypatch",
+    "delete",
 }
 
 
@@ -419,17 +474,123 @@ def _read_text_file_best_effort(path_str: str) -> str | None:
 
 
 def _extract_mutation_target_path(tool_name: str, arguments_json: str) -> str | None:
+    canonical = re.sub(r"[^a-z0-9]+", "", (tool_name or "").strip().lower())
     args = _coerce_json_object(arguments_json)
-    if tool_name in {"write", "search_replace"}:
-        value = args.get("file_path")
-        return value if isinstance(value, str) else None
-    if tool_name == "delete_file":
+
+    # Legacy write/search_replace tools
+    if canonical in {"write", "writefile", "searchreplace"}:
+        for key in ("file_path", "path", "target_file", "target_path"):
+            value = args.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return None
+
+    # Legacy delete_file and newer Delete
+    if canonical in {"deletefile", "delete"}:
         value = args.get("target_file")
+        if isinstance(value, str):
+            return value
+        value = args.get("path")
         return value if isinstance(value, str) else None
-    if tool_name == "edit_notebook":
+
+    # Legacy edit_notebook and newer EditNotebook
+    if canonical == "editnotebook":
         value = args.get("target_notebook")
         return value if isinstance(value, str) else None
+
+    # Newer ApplyPatch (freeform patch string)
+    if canonical == "applypatch":
+        return _extract_apply_patch_target_path(arguments_json)
+
     return None
+
+
+def _extract_apply_patch_target_path(patch_text: str) -> str | None:
+    """
+    Extract the target file path from a Cursor ApplyPatch payload.
+
+    ApplyPatch supports a single-file envelope with one of:
+    - "*** Update File: <path>"
+    - "*** Add File: <path>"
+    """
+    if not isinstance(patch_text, str) or not patch_text.strip():
+        return None
+    for line in patch_text.splitlines():
+        s = line.strip()
+        if s.startswith("*** Update File:"):
+            return s[len("*** Update File:"):].strip() or None
+        if s.startswith("*** Add File:"):
+            return s[len("*** Add File:"):].strip() or None
+    return None
+
+
+def _extract_shell_command(arguments_json: str) -> str | None:
+    args = _coerce_json_object(arguments_json)
+    for key in ("command", "cmd", "commands"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, list):
+            parts = [v for v in value if isinstance(v, str) and v.strip()]
+            if parts:
+                return " && ".join(parts)
+    return None
+
+
+def _enforce_execution_tool_policy(
+    *,
+    workflow_phase: str,
+    tool_calls: list[dict],
+) -> tuple[list[dict], str | None]:
+    if workflow_phase not in {"execution", "optimizer"}:
+        return list(tool_calls or []), None
+
+    blocked_tools: list[str] = []
+    blocked_shell: list[str] = []
+
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        name, args_str = _extract_tool_name_and_arguments(tc)
+        canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+        if not canonical or canonical not in _EXECUTION_ALLOWED_TOOL_CANONICAL:
+            blocked_tools.append(name or "(unknown tool)")
+            continue
+
+        if canonical in _SHELL_TOOL_CANONICAL:
+            command = _extract_shell_command(args_str)
+            decision = evaluate_shell_command(command or "")
+            if not decision.allowed:
+                preview = (command or "").strip().replace("\n", " ")
+                if len(preview) > 200:
+                    preview = preview[:200] + "..."
+                blocked_shell.append(
+                    f"{name or '(shell)'} -> {preview or '(empty command)'}"
+                )
+
+    if not blocked_tools and not blocked_shell:
+        return list(tool_calls or []), None
+
+    log_manager.emit(
+        level="INFO",
+        category="GUARDRAIL",
+        message=(
+            "execution_tool_policy_blocked | "
+            f"blocked_tools={'; '.join(blocked_tools) or '(none)'} | "
+            f"blocked_shell={'; '.join(blocked_shell) or '(none)'}"
+        ),
+    )
+    blocked_tools_text = (
+        "\n".join(f"- {item}" for item in blocked_tools) if blocked_tools else "- (none)"
+    )
+    blocked_shell_text = (
+        "\n".join(f"- {item}" for item in blocked_shell) if blocked_shell else "- (none)"
+    )
+    return [], t(
+        MessageKey.EXECUTION_TOOL_POLICY_BLOCKED,
+        blocked_tools=blocked_tools_text,
+        blocked_shell=blocked_shell_text,
+    )
 
 
 def _ensure_baseline_snapshots_for_tool_calls(
@@ -444,7 +605,8 @@ def _ensure_baseline_snapshots_for_tool_calls(
         if not isinstance(tc, dict):
             continue
         name, args_str = _extract_tool_name_and_arguments(tc)
-        if not name or name not in _MUTATING_TOOL_NAMES:
+        canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+        if not canonical or canonical not in _MUTATING_TOOL_NAMES:
             continue
         target = _extract_mutation_target_path(name, args_str)
         normalized = _normalize_file_path(target or "")
@@ -468,35 +630,156 @@ def _filter_optimizer_todo_write(
     tool_calls: list[dict],
 ) -> tuple[list[dict], bool]:
     """
-    Enforce "todo_write at most once" during Optimizer phase.
+    (Temporarily disabled) Do not rewrite/filter TodoWrite in execution flow.
+
+    We intentionally let the agent decide whether/when to call TodoWrite.
 
     Returns:
-        (filtered_tool_calls, todo_written_now)
+        (tool_calls_unchanged, todo_written_now=False)
     """
-    if not tool_calls:
-        return [], False
+    _ = session  # keep signature stable; used by future guardrails
+    return list(tool_calls or []), False
 
-    already_written = bool(getattr(session, "optimizer_todo_written", False))
-    filtered: list[dict] = []
-    todo_written_now = False
-    todo_seen = False
 
-    for tc in tool_calls:
+def _resolve_deliverable_policy_from_context(
+    conversation_history: list[dict],
+    ternion_report: str,
+) -> tuple[DeliverableType, str]:
+    user_message = get_latest_user_message(conversation_history or [])
+    report_for_policy = _extract_report_scope_for_policy(ternion_report)
+    policy = resolve_deliverable_policy(user_message, report_for_policy)
+    return policy.deliverable_type, policy.allowed_write_scope
+
+
+def _extract_report_scope_for_policy(report: str) -> str:
+    parsed = parse_structured_report(report or "")
+    if parsed.is_structured and parsed.scope.strip():
+        return parsed.scope
+    return report or ""
+
+
+def _workspace_relative_path(path_str: str) -> str | None:
+    if not isinstance(path_str, str) or not path_str.strip():
+        return None
+    root = _resolve_project_root()
+    try:
+        p = Path(path_str).expanduser()
+        if not p.is_absolute():
+            p = root / p
+        try:
+            resolved = p.resolve()
+        except Exception:
+            resolved = p
+        relative = resolved.relative_to(root)
+    except Exception:
+        return None
+    return relative.as_posix()
+
+
+@lru_cache(maxsize=1)
+def _resolve_project_root() -> Path:
+    """
+    Resolve project root for path scoping.
+    """
+    origin = Path(__file__).resolve().parent
+    for base in [origin] + list(origin.parents):
+        if (base / "pyproject.toml").is_file():
+            return base
+        if (base / ".git").exists():
+            return base
+    try:
+        return Path.cwd().resolve()
+    except Exception:
+        return Path.cwd()
+
+
+def _is_docs_relative_path(relative_path: str) -> bool:
+    if not relative_path:
+        return False
+    first = relative_path.split("/", 1)[0]
+    return first == "docs"
+
+
+def _collect_deliverable_policy_violations(
+    tool_calls: list[dict],
+    deliverable_type: DeliverableType,
+) -> list[str]:
+    violations: list[str] = []
+    for tc in tool_calls or []:
         if not isinstance(tc, dict):
             continue
-        name, _args = _extract_tool_name_and_arguments(tc)
-        if name != "todo_write":
-            filtered.append(tc)
+        name, args_str = _extract_tool_name_and_arguments(tc)
+        canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+        if not canonical or canonical not in _MUTATING_TOOL_NAMES:
             continue
-        if already_written:
+        target = _extract_mutation_target_path(name or "", args_str)
+        target_display = target or "(unknown target)"
+        relative = _workspace_relative_path(target or "")
+        if not relative:
+            violations.append(f"{name} -> {target_display}")
             continue
-        if todo_seen:
-            continue
-        todo_seen = True
-        todo_written_now = True
-        filtered.append(tc)
 
-    return filtered, todo_written_now
+        if deliverable_type == DeliverableType.ANALYSIS_ONLY:
+            violations.append(f"{name} -> {target_display}")
+            continue
+
+        if deliverable_type == DeliverableType.DOC_ONLY:
+            if not _is_docs_relative_path(relative):
+                violations.append(f"{name} -> {target_display}")
+
+    return violations
+
+
+def _deliverable_policy_violation_message(
+    deliverable_type: DeliverableType,
+    allowed_scope: str,
+    violations: list[str],
+) -> str:
+    blocked_targets = "\n".join(f"- {item}" for item in violations) if violations else "- (none)"
+    return t(
+        MessageKey.DELIVERABLE_POLICY_BLOCKED,
+        deliverable_type=deliverable_type.value,
+        allowed_scope=allowed_scope,
+        blocked_targets=blocked_targets,
+    )
+
+
+def _enforce_deliverable_policy(
+    *,
+    workflow_phase: str,
+    tool_calls: list[dict],
+    conversation_history: list[dict],
+    ternion_report: str,
+) -> tuple[list[dict], str | None, DeliverableType | None, str]:
+    if workflow_phase not in {"execution", "optimizer"}:
+        return list(tool_calls or []), None, None, ""
+
+    deliverable_type, allowed_scope = _resolve_deliverable_policy_from_context(
+        conversation_history,
+        ternion_report,
+    )
+    violations = _collect_deliverable_policy_violations(tool_calls, deliverable_type)
+    if not violations:
+        return list(tool_calls or []), None, deliverable_type, allowed_scope
+
+    project_root = _resolve_project_root()
+    log_manager.emit(
+        level="INFO",
+        category="GUARDRAIL",
+        message=(
+            "deliverable_policy_blocked | "
+            f"type={deliverable_type.value} | "
+            f"allowed_scope={allowed_scope} | "
+            f"project_root={project_root} | "
+            f"violations={'; '.join(violations)}"
+        ),
+    )
+    message = _deliverable_policy_violation_message(
+        deliverable_type,
+        allowed_scope,
+        violations,
+    )
+    return [], message, deliverable_type, allowed_scope
 
 
 def _emit_thinking_logs_to_observability(
@@ -765,7 +1048,7 @@ async def _run_discussion_streaming(
     context: "TernionContext",
     model: str,
     budget_warning: str | None,
-    show_thinking_logs: bool,
+    show_phase_indicators: bool,
 ) -> StreamingResponse:
     """
     Run the Ternion discussion workflow with real-time streaming output.
@@ -777,7 +1060,7 @@ async def _run_discussion_streaming(
         context: The extracted context from the Cursor request
         model: Model name for SSE response
         budget_warning: Optional budget warning to prepend
-        show_thinking_logs: Whether to include thinking logs in output
+        show_phase_indicators: Whether to emit phase indicators into the stream
 
     Returns:
         StreamingResponse with real-time SSE events
@@ -833,13 +1116,81 @@ async def _run_discussion_streaming(
 
         # Variables for final output assembly
         streamed_content = ""
+        pending_phase_indicator: str | None = None
+        convergence_pending_raw = ""
+        streamed_any_convergence = False
 
         try:
-            # Consume events from queue
-            async for event in stream_queue:
+            # Consume events from queue with periodic keep-alive heartbeats.
+            #
+            # Some clients/proxies impose an idle timeout on streaming HTTP responses.
+            # Heartbeats keep the SSE connection alive even when the workflow has
+            # long non-streaming steps (e.g., evidence/divergence).
+            heartbeat_interval_seconds = 10
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        stream_queue.get(),
+                        timeout=heartbeat_interval_seconds,
+                    )
+                except TimeoutError:
+                    heartbeat = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
+                    )
+                    yield f"data: {heartbeat.model_dump_json()}\n\n"
+                    continue
+
+                if event is None:
+                    break
+
                 if event.event_type == StreamEventType.TOKEN_DELTA:
                     # Forward token delta as SSE chunk
                     if event.delta:
+                        phase_lower = str(event.phase or "").strip().lower()
+                        if phase_lower == "convergence":
+                            safe_text, convergence_pending_raw = _append_stream_safe_cursor_text(
+                                convergence_pending_raw,
+                                event.delta,
+                            )
+                            if safe_text:
+                                if pending_phase_indicator:
+                                    chunk = ChatCompletionChunk(
+                                        id=chunk_id,
+                                        created=created,
+                                        model=model,
+                                        choices=[
+                                            StreamChoice(
+                                                delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                            )
+                                        ],
+                                    )
+                                    yield f"data: {chunk.model_dump_json()}\n\n"
+                                    pending_phase_indicator = None
+                                streamed_any_convergence = True
+                                streamed_content += safe_text
+                                chunk = ChatCompletionChunk(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=model,
+                                    choices=[StreamChoice(delta=ChoiceDelta(content=safe_text))],
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+                            continue
+
+                        if pending_phase_indicator:
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=model,
+                                choices=[
+                                    StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                                ],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+                            pending_phase_indicator = None
                         streamed_content += event.delta
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
@@ -851,20 +1202,31 @@ async def _run_discussion_streaming(
 
                 elif event.event_type == StreamEventType.PHASE_START:
                     # Optionally emit phase start indicator
-                    if show_thinking_logs and event.phase:
+                    if show_phase_indicators and event.phase:
                         indicator = _phase_start_indicator_text(event.phase)
                         if indicator:
-                            chunk = ChatCompletionChunk(
-                                id=chunk_id,
-                                created=created,
-                                model=model,
-                                choices=[StreamChoice(delta=ChoiceDelta(content="\n" + indicator))],
-                            )
-                            yield f"data: {chunk.model_dump_json()}\n\n"
+                            phase_lower = str(event.phase or "").strip().lower()
+                            if phase_lower == "convergence":
+                                chunk = ChatCompletionChunk(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=model,
+                                    choices=[
+                                        StreamChoice(
+                                            delta=ChoiceDelta(
+                                                role=MessageRole.ASSISTANT,
+                                                content=indicator,
+                                            )
+                                        )
+                                    ],
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+                            else:
+                                pending_phase_indicator = indicator
 
                 elif event.event_type == StreamEventType.ERROR:
                     # Forward error
-                    error_text = f"\n\n[Ternion Error] {event.content}\n"
+                    error_text = t(MessageKey.STREAM_ERROR_GENERIC)
                     chunk = ChatCompletionChunk(
                         id=chunk_id,
                         created=created,
@@ -875,6 +1237,20 @@ async def _run_discussion_streaming(
 
             # Wait for workflow to complete
             await workflow_task
+
+            if convergence_pending_raw:
+                flushed = sanitize_for_cursor_display(convergence_pending_raw)
+                convergence_pending_raw = ""
+                if flushed:
+                    streamed_any_convergence = True
+                    streamed_content += flushed
+                    chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(content=flushed))],
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
 
             pending_tool_calls = final_state.get("pending_tool_calls") or []
             if pending_tool_calls:
@@ -895,15 +1271,86 @@ async def _run_discussion_streaming(
                     evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
                     evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
                     evidence_requests=str(final_state.get("evidence_requests", "") or ""),
+                    evidence_chain_index=list(
+                        final_state.get("evidence_chain_index", []) or []
+                    ),
                     ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
                 )
                 filtered_tool_calls = list(pending_tool_calls or [])
                 todo_written_now = False
-                if workflow_phase == "optimizer":
+                if workflow_phase in {"execution", "optimizer"}:
                     filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
                         session,
                         filtered_tool_calls,
                     )
+                filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                    workflow_phase=workflow_phase,
+                    tool_calls=filtered_tool_calls,
+                )
+                if tool_policy_error:
+                    session_store.update_session(
+                        session.session_id,
+                        stage=SessionStage.AWAITING_CONFIRMATION,
+                        confirmation_reason="tool_policy",
+                        pending_tool_calls=[],
+                    )
+                    for i in range(0, len(tool_policy_error), 128):
+                        text = tool_policy_error[i:i + 128]
+                        if not text:
+                            continue
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                    final_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                    )
+                    yield f"data: {final_chunk.model_dump_json()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+                filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
+                    workflow_phase=workflow_phase,
+                    tool_calls=filtered_tool_calls,
+                    conversation_history=list(
+                        final_state.get("conversation_history", []) or []
+                    ),
+                    ternion_report=str(final_state.get("ternion_report", "") or ""),
+                )
+                if policy_error:
+                    session_store.update_session(
+                        session.session_id,
+                        stage=SessionStage.AWAITING_CONFIRMATION,
+                        confirmation_reason="deliverable_policy",
+                        pending_tool_calls=[],
+                    )
+                    for i in range(0, len(policy_error), 128):
+                        text = policy_error[i:i + 128]
+                        if not text:
+                            continue
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                    final_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                    )
+                    yield f"data: {final_chunk.model_dump_json()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
                 baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
                     session,
                     filtered_tool_calls,
@@ -928,10 +1375,12 @@ async def _run_discussion_streaming(
                     workflow_phase=workflow_phase,
                     modified_files=modified_files,
                     baseline_file_snapshots=baseline,
+                    todo_written=bool(getattr(session, "todo_written", False)) or todo_written_now,
                     optimizer_todo_written=(
-                        True if todo_written_now else getattr(session, "optimizer_todo_written", False)
+                        bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now
+                        if workflow_phase == "optimizer"
+                        else bool(getattr(session, "optimizer_todo_written", False))
                     ),
-                    optimizer_phase_announced=workflow_phase == "optimizer",
                 )
 
                 tool_chunk = ChatCompletionChunk(
@@ -960,10 +1409,36 @@ async def _run_discussion_streaming(
                 yield "data: [DONE]\n\n"
                 return
 
+            if streamed_any_convergence:
+                suffix = str(final_state.get("final_output_suffix") or "")
+                suffix = sanitize_for_cursor_display(suffix)
+                if suffix:
+                    for i in range(0, len(suffix), 128):
+                        text = suffix[i:i + 128]
+                        if not text:
+                            continue
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
             # If workflow produced final_output but we didn't stream it
             # (e.g., non-streamable phases), send it now
             workflow_final = final_state.get("final_output", "") or final_state.get("generated_code", "")
+            errors = final_state.get("errors", []) or []
             if workflow_final and not streamed_content:
+                if pending_phase_indicator:
+                    chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))],
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+                    pending_phase_indicator = None
                 # Workflow produced output but streaming wasn't used
                 # (e.g., divergence phase doesn't stream)
                 # Send the complete output
@@ -976,6 +1451,29 @@ async def _run_discussion_streaming(
                         choices=[StreamChoice(delta=ChoiceDelta(content=text))],
                     )
                     yield f"data: {chunk.model_dump_json()}\n\n"
+
+            if errors and not workflow_final and not streamed_content:
+                output_parts = [t(MessageKey.DISCUSSION_NO_OUTPUT)]
+                output_parts.append("\n\n")
+                output_parts.append(t(MessageKey.DISCUSSION_ERRORS_HEADER))
+                for err in errors:
+                    err_msg = sanitize_for_cursor_display(str(err))
+                    if err_msg:
+                        output_parts.append(f"- {err_msg}\n")
+                error_output = "".join(output_parts)
+                error_output = sanitize_for_cursor_display(error_output)
+                for i in range(0, len(error_output), 128):
+                    text = error_output[i:i + 128]
+                    if not text:
+                        continue
+                    chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+                streamed_content += error_output
 
             # Emit thinking logs to observability
             thinking_logs = final_state.get("thinking_logs", [])
@@ -1003,7 +1501,7 @@ async def _run_discussion_streaming(
                 id=chunk_id,
                 created=created,
                 model=model,
-                choices=[StreamChoice(delta=ChoiceDelta(content=f"\n[Stream Error] {str(e)}"))],
+                choices=[StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))],
             )
             yield f"data: {error_chunk.model_dump_json()}\n\n"
             yield "data: [DONE]\n\n"
@@ -1011,6 +1509,7 @@ async def _run_discussion_streaming(
     return StreamingResponse(
         generate_sse(),
         media_type="text/event-stream",
+        headers=_SSE_HEADERS,
     )
 
 
@@ -1019,7 +1518,7 @@ async def _run_implementation_streaming(
     model: str,
     session_id: str,
     budget_prefix: str,
-    show_thinking_logs: bool,
+    show_phase_indicators: bool,
 ) -> StreamingResponse:
     """
     Run the implementation stage (Writer + Reviewer) with real-time streaming.
@@ -1032,7 +1531,7 @@ async def _run_implementation_streaming(
         model: Model name for SSE response
         session_id: Session ID for tracking
         budget_prefix: Optional budget warning to prepend
-        show_thinking_logs: Whether to include thinking logs
+        show_phase_indicators: Whether to emit phase indicators into the stream
 
     Returns:
         StreamingResponse with real-time SSE events
@@ -1085,12 +1584,43 @@ async def _run_implementation_streaming(
             yield f"data: {chunk.model_dump_json()}\n\n"
 
         streamed_content = ""
+        pending_phase_indicator: str | None = None
 
         try:
-            # Consume events from queue
-            async for event in stream_queue:
+            # Consume events from queue with periodic keep-alive heartbeats.
+            heartbeat_interval_seconds = 10
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        stream_queue.get(),
+                        timeout=heartbeat_interval_seconds,
+                    )
+                except TimeoutError:
+                    heartbeat = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
+                    )
+                    yield f"data: {heartbeat.model_dump_json()}\n\n"
+                    continue
+
+                if event is None:
+                    break
+
                 if event.event_type == StreamEventType.TOKEN_DELTA:
                     if event.delta:
+                        if pending_phase_indicator:
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=model,
+                                choices=[
+                                    StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                                ],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+                            pending_phase_indicator = None
                         streamed_content += event.delta
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
@@ -1101,19 +1631,16 @@ async def _run_implementation_streaming(
                         yield f"data: {chunk.model_dump_json()}\n\n"
 
                 elif event.event_type == StreamEventType.PHASE_START:
-                    if show_thinking_logs and event.phase:
+                    if show_phase_indicators and event.phase:
                         indicator = _phase_start_indicator_text(event.phase)
                         if indicator:
-                            chunk = ChatCompletionChunk(
-                                id=chunk_id,
-                                created=created,
-                                model=model,
-                                choices=[StreamChoice(delta=ChoiceDelta(content="\n" + indicator))],
-                            )
-                            yield f"data: {chunk.model_dump_json()}\n\n"
+                            # Buffer phase indicator until we see the first visible token delta.
+                            # This prevents producing any user-visible content in responses that
+                            # ultimately finish with tool_calls.
+                            pending_phase_indicator = indicator
 
                 elif event.event_type == StreamEventType.ERROR:
-                    error_text = f"\n\n[Ternion Error] {event.content}\n"
+                    error_text = t(MessageKey.STREAM_ERROR_GENERIC)
                     chunk = ChatCompletionChunk(
                         id=chunk_id,
                         created=created,
@@ -1125,9 +1652,231 @@ async def _run_implementation_streaming(
             # Wait for implementation to complete
             await impl_task
 
+            pending_tool_calls = final_state.get("pending_tool_calls") or []
+            if pending_tool_calls:
+                session = session_store.load_session(session_id)
+                next_round = (getattr(session, "round_index", 0) or 0) + 1
+                if next_round > _TOOL_LOOP_MAX_ROUNDS:
+                    session_store.update_session(
+                        session_id,
+                        stage=SessionStage.AWAITING_CONFIRMATION,
+                        confirmation_reason="failsafe",
+                        pending_tool_calls=[],
+                    )
+                    log_manager.emit(
+                        level="WARN",
+                        category="GUARDRAIL",
+                        message=t(
+                            MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED,
+                            max_rounds=str(_TOOL_LOOP_MAX_ROUNDS),
+                            session_id=session_id,
+                        ),
+                    )
+                    message = _tool_loop_failsafe_message(session) if session is not None else ""
+                    if message:
+                        for i in range(0, len(message), 128):
+                            text = message[i:i + 128]
+                            if not text:
+                                continue
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                    final_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                    )
+                    yield f"data: {final_chunk.model_dump_json()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                workflow_phase = str(
+                    final_state.get("current_phase")
+                    or getattr(session, "workflow_phase", "execution")
+                    or "execution"
+                )
+                filtered_tool_calls = list(pending_tool_calls or [])
+                todo_written_now = False
+                if workflow_phase in {"execution", "optimizer"} and session is not None:
+                    filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                        session,
+                        filtered_tool_calls,
+                    )
+                filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                    workflow_phase=workflow_phase,
+                    tool_calls=filtered_tool_calls,
+                )
+                if tool_policy_error:
+                    if session is not None:
+                        session_store.update_session(
+                            session_id,
+                            stage=SessionStage.AWAITING_CONFIRMATION,
+                            confirmation_reason="tool_policy",
+                            pending_tool_calls=[],
+                        )
+                    for i in range(0, len(tool_policy_error), 128):
+                        text = tool_policy_error[i:i + 128]
+                        if not text:
+                            continue
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                    final_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                    )
+                    yield f"data: {final_chunk.model_dump_json()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+                filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
+                    workflow_phase=workflow_phase,
+                    tool_calls=filtered_tool_calls,
+                    conversation_history=list(
+                        final_state.get("conversation_history", [])
+                        or getattr(session, "execution_messages", [])
+                        or []
+                    ),
+                    ternion_report=str(
+                        final_state.get("ternion_report", "")
+                        or getattr(session, "ternion_report_raw", "")
+                        or ""
+                    ),
+                )
+                if policy_error:
+                    if session is not None:
+                        session_store.update_session(
+                            session_id,
+                            stage=SessionStage.AWAITING_CONFIRMATION,
+                            confirmation_reason="deliverable_policy",
+                            pending_tool_calls=[],
+                        )
+                    for i in range(0, len(policy_error), 128):
+                        text = policy_error[i:i + 128]
+                        if not text:
+                            continue
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                    final_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                    )
+                    yield f"data: {final_chunk.model_dump_json()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+                    session,
+                    filtered_tool_calls,
+                ) if session is not None else ({}, [])
+                rewritten_tool_calls = _rewrite_tool_call_ids(
+                    filtered_tool_calls,
+                    session_id=session_id,
+                    round_index=next_round,
+                    workflow_phase=workflow_phase,
+                )
+                execution_messages = list(getattr(session, "execution_messages", []) or []) if (
+                    session is not None
+                ) else []
+                if not execution_messages:
+                    execution_messages = list(
+                        final_state.get("conversation_history", [])
+                        or initial_state.get("conversation_history", [])
+                        or []
+                    )
+                execution_messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": rewritten_tool_calls,
+                })
+                session_store.update_session(
+                    session_id,
+                    stage=SessionStage.AWAITING_TOOL_RESULTS,
+                    execution_messages=execution_messages,
+                    pending_tool_calls=rewritten_tool_calls,
+                    round_index=next_round,
+                    generated_code=final_state.get("generated_code") or getattr(session, "generated_code", ""),
+                    review_feedback=final_state.get("review_feedback") or getattr(session, "review_feedback", ""),
+                    revision_count=final_state.get("revision_count", getattr(session, "revision_count", 0)),
+                    workflow_phase=workflow_phase,
+                    modified_files=modified_files,
+                    baseline_file_snapshots=baseline,
+                    writer_output_files=dict(
+                        final_state.get("writer_output_files")
+                        or getattr(session, "writer_output_files", {})
+                        or {}
+                    ),
+                    optimizer_review_report=str(
+                        final_state.get("optimizer_review_report")
+                        or getattr(session, "optimizer_review_report", "")
+                        or ""
+                    ),
+                    todo_written=bool(getattr(session, "todo_written", False)) or todo_written_now,
+                    optimizer_todo_written=(
+                        bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now
+                        if workflow_phase == "optimizer"
+                        else bool(getattr(session, "optimizer_todo_written", False))
+                    ),
+                )
+
+                tool_chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=model,
+                    choices=[
+                        StreamChoice(
+                            delta=ChoiceDelta(
+                                role="assistant",
+                                content=None,
+                                tool_calls=rewritten_tool_calls,
+                            ),
+                        )
+                    ],
+                )
+                yield f"data: {tool_chunk.model_dump_json()}\n\n"
+
+                final_chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=model,
+                    choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="tool_calls")],
+                )
+                yield f"data: {final_chunk.model_dump_json()}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
             # If no content was streamed but workflow produced output, send it
             workflow_final = final_state.get("final_output", "") or final_state.get("generated_code", "")
             if workflow_final and not streamed_content:
+                if pending_phase_indicator:
+                    chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))],
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+                    pending_phase_indicator = None
                 for i in range(0, len(workflow_final), 128):
                     text = workflow_final[i:i + 128]
                     chunk = ChatCompletionChunk(
@@ -1167,7 +1916,7 @@ async def _run_implementation_streaming(
                 id=chunk_id,
                 created=created,
                 model=model,
-                choices=[StreamChoice(delta=ChoiceDelta(content=f"\n[Stream Error] {str(e)}"))],
+                choices=[StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))],
             )
             yield f"data: {error_chunk.model_dump_json()}\n\n"
             yield "data: [DONE]\n\n"
@@ -1175,6 +1924,7 @@ async def _run_implementation_streaming(
     return StreamingResponse(
         generate_sse(),
         media_type="text/event-stream",
+        headers=_SSE_HEADERS,
     )
 
 
@@ -1366,6 +2116,9 @@ async def chat_completions(
         ):
             workflow_phase = str(getattr(session, "workflow_phase", "") or "").lower()
             if workflow_phase == "report_evidence":
+                resume_phase = str(getattr(session, "report_evidence_resume_phase", "") or "").strip().lower()
+                if resume_phase in {"execution", "optimizer"}:
+                    return await handle_execution_followup(session, request)
                 return await handle_report_evidence_followup(session, request)
             if workflow_phase == "evidence":
                 return await handle_evidence_followup(session, request)
@@ -1610,7 +2363,7 @@ async def chat_completions(
                 context=context,
                 model=request.model,
                 budget_warning=budget_warning,
-                show_thinking_logs=user_config.show_thinking_logs,
+                show_phase_indicators=bool(getattr(user_config, "show_phase_indicators", True)),
             )
 
         # Non-streaming: run workflow and return complete response
@@ -1634,17 +2387,68 @@ async def chat_completions(
                 evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
                 evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
                 evidence_requests=str(final_state.get("evidence_requests", "") or ""),
+                evidence_chain_index=list(final_state.get("evidence_chain_index", []) or []),
                 ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
             )
             filtered_tool_calls = list(pending_tool_calls or [])
             todo_written_now = False
-            announce_text: str | None = None
-            if workflow_phase == "optimizer":
+            if workflow_phase in {"execution", "optimizer"}:
                 filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
                     session,
                     filtered_tool_calls,
                 )
-                announce_text = "\n" + t(MessageKey.OPTIMIZER_START)
+            filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+            )
+            if tool_policy_error:
+                session_store.update_session(
+                    session.session_id,
+                    stage=SessionStage.AWAITING_CONFIRMATION,
+                    confirmation_reason="tool_policy",
+                    pending_tool_calls=[],
+                )
+                return JSONResponse(
+                    content=ChatCompletionResponse(
+                        model=request.model,
+                        choices=[
+                            Choice(
+                                message=ChatMessage(
+                                    role=MessageRole.ASSISTANT,
+                                    content=tool_policy_error,
+                                )
+                            )
+                        ],
+                    ).model_dump()
+                )
+            filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+                conversation_history=list(
+                    final_state.get("conversation_history", []) or []
+                ),
+                ternion_report=str(final_state.get("ternion_report", "") or ""),
+            )
+            if policy_error:
+                session_store.update_session(
+                    session.session_id,
+                    stage=SessionStage.AWAITING_CONFIRMATION,
+                    confirmation_reason="deliverable_policy",
+                    pending_tool_calls=[],
+                )
+                return JSONResponse(
+                    content=ChatCompletionResponse(
+                        model=request.model,
+                        choices=[
+                            Choice(
+                                message=ChatMessage(
+                                    role=MessageRole.ASSISTANT,
+                                    content=policy_error,
+                                )
+                            )
+                        ],
+                    ).model_dump()
+                )
             baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
                 session,
                 filtered_tool_calls,
@@ -1658,7 +2462,7 @@ async def chat_completions(
             execution_messages = list(session.execution_messages or [])
             execution_messages.append({
                 "role": "assistant",
-                "content": announce_text,
+                "content": None,
                 "tool_calls": rewritten_tool_calls,
             })
             session_store.update_session(
@@ -1669,8 +2473,12 @@ async def chat_completions(
                 workflow_phase=workflow_phase,
                 modified_files=modified_files,
                 baseline_file_snapshots=baseline,
-                optimizer_todo_written=bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now,
-                optimizer_phase_announced=workflow_phase == "optimizer",
+                todo_written=bool(getattr(session, "todo_written", False)) or todo_written_now,
+                optimizer_todo_written=(
+                    bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now
+                    if workflow_phase == "optimizer"
+                    else bool(getattr(session, "optimizer_todo_written", False))
+                ),
             )
             return JSONResponse(
                 content=ChatCompletionResponse(
@@ -1680,7 +2488,7 @@ async def chat_completions(
                             finish_reason="tool_calls",
                             message=ChatMessage(
                                 role=MessageRole.ASSISTANT,
-                                content=announce_text,
+                                content=None,
                                 tool_calls=rewritten_tool_calls,
                             ),
                         )
@@ -1810,6 +2618,7 @@ async def handle_report_evidence_followup(
         evidence_bundle=session.evidence_bundle,
         evidence_gaps=session.evidence_gaps,
         evidence_requests=session.evidence_requests,
+        evidence_chain_index=list(getattr(session, "evidence_chain_index", []) or []),
         ternion_analyses=session.ternion_analyses,
     )
 
@@ -1885,6 +2694,38 @@ async def handle_report_evidence_followup(
             )
         )
 
+    # Diagnostic log for tool_call_id mismatch debugging (Phase 1.5)
+    assistant_with_tools_count = sum(
+        1 for m in updated_execution_messages
+        if m.get("role") == "assistant" and isinstance(m.get("tool_calls"), list) and m.get("tool_calls")
+    )
+    tool_msg_count = sum(1 for m in updated_execution_messages if m.get("role") == "tool")
+    if tool_msg_count > 0:
+        log_manager.emit(
+            level="DEBUG" if assistant_with_tools_count > 0 else "WARN",
+            category="WORKFLOW",
+            message=(
+                f"report_evidence_followup_history | "
+                f"session_id={session.session_id} | "
+                f"execution_msgs_len={len(updated_execution_messages)} | "
+                f"assistant_with_tools={assistant_with_tools_count} | "
+                f"tool_msgs={tool_msg_count}"
+            ),
+        )
+        if assistant_with_tools_count == 0:
+            logger.warning(
+                "report_evidence_followup_missing_assistant_tool_calls",
+                session_id=session.session_id,
+                execution_msgs_len=len(updated_execution_messages),
+                tool_msg_count=tool_msg_count,
+                msg_roles=[m.get("role") for m in updated_execution_messages],
+                assistant_tool_calls=[
+                    bool(m.get("tool_calls"))
+                    for m in updated_execution_messages
+                    if m.get("role") == "assistant"
+                ],
+            )
+
     evidence_context = TernionContext(
         cursor_system_prompt=system_message,
         conversation_history=conversation_history,
@@ -1895,6 +2736,454 @@ async def handle_report_evidence_followup(
         await_confirmation=await_confirmation,
         execution_mode=user_config.execution_mode,
     )
+
+    if request.stream:
+        import asyncio
+        from collections.abc import AsyncGenerator
+
+        from ternion.workflow.streaming_events import StreamEventType
+
+        show_phase_indicators = bool(getattr(user_config, "show_phase_indicators", True))
+        stream_queue = StreamEventQueue()
+        evidence_context._stream_queue = stream_queue  # type: ignore[attr-defined]
+
+        async def generate_sse() -> AsyncGenerator[str, None]:
+            """SSE generator for Phase 1.5 resume with real-time output."""
+            import time
+            import uuid
+
+            from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
+
+            chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+            created = int(time.time())
+            final_state: dict = {}
+            streamed_content = ""
+            pending_phase_indicator: str | None = None
+            convergence_pending_raw = ""
+            streamed_any_convergence = False
+
+            async def run_workflow() -> None:
+                nonlocal final_state
+                try:
+                    final_state = await resume_report_evidence(
+                        evidence_context,
+                        evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
+                        evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
+                        evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
+                        ternion_analyses=list(getattr(session, "ternion_analyses", []) or []),
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "streaming_report_evidence_followup_error",
+                        session_id=session.session_id,
+                        error=str(e),
+                    )
+                    await stream_queue.put_error(str(e), phase="report_evidence")
+                finally:
+                    stream_queue.close()
+
+            workflow_task = asyncio.create_task(run_workflow())
+
+            try:
+                heartbeat_interval_seconds = 10
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            stream_queue.get(),
+                            timeout=heartbeat_interval_seconds,
+                        )
+                    except TimeoutError:
+                        heartbeat = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
+                        )
+                        yield f"data: {heartbeat.model_dump_json()}\n\n"
+                        continue
+
+                    if event is None:
+                        break
+
+                    if event.event_type == StreamEventType.TOKEN_DELTA:
+                        if event.delta:
+                            phase_lower = str(event.phase or "").strip().lower()
+                            if phase_lower == "convergence":
+                                safe_text, convergence_pending_raw = _append_stream_safe_cursor_text(
+                                    convergence_pending_raw,
+                                    event.delta,
+                                )
+                                if safe_text:
+                                    if pending_phase_indicator:
+                                        chunk = ChatCompletionChunk(
+                                            id=chunk_id,
+                                            created=created,
+                                            model=request.model,
+                                            choices=[
+                                                StreamChoice(
+                                                    delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                                )
+                                            ],
+                                        )
+                                        yield f"data: {chunk.model_dump_json()}\n\n"
+                                        pending_phase_indicator = None
+                                    streamed_any_convergence = True
+                                    streamed_content += safe_text
+                                    chunk = ChatCompletionChunk(
+                                        id=chunk_id,
+                                        created=created,
+                                        model=request.model,
+                                        choices=[StreamChoice(delta=ChoiceDelta(content=safe_text))],
+                                    )
+                                    yield f"data: {chunk.model_dump_json()}\n\n"
+                                continue
+
+                            if pending_phase_indicator:
+                                chunk = ChatCompletionChunk(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=request.model,
+                                    choices=[
+                                        StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                                    ],
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+                                pending_phase_indicator = None
+                            streamed_content += event.delta
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=event.delta))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                    elif event.event_type == StreamEventType.PHASE_START:
+                        if show_phase_indicators and event.phase:
+                            indicator = _phase_start_indicator_text(event.phase)
+                            if indicator:
+                                phase_lower = str(event.phase or "").strip().lower()
+                                if phase_lower == "convergence":
+                                    chunk = ChatCompletionChunk(
+                                        id=chunk_id,
+                                        created=created,
+                                        model=request.model,
+                                        choices=[
+                                            StreamChoice(
+                                                delta=ChoiceDelta(
+                                                    role=MessageRole.ASSISTANT,
+                                                    content=indicator,
+                                                )
+                                            )
+                                        ],
+                                    )
+                                    yield f"data: {chunk.model_dump_json()}\n\n"
+                                else:
+                                    pending_phase_indicator = indicator
+
+                    elif event.event_type == StreamEventType.ERROR:
+                        error_text = t(MessageKey.STREAM_ERROR_GENERIC)
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=error_text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                await workflow_task
+
+                if convergence_pending_raw:
+                    flushed = sanitize_for_cursor_display(convergence_pending_raw)
+                    convergence_pending_raw = ""
+                    if flushed:
+                        streamed_any_convergence = True
+                        streamed_content += flushed
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=flushed))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                pending_tool_calls = final_state.get("pending_tool_calls") or []
+                workflow_phase = str(final_state.get("current_phase") or "report_evidence")
+
+                if pending_tool_calls:
+                    current_session = session_store.load_session(session.session_id)
+                    next_round = (getattr(current_session, "round_index", 0) or 0) + 1
+                    if next_round > _TOOL_LOOP_MAX_ROUNDS:
+                        session_store.update_session(
+                            session.session_id,
+                            stage=SessionStage.AWAITING_CONFIRMATION,
+                            confirmation_reason="failsafe",
+                            pending_tool_calls=[],
+                        )
+                        log_manager.emit(
+                            level="WARN",
+                            category="GUARDRAIL",
+                            message=t(
+                                MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED,
+                                max_rounds=str(_TOOL_LOOP_MAX_ROUNDS),
+                                session_id=session.session_id,
+                            ),
+                        )
+                        message = _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+                        if message:
+                            for i in range(0, len(message), 128):
+                                text = message[i:i + 128]
+                                if not text:
+                                    continue
+                                chunk = ChatCompletionChunk(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=request.model,
+                                    choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+
+                        final_chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                        )
+                        yield f"data: {final_chunk.model_dump_json()}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    filtered_tool_calls = list(pending_tool_calls or [])
+                    todo_written_now = False
+                    if workflow_phase in {"execution", "optimizer"} and current_session is not None:
+                        filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                            current_session,
+                            filtered_tool_calls,
+                        )
+                    filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                    )
+                    if tool_policy_error:
+                        if current_session is not None:
+                            session_store.update_session(
+                                session.session_id,
+                                stage=SessionStage.AWAITING_CONFIRMATION,
+                                confirmation_reason="tool_policy",
+                                pending_tool_calls=[],
+                            )
+                        for i in range(0, len(tool_policy_error), 128):
+                            text = tool_policy_error[i:i + 128]
+                            if not text:
+                                continue
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                        final_chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                        )
+                        yield f"data: {final_chunk.model_dump_json()}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                        conversation_history=list(
+                            final_state.get("conversation_history", []) or []
+                        ),
+                        ternion_report=str(
+                            final_state.get("ternion_report", "")
+                            or getattr(session, "ternion_report_raw", "")
+                            or ""
+                        ),
+                    )
+                    if policy_error:
+                        if current_session is not None:
+                            session_store.update_session(
+                                session.session_id,
+                                stage=SessionStage.AWAITING_CONFIRMATION,
+                                confirmation_reason="deliverable_policy",
+                                pending_tool_calls=[],
+                            )
+                        for i in range(0, len(policy_error), 128):
+                            text = policy_error[i:i + 128]
+                            if not text:
+                                continue
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                        final_chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                        )
+                        yield f"data: {final_chunk.model_dump_json()}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    baseline: dict[str, str] = {}
+                    modified_files: list[str] = []
+                    if current_session is not None:
+                        baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+                            current_session,
+                            filtered_tool_calls,
+                        )
+
+                    rewritten_tool_calls = _rewrite_tool_call_ids(
+                        filtered_tool_calls,
+                        session_id=session.session_id,
+                        round_index=next_round,
+                        workflow_phase=workflow_phase,
+                    )
+                    execution_messages = list(final_state.get("conversation_history", []) or [])
+                    execution_messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": rewritten_tool_calls,
+                    })
+                    optimizer_todo_written = todo_written_now
+                    if current_session is not None:
+                        optimizer_todo_written = (
+                            bool(getattr(current_session, "optimizer_todo_written", False)) or todo_written_now
+                            if workflow_phase == "optimizer"
+                            else bool(getattr(current_session, "optimizer_todo_written", False))
+                        )
+
+                    session_store.update_session(
+                        session.session_id,
+                        stage=SessionStage.AWAITING_TOOL_RESULTS,
+                        cursor_system_prompt=cursor_system_prompt,
+                        cursor_tools=list(cursor_tools or []),
+                        cursor_tool_choice=cursor_tool_choice,
+                        execution_messages=execution_messages,
+                        pending_tool_calls=rewritten_tool_calls,
+                        round_index=next_round,
+                        workflow_phase=workflow_phase,
+                        modified_files=modified_files,
+                        baseline_file_snapshots=baseline,
+                        todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
+                        optimizer_todo_written=optimizer_todo_written,
+                        evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
+                        evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
+                        evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+                        evidence_chain_index=list(
+                            final_state.get("evidence_chain_index")
+                            or getattr(session, "evidence_chain_index", [])
+                            or []
+                        ),
+                        ternion_analyses=list(final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []),
+                    )
+
+                    tool_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=request.model,
+                        choices=[
+                            StreamChoice(
+                                delta=ChoiceDelta(
+                                    role="assistant",
+                                    content=None,
+                                    tool_calls=rewritten_tool_calls,
+                                ),
+                            )
+                        ],
+                    )
+                    yield f"data: {tool_chunk.model_dump_json()}\n\n"
+
+                    final_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=request.model,
+                        choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="tool_calls")],
+                    )
+                    yield f"data: {final_chunk.model_dump_json()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                if streamed_any_convergence:
+                    suffix = str(final_state.get("final_output_suffix") or "")
+                    suffix = sanitize_for_cursor_display(suffix)
+                    if suffix:
+                        for i in range(0, len(suffix), 128):
+                            text = suffix[i:i + 128]
+                            if not text:
+                                continue
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                workflow_final = final_state.get("final_output", "") or final_state.get("generated_code", "")
+                if workflow_final and not streamed_content:
+                    if pending_phase_indicator:
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        pending_phase_indicator = None
+                    for i in range(0, len(workflow_final), 128):
+                        text = workflow_final[i:i + 128]
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                thinking_logs = final_state.get("thinking_logs", [])
+                if thinking_logs:
+                    _emit_thinking_logs_to_observability(
+                        thinking_logs,
+                        session_id=final_state.get("session_id") or None,
+                        context="streaming_report_evidence_followup_output",
+                        suppressed_from_chat=True,
+                    )
+
+                final_chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=request.model,
+                    choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                )
+                yield f"data: {final_chunk.model_dump_json()}\n\n"
+                yield "data: [DONE]\n\n"
+
+            except Exception as e:
+                logger.exception("sse_report_evidence_followup_generation_error", error=str(e))
+                error_chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=request.model,
+                    choices=[StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))],
+                )
+                yield f"data: {error_chunk.model_dump_json()}\n\n"
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            generate_sse(),
+            media_type="text/event-stream",
+            headers=_SSE_HEADERS,
+        )
 
     # Resume from report_evidence with preserved Phase 0/1 state
     final_state = await resume_report_evidence(
@@ -1909,75 +3198,121 @@ async def handle_report_evidence_followup(
     workflow_phase = str(final_state.get("current_phase") or "report_evidence")
 
     if pending_tool_calls:
-        execution_mode_str = str(
-            final_state.get("execution_mode") or user_config.execution_mode or "ternion_full"
+        current_session = session_store.load_session(session.session_id)
+        next_round = (getattr(current_session, "round_index", 0) or 0) + 1
+        if next_round > _TOOL_LOOP_MAX_ROUNDS:
+            session_store.update_session(
+                session.session_id,
+                stage=SessionStage.AWAITING_CONFIRMATION,
+                confirmation_reason="failsafe",
+                pending_tool_calls=[],
+            )
+            log_manager.emit(
+                level="WARN",
+                category="GUARDRAIL",
+                message=t(
+                    MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED,
+                    max_rounds=str(_TOOL_LOOP_MAX_ROUNDS),
+                    session_id=session.session_id,
+                ),
+            )
+            message = _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+            return _respond_with_text(request, message)
+
+        filtered_tool_calls = list(pending_tool_calls or [])
+        todo_written_now = False
+        if workflow_phase in {"execution", "optimizer"} and current_session is not None:
+            filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                current_session,
+                filtered_tool_calls,
+            )
+        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+            workflow_phase=workflow_phase,
+            tool_calls=filtered_tool_calls,
         )
-        execution_mode = (
-            ExecutionMode(execution_mode_str)
-            if execution_mode_str in ("cursor_handoff", "ternion_full")
-            else ExecutionMode.TERNION_FULL
+        if tool_policy_error:
+            if current_session is not None:
+                session_store.update_session(
+                    session.session_id,
+                    stage=SessionStage.AWAITING_CONFIRMATION,
+                    confirmation_reason="tool_policy",
+                    pending_tool_calls=[],
+                )
+            return _respond_with_text(request, tool_policy_error)
+        filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
+            workflow_phase=workflow_phase,
+            tool_calls=filtered_tool_calls,
+            conversation_history=list(
+                final_state.get("conversation_history", []) or []
+            ),
+            ternion_report=str(
+                final_state.get("ternion_report", "")
+                or getattr(session, "ternion_report_raw", "")
+                or ""
+            ),
         )
-        tool_session = session_store.create_session(
-            ternion_report=final_state.get("ternion_report", "") or "",
-            execution_mode=execution_mode,
+        if policy_error:
+            if current_session is not None:
+                session_store.update_session(
+                    session.session_id,
+                    stage=SessionStage.AWAITING_CONFIRMATION,
+                    confirmation_reason="deliverable_policy",
+                    pending_tool_calls=[],
+                )
+            return _respond_with_text(request, policy_error)
+        baseline: dict[str, str] = {}
+        modified_files: list[str] = []
+        if current_session is not None:
+            baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+                current_session,
+                filtered_tool_calls,
+            )
+
+        rewritten_tool_calls = _rewrite_tool_call_ids(
+            filtered_tool_calls,
+            session_id=session.session_id,
+            round_index=next_round,
+            workflow_phase=workflow_phase,
+        )
+        execution_messages = list(final_state.get("conversation_history", []) or [])
+        execution_messages.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": rewritten_tool_calls,
+        })
+        optimizer_todo_written = todo_written_now
+        if current_session is not None:
+            optimizer_todo_written = (
+                bool(getattr(current_session, "optimizer_todo_written", False)) or todo_written_now
+                if workflow_phase == "optimizer"
+                else bool(getattr(current_session, "optimizer_todo_written", False))
+            )
+
+        session_store.update_session(
+            session.session_id,
             stage=SessionStage.AWAITING_TOOL_RESULTS,
             cursor_system_prompt=cursor_system_prompt,
             cursor_tools=list(cursor_tools or []),
             cursor_tool_choice=cursor_tool_choice,
-            execution_messages=list(final_state.get("conversation_history", []) or []),
-            workflow_phase=workflow_phase,
-            # Phase 1.5 evidence state (required for reliable follow-ups)
-            evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
-            evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
-            evidence_requests=str(final_state.get("evidence_requests", "") or ""),
-            ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
-        )
-        filtered_tool_calls = list(pending_tool_calls or [])
-        todo_written_now = False
-        announce_text: str | None = None
-        if workflow_phase == "optimizer":
-            filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
-                tool_session,
-                filtered_tool_calls,
-            )
-            announce_text = "\n" + t(MessageKey.OPTIMIZER_START)
-        baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
-            tool_session,
-            filtered_tool_calls,
-        )
-        rewritten_tool_calls = _rewrite_tool_call_ids(
-            filtered_tool_calls,
-            session_id=tool_session.session_id,
-            round_index=1,
-            workflow_phase=workflow_phase,
-        )
-        execution_messages = list(tool_session.execution_messages or [])
-        execution_messages.append({
-            "role": "assistant",
-            "content": announce_text,
-            "tool_calls": rewritten_tool_calls,
-        })
-        session_store.update_session(
-            tool_session.session_id,
             execution_messages=execution_messages,
             pending_tool_calls=rewritten_tool_calls,
-            round_index=1,
+            round_index=next_round,
             workflow_phase=workflow_phase,
             modified_files=modified_files,
             baseline_file_snapshots=baseline,
-            optimizer_todo_written=bool(getattr(tool_session, "optimizer_todo_written", False))
-            or todo_written_now,
-            optimizer_phase_announced=workflow_phase == "optimizer",
+            todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
+            optimizer_todo_written=optimizer_todo_written,
+            evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
+            evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
+            evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+            evidence_chain_index=list(
+                final_state.get("evidence_chain_index")
+                or getattr(session, "evidence_chain_index", [])
+                or []
+            ),
+            ternion_analyses=list(final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []),
         )
-        if request.stream:
-            return StreamingResponse(
-                create_sse_tool_calls_stream(
-                    model=request.model,
-                    tool_calls=rewritten_tool_calls,
-                    content=announce_text,
-                ),
-                media_type="text/event-stream",
-            )
+
         return JSONResponse(
             content=ChatCompletionResponse(
                 model=request.model,
@@ -1986,7 +3321,7 @@ async def handle_report_evidence_followup(
                         finish_reason="tool_calls",
                         message=ChatMessage(
                             role=MessageRole.ASSISTANT,
-                            content=announce_text,
+                            content=None,
                             tool_calls=rewritten_tool_calls,
                         ),
                     )
@@ -2153,6 +3488,38 @@ async def handle_evidence_followup(
             )
         )
 
+    # Diagnostic log for tool_call_id mismatch debugging (Phase 0)
+    assistant_with_tools_count = sum(
+        1 for m in updated_execution_messages
+        if m.get("role") == "assistant" and isinstance(m.get("tool_calls"), list) and m.get("tool_calls")
+    )
+    tool_msg_count = sum(1 for m in updated_execution_messages if m.get("role") == "tool")
+    if tool_msg_count > 0:
+        log_manager.emit(
+            level="DEBUG" if assistant_with_tools_count > 0 else "WARN",
+            category="WORKFLOW",
+            message=(
+                f"evidence_followup_history | "
+                f"session_id={session.session_id} | "
+                f"execution_msgs_len={len(updated_execution_messages)} | "
+                f"assistant_with_tools={assistant_with_tools_count} | "
+                f"tool_msgs={tool_msg_count}"
+            ),
+        )
+        if assistant_with_tools_count == 0:
+            logger.warning(
+                "evidence_followup_missing_assistant_tool_calls",
+                session_id=session.session_id,
+                execution_msgs_len=len(updated_execution_messages),
+                tool_msg_count=tool_msg_count,
+                msg_roles=[m.get("role") for m in updated_execution_messages],
+                assistant_tool_calls=[
+                    bool(m.get("tool_calls"))
+                    for m in updated_execution_messages
+                    if m.get("role") == "assistant"
+                ],
+            )
+
     evidence_context = TernionContext(
         cursor_system_prompt=system_message,
         conversation_history=conversation_history,
@@ -2164,99 +3531,456 @@ async def handle_evidence_followup(
         execution_mode=user_config.execution_mode,
     )
 
+    if request.stream:
+        import asyncio
+        from collections.abc import AsyncGenerator
+
+        from ternion.workflow.streaming_events import StreamEventType
+
+        show_phase_indicators = bool(getattr(user_config, "show_phase_indicators", True))
+        stream_queue = StreamEventQueue()
+        evidence_context._stream_queue = stream_queue  # type: ignore[attr-defined]
+
+        async def generate_sse() -> AsyncGenerator[str, None]:
+            """SSE generator for Phase 0 follow-up with real-time output."""
+            import time
+            import uuid
+
+            from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
+
+            chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+            created = int(time.time())
+            final_state: dict = {}
+            streamed_content = ""
+            pending_phase_indicator: str | None = None
+            convergence_pending_raw = ""
+            streamed_any_convergence = False
+
+            async def run_workflow() -> None:
+                nonlocal final_state
+                try:
+                    final_state = await run_discussion(evidence_context)
+                except Exception as e:
+                    logger.exception(
+                        "streaming_evidence_followup_error",
+                        session_id=session.session_id,
+                        error=str(e),
+                    )
+                    await stream_queue.put_error(str(e), phase="evidence")
+                finally:
+                    stream_queue.close()
+
+            workflow_task = asyncio.create_task(run_workflow())
+
+            try:
+                heartbeat_interval_seconds = 10
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            stream_queue.get(),
+                            timeout=heartbeat_interval_seconds,
+                        )
+                    except TimeoutError:
+                        heartbeat = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
+                        )
+                        yield f"data: {heartbeat.model_dump_json()}\n\n"
+                        continue
+
+                    if event is None:
+                        break
+
+                    if event.event_type == StreamEventType.TOKEN_DELTA:
+                        if event.delta:
+                            phase_lower = str(event.phase or "").strip().lower()
+                            if phase_lower == "convergence":
+                                safe_text, convergence_pending_raw = _append_stream_safe_cursor_text(
+                                    convergence_pending_raw,
+                                    event.delta,
+                                )
+                                if safe_text:
+                                    if pending_phase_indicator:
+                                        chunk = ChatCompletionChunk(
+                                            id=chunk_id,
+                                            created=created,
+                                            model=request.model,
+                                            choices=[
+                                                StreamChoice(
+                                                    delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                                )
+                                            ],
+                                        )
+                                        yield f"data: {chunk.model_dump_json()}\n\n"
+                                        pending_phase_indicator = None
+                                    streamed_any_convergence = True
+                                    streamed_content += safe_text
+                                    chunk = ChatCompletionChunk(
+                                        id=chunk_id,
+                                        created=created,
+                                        model=request.model,
+                                        choices=[StreamChoice(delta=ChoiceDelta(content=safe_text))],
+                                    )
+                                    yield f"data: {chunk.model_dump_json()}\n\n"
+                                continue
+
+                            if pending_phase_indicator:
+                                chunk = ChatCompletionChunk(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=request.model,
+                                    choices=[
+                                        StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                                    ],
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+                                pending_phase_indicator = None
+                            streamed_content += event.delta
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=event.delta))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                    elif event.event_type == StreamEventType.PHASE_START:
+                        if show_phase_indicators and event.phase:
+                            indicator = _phase_start_indicator_text(event.phase)
+                            if indicator:
+                                phase_lower = str(event.phase or "").strip().lower()
+                                if phase_lower == "convergence":
+                                    chunk = ChatCompletionChunk(
+                                        id=chunk_id,
+                                        created=created,
+                                        model=request.model,
+                                        choices=[
+                                            StreamChoice(
+                                                delta=ChoiceDelta(
+                                                    role=MessageRole.ASSISTANT,
+                                                    content=indicator,
+                                                )
+                                            )
+                                        ],
+                                    )
+                                    yield f"data: {chunk.model_dump_json()}\n\n"
+                                else:
+                                    pending_phase_indicator = indicator
+
+                    elif event.event_type == StreamEventType.ERROR:
+                        error_text = t(MessageKey.STREAM_ERROR_GENERIC)
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=error_text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                await workflow_task
+
+                if convergence_pending_raw:
+                    flushed = sanitize_for_cursor_display(convergence_pending_raw)
+                    convergence_pending_raw = ""
+                    if flushed:
+                        streamed_any_convergence = True
+                        streamed_content += flushed
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=flushed))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                pending_tool_calls = final_state.get("pending_tool_calls") or []
+                workflow_phase = str(final_state.get("current_phase") or "evidence")
+                if pending_tool_calls:
+                    current_session = session_store.load_session(session.session_id)
+                    next_round = (getattr(current_session, "round_index", 0) or 0) + 1
+                    if next_round > _TOOL_LOOP_MAX_ROUNDS:
+                        session_store.update_session(
+                            session.session_id,
+                            stage=SessionStage.AWAITING_CONFIRMATION,
+                            confirmation_reason="failsafe",
+                            pending_tool_calls=[],
+                        )
+                        log_manager.emit(
+                            level="WARN",
+                            category="GUARDRAIL",
+                            message=t(
+                                MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED,
+                                max_rounds=str(_TOOL_LOOP_MAX_ROUNDS),
+                                session_id=session.session_id,
+                            ),
+                        )
+                        message = _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+                        if message:
+                            for i in range(0, len(message), 128):
+                                text = message[i:i + 128]
+                                if not text:
+                                    continue
+                                chunk = ChatCompletionChunk(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=request.model,
+                                    choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+
+                        final_chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                        )
+                        yield f"data: {final_chunk.model_dump_json()}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    filtered_tool_calls = list(pending_tool_calls or [])
+                    todo_written_now = False
+                    if workflow_phase in {"execution", "optimizer"} and current_session is not None:
+                        filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                            current_session,
+                            filtered_tool_calls,
+                        )
+                    filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                    )
+                    if tool_policy_error:
+                        if current_session is not None:
+                            session_store.update_session(
+                                session.session_id,
+                                stage=SessionStage.AWAITING_CONFIRMATION,
+                                confirmation_reason="tool_policy",
+                                pending_tool_calls=[],
+                            )
+                        for i in range(0, len(tool_policy_error), 128):
+                            text = tool_policy_error[i:i + 128]
+                            if not text:
+                                continue
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                        final_chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                        )
+                        yield f"data: {final_chunk.model_dump_json()}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                        conversation_history=list(
+                            final_state.get("conversation_history", []) or []
+                        ),
+                        ternion_report=str(
+                            final_state.get("ternion_report", "")
+                            or getattr(session, "ternion_report_raw", "")
+                            or ""
+                        ),
+                    )
+                    if policy_error:
+                        if current_session is not None:
+                            session_store.update_session(
+                                session.session_id,
+                                stage=SessionStage.AWAITING_CONFIRMATION,
+                                confirmation_reason="deliverable_policy",
+                                pending_tool_calls=[],
+                            )
+                        for i in range(0, len(policy_error), 128):
+                            text = policy_error[i:i + 128]
+                            if not text:
+                                continue
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                        final_chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                        )
+                        yield f"data: {final_chunk.model_dump_json()}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    baseline: dict[str, str] = {}
+                    modified_files: list[str] = []
+                    if current_session is not None:
+                        baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+                            current_session,
+                            filtered_tool_calls,
+                        )
+
+                    rewritten_tool_calls = _rewrite_tool_call_ids(
+                        filtered_tool_calls,
+                        session_id=session.session_id,
+                        round_index=next_round,
+                        workflow_phase=workflow_phase,
+                    )
+                    execution_messages = list(final_state.get("conversation_history", []) or [])
+                    execution_messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": rewritten_tool_calls,
+                    })
+                    optimizer_todo_written = todo_written_now
+                    if current_session is not None:
+                        optimizer_todo_written = (
+                            bool(getattr(current_session, "optimizer_todo_written", False)) or todo_written_now
+                            if workflow_phase == "optimizer"
+                            else bool(getattr(current_session, "optimizer_todo_written", False))
+                        )
+
+                    session_store.update_session(
+                        session.session_id,
+                        stage=SessionStage.AWAITING_TOOL_RESULTS,
+                        cursor_system_prompt=cursor_system_prompt,
+                        cursor_tools=list(cursor_tools or []),
+                        cursor_tool_choice=cursor_tool_choice,
+                        execution_messages=execution_messages,
+                        pending_tool_calls=rewritten_tool_calls,
+                        round_index=next_round,
+                        workflow_phase=workflow_phase,
+                        modified_files=modified_files,
+                        baseline_file_snapshots=baseline,
+                        todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
+                        optimizer_todo_written=optimizer_todo_written,
+                        evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
+                        evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
+                        evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+                        evidence_chain_index=list(
+                            final_state.get("evidence_chain_index")
+                            or getattr(session, "evidence_chain_index", [])
+                            or []
+                        ),
+                        ternion_analyses=list(final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []),
+                    )
+
+                    tool_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=request.model,
+                        choices=[
+                            StreamChoice(
+                                delta=ChoiceDelta(
+                                    role="assistant",
+                                    content=None,
+                                    tool_calls=rewritten_tool_calls,
+                                ),
+                            )
+                        ],
+                    )
+                    yield f"data: {tool_chunk.model_dump_json()}\n\n"
+
+                    final_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=request.model,
+                        choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="tool_calls")],
+                    )
+                    yield f"data: {final_chunk.model_dump_json()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                if streamed_any_convergence:
+                    suffix = str(final_state.get("final_output_suffix") or "")
+                    suffix = sanitize_for_cursor_display(suffix)
+                    if suffix:
+                        for i in range(0, len(suffix), 128):
+                            text = suffix[i:i + 128]
+                            if not text:
+                                continue
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                workflow_final = final_state.get("final_output", "") or final_state.get("generated_code", "")
+                if workflow_final and not streamed_content:
+                    if pending_phase_indicator:
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        pending_phase_indicator = None
+                    for i in range(0, len(workflow_final), 128):
+                        text = workflow_final[i:i + 128]
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                thinking_logs = final_state.get("thinking_logs", [])
+                if thinking_logs:
+                    _emit_thinking_logs_to_observability(
+                        thinking_logs,
+                        session_id=final_state.get("session_id") or None,
+                        context="streaming_evidence_followup_output",
+                        suppressed_from_chat=True,
+                    )
+
+                final_chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=request.model,
+                    choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                )
+                yield f"data: {final_chunk.model_dump_json()}\n\n"
+                yield "data: [DONE]\n\n"
+
+            except Exception as e:
+                logger.exception("sse_evidence_followup_generation_error", error=str(e))
+                error_chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=request.model,
+                    choices=[StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))],
+                )
+                yield f"data: {error_chunk.model_dump_json()}\n\n"
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            generate_sse(),
+            media_type="text/event-stream",
+            headers=_SSE_HEADERS,
+        )
+
     # Run full workflow from evidence node (Phase 0)
     final_state = await run_discussion(evidence_context)
 
     pending_tool_calls = final_state.get("pending_tool_calls") or []
     workflow_phase = str(final_state.get("current_phase") or "evidence")
     if pending_tool_calls:
-        execution_mode_str = str(
-            final_state.get("execution_mode") or user_config.execution_mode or "ternion_full"
-        )
-        execution_mode = (
-            ExecutionMode(execution_mode_str)
-            if execution_mode_str in ("cursor_handoff", "ternion_full")
-            else ExecutionMode.TERNION_FULL
-        )
-        tool_session = session_store.create_session(
-            ternion_report=final_state.get("ternion_report", "") or "",
-            execution_mode=execution_mode,
-            stage=SessionStage.AWAITING_TOOL_RESULTS,
-            cursor_system_prompt=cursor_system_prompt,
-            cursor_tools=list(cursor_tools or []),
-            cursor_tool_choice=cursor_tool_choice,
-            execution_messages=list(final_state.get("conversation_history", []) or []),
-            workflow_phase=workflow_phase,
-            # Phase 1.5 evidence state will be populated by new session creation logic if applicable
-            # but usually Phase 0 results -> Phase 1.5 start -> new tool calls with phase=report_evidence
-            evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
-            evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
-            evidence_requests=str(final_state.get("evidence_requests", "") or ""),
-            ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
-        )
-        filtered_tool_calls = list(pending_tool_calls or [])
-        todo_written_now = False
-        announce_text: str | None = None
-        if workflow_phase == "optimizer":
-            filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
-                tool_session,
-                filtered_tool_calls,
-            )
-            announce_text = "\n" + t(MessageKey.OPTIMIZER_START)
-        baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
-            tool_session,
-            filtered_tool_calls,
-        )
-        rewritten_tool_calls = _rewrite_tool_call_ids(
-            filtered_tool_calls,
-            session_id=tool_session.session_id,
-            round_index=1,
-            workflow_phase=workflow_phase,
-        )
-        execution_messages = list(tool_session.execution_messages or [])
-        execution_messages.append({
-            "role": "assistant",
-            "content": announce_text,
-            "tool_calls": rewritten_tool_calls,
-        })
-        session_store.update_session(
-            tool_session.session_id,
-            execution_messages=execution_messages,
-            pending_tool_calls=rewritten_tool_calls,
-            round_index=1,
-            workflow_phase=workflow_phase,
-            modified_files=modified_files,
-            baseline_file_snapshots=baseline,
-            optimizer_todo_written=bool(getattr(tool_session, "optimizer_todo_written", False))
-            or todo_written_now,
-            optimizer_phase_announced=workflow_phase == "optimizer",
-        )
-        if request.stream:
-            return StreamingResponse(
-                create_sse_tool_calls_stream(
-                    model=request.model,
-                    tool_calls=rewritten_tool_calls,
-                    content=announce_text,
-                ),
-                media_type="text/event-stream",
-            )
-        return JSONResponse(
-            content=ChatCompletionResponse(
-                model=request.model,
-                choices=[
-                    Choice(
-                        finish_reason="tool_calls",
-                        message=ChatMessage(
-                            role=MessageRole.ASSISTANT,
-                            content=announce_text,
-                            tool_calls=rewritten_tool_calls,
-                        ),
-                    )
-                ],
-            ).model_dump()
-        )
-
-        next_round = (session.round_index or 0) + 1
+        current_session = session_store.load_session(session.session_id)
+        next_round = (getattr(current_session, "round_index", 0) or 0) + 1
         if next_round > _TOOL_LOOP_MAX_ROUNDS:
             session_store.update_session(
                 session.session_id,
@@ -2273,44 +3997,104 @@ async def handle_evidence_followup(
                     session_id=session.session_id,
                 ),
             )
-            return _respond_with_text(request, _tool_loop_failsafe_message(session))
+            message = _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+            return _respond_with_text(request, message)
+
         filtered_tool_calls = list(pending_tool_calls or [])
-        baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
-            session,
-            filtered_tool_calls,
+        todo_written_now = False
+        if workflow_phase in {"execution", "optimizer"} and current_session is not None:
+            filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                current_session,
+                filtered_tool_calls,
+            )
+        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+            workflow_phase=workflow_phase,
+            tool_calls=filtered_tool_calls,
         )
+        if tool_policy_error:
+            if current_session is not None:
+                session_store.update_session(
+                    session.session_id,
+                    stage=SessionStage.AWAITING_CONFIRMATION,
+                    confirmation_reason="tool_policy",
+                    pending_tool_calls=[],
+                )
+            return _respond_with_text(request, tool_policy_error)
+        filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
+            workflow_phase=workflow_phase,
+            tool_calls=filtered_tool_calls,
+            conversation_history=list(
+                final_state.get("conversation_history", []) or []
+            ),
+            ternion_report=str(
+                final_state.get("ternion_report", "")
+                or getattr(session, "ternion_report_raw", "")
+                or ""
+            ),
+        )
+        if policy_error:
+            if current_session is not None:
+                session_store.update_session(
+                    session.session_id,
+                    stage=SessionStage.AWAITING_CONFIRMATION,
+                    confirmation_reason="deliverable_policy",
+                    pending_tool_calls=[],
+                )
+            return _respond_with_text(request, policy_error)
+
+        baseline: dict[str, str] = {}
+        modified_files: list[str] = []
+        if current_session is not None:
+            baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+                current_session,
+                filtered_tool_calls,
+            )
+
         rewritten_tool_calls = _rewrite_tool_call_ids(
             filtered_tool_calls,
             session_id=session.session_id,
             round_index=next_round,
             workflow_phase=workflow_phase,
         )
-        execution_messages = list(updated_execution_messages)
+        execution_messages = list(final_state.get("conversation_history", []) or [])
         execution_messages.append({
             "role": "assistant",
             "content": None,
             "tool_calls": rewritten_tool_calls,
         })
+        optimizer_todo_written = todo_written_now
+        if current_session is not None:
+            optimizer_todo_written = (
+                bool(getattr(current_session, "optimizer_todo_written", False)) or todo_written_now
+                if workflow_phase == "optimizer"
+                else bool(getattr(current_session, "optimizer_todo_written", False))
+            )
+
         session_store.update_session(
             session.session_id,
             stage=SessionStage.AWAITING_TOOL_RESULTS,
+            cursor_system_prompt=cursor_system_prompt,
+            cursor_tools=list(cursor_tools or []),
+            cursor_tool_choice=cursor_tool_choice,
             execution_messages=execution_messages,
             pending_tool_calls=rewritten_tool_calls,
             round_index=next_round,
             workflow_phase=workflow_phase,
             modified_files=modified_files,
             baseline_file_snapshots=baseline,
+            todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
+            optimizer_todo_written=optimizer_todo_written,
+            evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
+            evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
+            evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+            evidence_chain_index=list(
+                final_state.get("evidence_chain_index")
+                or getattr(session, "evidence_chain_index", [])
+                or []
+            ),
+            ternion_analyses=list(final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []),
         )
 
-        if request.stream:
-            return StreamingResponse(
-                create_sse_tool_calls_stream(
-                    model=request.model,
-                    tool_calls=rewritten_tool_calls,
-                    content=None,
-                ),
-                media_type="text/event-stream",
-            )
         return JSONResponse(
             content=ChatCompletionResponse(
                 model=request.model,
@@ -2442,6 +4226,14 @@ async def handle_execution_followup(
         pending_tool_calls=[],
         tool_results_raw=tool_results_raw,
         tool_results_meta=tool_results_meta,
+        evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
+        evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
+        evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
+        evidence_chain_index=list(getattr(session, "evidence_chain_index", []) or []),
+        evidence_topup_round=int(getattr(session, "evidence_topup_round", 0) or 0),
+        report_evidence_resume_phase=str(
+            getattr(session, "report_evidence_resume_phase", "") or ""
+        ),
     )
 
     if not skip_budget_confirm:
@@ -2487,6 +4279,15 @@ async def handle_execution_followup(
         "generated_code": session.generated_code,
         "review_feedback": session.review_feedback,
         "revision_count": session.revision_count,
+        # Step E: Evidence chain state is required for execution-time Phase 1.5 top-ups.
+        "evidence_bundle": str(getattr(session, "evidence_bundle", "") or ""),
+        "evidence_gaps": str(getattr(session, "evidence_gaps", "") or ""),
+        "evidence_requests": str(getattr(session, "evidence_requests", "") or ""),
+        "evidence_chain_index": list(getattr(session, "evidence_chain_index", []) or []),
+        "evidence_topup_round": int(getattr(session, "evidence_topup_round", 0) or 0),
+        "report_evidence_resume_phase": str(
+            getattr(session, "report_evidence_resume_phase", "") or ""
+        ),
         "baseline_file_snapshots": dict(getattr(session, "baseline_file_snapshots", {}) or {}),
         "modified_files": list(getattr(session, "modified_files", []) or []),
         "writer_output_files": dict(getattr(session, "writer_output_files", {}) or {}),
@@ -2494,6 +4295,457 @@ async def handle_execution_followup(
         "cursor_tools": cursor_tools,
         "cursor_tool_choice": cursor_tool_choice,
     }
+
+    if request.stream:
+        import asyncio
+        from collections.abc import AsyncGenerator
+
+        from ternion.workflow.streaming_events import StreamEventType
+
+        cfg = config_store.load()
+        show_phase_indicators = bool(getattr(cfg, "show_phase_indicators", True))
+
+        stream_queue = StreamEventQueue()
+        initial_state["_stream_queue"] = stream_queue
+
+        async def generate_sse() -> AsyncGenerator[str, None]:
+            """SSE generator that consumes events from the queue (execution follow-up)."""
+            import time
+            import uuid
+
+            from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
+
+            chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+            created = int(time.time())
+            final_state: dict = {}
+            streamed_content = ""
+            pending_phase_indicator: str | None = None
+
+            async def run_impl() -> None:
+                nonlocal final_state
+                try:
+                    final_state = await run_implementation_stage(initial_state)
+                except Exception as e:
+                    logger.exception(
+                        "streaming_execution_followup_error",
+                        session_id=session.session_id,
+                        error=str(e),
+                    )
+                    await stream_queue.put_error(str(e), phase="execution_followup")
+                finally:
+                    stream_queue.close()
+
+            impl_task = asyncio.create_task(run_impl())
+
+            try:
+                heartbeat_interval_seconds = 10
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            stream_queue.get(),
+                            timeout=heartbeat_interval_seconds,
+                        )
+                    except TimeoutError:
+                        heartbeat = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
+                        )
+                        yield f"data: {heartbeat.model_dump_json()}\n\n"
+                        continue
+
+                    if event is None:
+                        break
+
+                    if event.event_type == StreamEventType.TOKEN_DELTA:
+                        if event.delta:
+                            if pending_phase_indicator:
+                                chunk = ChatCompletionChunk(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=request.model,
+                                    choices=[
+                                        StreamChoice(
+                                            delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                        )
+                                    ],
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+                                pending_phase_indicator = None
+                            streamed_content += event.delta
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=event.delta))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+                    elif event.event_type == StreamEventType.PHASE_START:
+                        if show_phase_indicators and event.phase:
+                            indicator = _phase_start_indicator_text(event.phase)
+                            if indicator:
+                                pending_phase_indicator = indicator
+                    elif event.event_type == StreamEventType.ERROR:
+                        error_text = t(MessageKey.STREAM_ERROR_GENERIC)
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=error_text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                await impl_task
+
+                pending_tool_calls = final_state.get("pending_tool_calls") or []
+                if pending_tool_calls:
+                    next_round = (session.round_index or 0) + 1
+                    if next_round > _TOOL_LOOP_MAX_ROUNDS:
+                        session_store.update_session(
+                            session.session_id,
+                            stage=SessionStage.AWAITING_CONFIRMATION,
+                            confirmation_reason="failsafe",
+                            pending_tool_calls=[],
+                        )
+                        log_manager.emit(
+                            level="WARN",
+                            category="GUARDRAIL",
+                            message=t(
+                                MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED,
+                                max_rounds=str(_TOOL_LOOP_MAX_ROUNDS),
+                                session_id=session.session_id,
+                            ),
+                        )
+                        message = _tool_loop_failsafe_message(session)
+                        for i in range(0, len(message), 128):
+                            text = message[i:i + 128]
+                            if not text:
+                                continue
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+                        final_chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                        )
+                        yield f"data: {final_chunk.model_dump_json()}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    workflow_phase = str(
+                        final_state.get("current_phase")
+                        or getattr(session, "workflow_phase", "execution")
+                        or "execution"
+                    )
+                    filtered_tool_calls = list(pending_tool_calls or [])
+                    todo_written_now = False
+                    if workflow_phase in {"execution", "optimizer"}:
+                        filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
+                            session,
+                            filtered_tool_calls,
+                        )
+                    filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                    )
+                    if tool_policy_error:
+                        session_store.update_session(
+                            session.session_id,
+                            stage=SessionStage.AWAITING_CONFIRMATION,
+                            confirmation_reason="tool_policy",
+                            pending_tool_calls=[],
+                        )
+                        for i in range(0, len(tool_policy_error), 128):
+                            text = tool_policy_error[i:i + 128]
+                            if not text:
+                                continue
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                        final_chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                        )
+                        yield f"data: {final_chunk.model_dump_json()}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                        conversation_history=list(
+                            final_state.get("conversation_history", [])
+                            or getattr(session, "execution_messages", [])
+                            or []
+                        ),
+                        ternion_report=str(
+                            final_state.get("ternion_report", "")
+                            or getattr(session, "ternion_report_raw", "")
+                            or ""
+                        ),
+                    )
+                    if policy_error:
+                        session_store.update_session(
+                            session.session_id,
+                            stage=SessionStage.AWAITING_CONFIRMATION,
+                            confirmation_reason="deliverable_policy",
+                            pending_tool_calls=[],
+                        )
+                        for i in range(0, len(policy_error), 128):
+                            text = policy_error[i:i + 128]
+                            if not text:
+                                continue
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=request.model,
+                                choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+
+                        final_chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                        )
+                        yield f"data: {final_chunk.model_dump_json()}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+                        session,
+                        filtered_tool_calls,
+                    )
+                    rewritten_tool_calls = _rewrite_tool_call_ids(
+                        filtered_tool_calls,
+                        session_id=session.session_id,
+                        round_index=next_round,
+                        workflow_phase=workflow_phase,
+                    )
+                    updated_execution_messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": rewritten_tool_calls,
+                    })
+                    session_store.update_session(
+                        session.session_id,
+                        stage=SessionStage.AWAITING_TOOL_RESULTS,
+                        execution_messages=updated_execution_messages,
+                        pending_tool_calls=rewritten_tool_calls,
+                        round_index=next_round,
+                        generated_code=final_state.get("generated_code") or session.generated_code,
+                        review_feedback=final_state.get("review_feedback") or session.review_feedback,
+                        revision_count=final_state.get("revision_count", session.revision_count),
+                        workflow_phase=workflow_phase,
+                        modified_files=modified_files,
+                        baseline_file_snapshots=baseline,
+                        writer_output_files=dict(
+                            final_state.get("writer_output_files")
+                            or getattr(session, "writer_output_files", {})
+                            or {}
+                        ),
+                        optimizer_review_report=str(
+                            final_state.get("optimizer_review_report")
+                            or getattr(session, "optimizer_review_report", "")
+                            or ""
+                        ),
+                        evidence_bundle=str(
+                            final_state.get("evidence_bundle")
+                            or getattr(session, "evidence_bundle", "")
+                            or ""
+                        ),
+                        evidence_gaps=str(
+                            final_state.get("evidence_gaps")
+                            or getattr(session, "evidence_gaps", "")
+                            or ""
+                        ),
+                        evidence_requests=str(
+                            final_state.get("evidence_requests")
+                            or getattr(session, "evidence_requests", "")
+                            or ""
+                        ),
+                        evidence_chain_index=list(
+                            final_state.get("evidence_chain_index")
+                            or getattr(session, "evidence_chain_index", [])
+                            or []
+                        ),
+                        evidence_topup_round=int(
+                            final_state.get(
+                                "evidence_topup_round",
+                                getattr(session, "evidence_topup_round", 0),
+                            )
+                            or 0
+                        ),
+                        report_evidence_resume_phase=str(
+                            final_state.get("report_evidence_resume_phase")
+                            or getattr(session, "report_evidence_resume_phase", "")
+                            or ""
+                        ),
+                        todo_written=bool(getattr(session, "todo_written", False)) or todo_written_now,
+                        optimizer_todo_written=(
+                            bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now
+                            if workflow_phase == "optimizer"
+                            else bool(getattr(session, "optimizer_todo_written", False))
+                        ),
+                    )
+
+                    tool_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=request.model,
+                        choices=[
+                            StreamChoice(
+                                delta=ChoiceDelta(
+                                    role="assistant",
+                                    content=None,
+                                    tool_calls=rewritten_tool_calls,
+                                ),
+                            )
+                        ],
+                    )
+                    yield f"data: {tool_chunk.model_dump_json()}\n\n"
+
+                    final_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=request.model,
+                        choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="tool_calls")],
+                    )
+                    yield f"data: {final_chunk.model_dump_json()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                final_output = final_state.get("final_output", "") or final_state.get("generated_code", "")
+                errors = final_state.get("errors", []) or []
+                new_stage = SessionStage.EXECUTED if not errors else SessionStage.EXECUTION_IN_PROGRESS
+                session_store.update_session(
+                    session.session_id,
+                    stage=new_stage,
+                    pending_tool_calls=[],
+                    generated_code=final_state.get("generated_code") or session.generated_code,
+                    review_feedback=final_state.get("review_feedback") or session.review_feedback,
+                    revision_count=final_state.get("revision_count", session.revision_count),
+                    workflow_phase=str(
+                        final_state.get("current_phase")
+                        or getattr(session, "workflow_phase", "execution")
+                        or "execution"
+                    ),
+                    modified_files=list(
+                        final_state.get("modified_files") or getattr(session, "modified_files", []) or []
+                    ),
+                    baseline_file_snapshots=dict(
+                        final_state.get("baseline_file_snapshots")
+                        or getattr(session, "baseline_file_snapshots", {})
+                        or {}
+                    ),
+                    writer_output_files=dict(
+                        final_state.get("writer_output_files") or getattr(session, "writer_output_files", {}) or {}
+                    ),
+                    optimizer_review_report=str(
+                        final_state.get("optimizer_review_report")
+                        or getattr(session, "optimizer_review_report", "")
+                        or ""
+                    ),
+                    evidence_bundle=str(
+                        final_state.get("evidence_bundle")
+                        or getattr(session, "evidence_bundle", "")
+                        or ""
+                    ),
+                    evidence_gaps=str(
+                        final_state.get("evidence_gaps")
+                        or getattr(session, "evidence_gaps", "")
+                        or ""
+                    ),
+                    evidence_requests=str(
+                        final_state.get("evidence_requests")
+                        or getattr(session, "evidence_requests", "")
+                        or ""
+                    ),
+                    evidence_chain_index=list(
+                        final_state.get("evidence_chain_index")
+                        or getattr(session, "evidence_chain_index", [])
+                        or []
+                    ),
+                    evidence_topup_round=int(
+                        final_state.get(
+                            "evidence_topup_round",
+                            getattr(session, "evidence_topup_round", 0),
+                        )
+                        or 0
+                    ),
+                    report_evidence_resume_phase=str(
+                        final_state.get("report_evidence_resume_phase")
+                        or getattr(session, "report_evidence_resume_phase", "")
+                        or ""
+                    ),
+                )
+
+                if final_output and not streamed_content:
+                    if pending_phase_indicator:
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[
+                                StreamChoice(
+                                    delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                )
+                            ],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        pending_phase_indicator = None
+                    for i in range(0, len(final_output), 128):
+                        text = final_output[i:i + 128]
+                        if not text:
+                            continue
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                final_chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=request.model,
+                    choices=[StreamChoice(delta=ChoiceDelta(), finish_reason="stop")],
+                )
+                yield f"data: {final_chunk.model_dump_json()}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                logger.exception("sse_execution_followup_generation_error", error=str(e))
+                error_chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=request.model,
+                    choices=[
+                        StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))
+                    ],
+                )
+                yield f"data: {error_chunk.model_dump_json()}\n\n"
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            generate_sse(),
+            media_type="text/event-stream",
+            headers=_SSE_HEADERS,
+        )
 
     final_state = await run_implementation_stage(initial_state)
     pending_tool_calls = final_state.get("pending_tool_calls") or []
@@ -2520,16 +4772,45 @@ async def handle_execution_followup(
         workflow_phase = str(final_state.get("current_phase") or getattr(session, "workflow_phase", "execution") or "execution")
         filtered_tool_calls = list(pending_tool_calls or [])
         todo_written_now = False
-        announce_now = False
-        announce_text: str | None = None
-        if workflow_phase == "optimizer":
+        if workflow_phase in {"execution", "optimizer"}:
             filtered_tool_calls, todo_written_now = _filter_optimizer_todo_write(
                 session,
                 filtered_tool_calls,
             )
-            announce_now = not bool(getattr(session, "optimizer_phase_announced", False))
-            if announce_now:
-                announce_text = "\n" + t(MessageKey.OPTIMIZER_START)
+        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+            workflow_phase=workflow_phase,
+            tool_calls=filtered_tool_calls,
+        )
+        if tool_policy_error:
+            session_store.update_session(
+                session.session_id,
+                stage=SessionStage.AWAITING_CONFIRMATION,
+                confirmation_reason="tool_policy",
+                pending_tool_calls=[],
+            )
+            return _respond_with_text(request, tool_policy_error)
+        filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
+            workflow_phase=workflow_phase,
+            tool_calls=filtered_tool_calls,
+            conversation_history=list(
+                final_state.get("conversation_history", [])
+                or getattr(session, "execution_messages", [])
+                or []
+            ),
+            ternion_report=str(
+                final_state.get("ternion_report", "")
+                or getattr(session, "ternion_report_raw", "")
+                or ""
+            ),
+        )
+        if policy_error:
+            session_store.update_session(
+                session.session_id,
+                stage=SessionStage.AWAITING_CONFIRMATION,
+                confirmation_reason="deliverable_policy",
+                pending_tool_calls=[],
+            )
+            return _respond_with_text(request, policy_error)
 
         baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
             session,
@@ -2543,7 +4824,7 @@ async def handle_execution_followup(
         )
         updated_execution_messages.append({
             "role": "assistant",
-            "content": announce_text,
+            "content": None,
             "tool_calls": rewritten_tool_calls,
         })
         session_store.update_session(
@@ -2560,8 +4841,18 @@ async def handle_execution_followup(
             baseline_file_snapshots=baseline,
             writer_output_files=dict(final_state.get("writer_output_files") or getattr(session, "writer_output_files", {}) or {}),
             optimizer_review_report=str(final_state.get("optimizer_review_report") or getattr(session, "optimizer_review_report", "") or ""),
-            optimizer_todo_written=bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now,
-            optimizer_phase_announced=bool(getattr(session, "optimizer_phase_announced", False)) or announce_now,
+            evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
+            evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
+            evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+            evidence_chain_index=list(final_state.get("evidence_chain_index") or getattr(session, "evidence_chain_index", []) or []),
+            evidence_topup_round=int(final_state.get("evidence_topup_round", getattr(session, "evidence_topup_round", 0)) or 0),
+            report_evidence_resume_phase=str(final_state.get("report_evidence_resume_phase") or getattr(session, "report_evidence_resume_phase", "") or ""),
+            todo_written=bool(getattr(session, "todo_written", False)) or todo_written_now,
+            optimizer_todo_written=(
+                bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now
+                if workflow_phase == "optimizer"
+                else bool(getattr(session, "optimizer_todo_written", False))
+            ),
         )
 
         if request.stream:
@@ -2569,9 +4860,10 @@ async def handle_execution_followup(
                 create_sse_tool_calls_stream(
                     model=request.model,
                     tool_calls=rewritten_tool_calls,
-                    content=announce_text,
+                    content=None,
                 ),
                 media_type="text/event-stream",
+                headers=_SSE_HEADERS,
             )
         return JSONResponse(
             content=ChatCompletionResponse(
@@ -2581,7 +4873,7 @@ async def handle_execution_followup(
                         finish_reason="tool_calls",
                         message=ChatMessage(
                             role=MessageRole.ASSISTANT,
-                            content=announce_text,
+                            content=None,
                             tool_calls=rewritten_tool_calls,
                         ),
                     )
@@ -2591,10 +4883,6 @@ async def handle_execution_followup(
 
     final_output = final_state.get("final_output", "") or final_state.get("generated_code", "")
     errors = final_state.get("errors", []) or []
-    optimizer_ran = bool(final_state.get("optimizer_review_report") or getattr(session, "workflow_phase", "") == "optimizer")
-    announce_now = optimizer_ran and not bool(getattr(session, "optimizer_phase_announced", False))
-    if announce_now and final_output:
-        final_output = "\n" + t(MessageKey.OPTIMIZER_START) + final_output
     new_stage = SessionStage.EXECUTED if not errors else SessionStage.EXECUTION_IN_PROGRESS
     session_store.update_session(
         session.session_id,
@@ -2608,13 +4896,19 @@ async def handle_execution_followup(
         baseline_file_snapshots=dict(final_state.get("baseline_file_snapshots") or getattr(session, "baseline_file_snapshots", {}) or {}),
         writer_output_files=dict(final_state.get("writer_output_files") or getattr(session, "writer_output_files", {}) or {}),
         optimizer_review_report=str(final_state.get("optimizer_review_report") or getattr(session, "optimizer_review_report", "") or ""),
-        optimizer_phase_announced=bool(getattr(session, "optimizer_phase_announced", False)) or announce_now,
+        evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
+        evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
+        evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+        evidence_chain_index=list(final_state.get("evidence_chain_index") or getattr(session, "evidence_chain_index", []) or []),
+        evidence_topup_round=int(final_state.get("evidence_topup_round", getattr(session, "evidence_topup_round", 0)) or 0),
+        report_evidence_resume_phase=str(final_state.get("report_evidence_resume_phase") or getattr(session, "report_evidence_resume_phase", "") or ""),
     )
 
     if request.stream:
         return StreamingResponse(
             create_sse_stream(model=request.model, content=final_output),
             media_type="text/event-stream",
+            headers=_SSE_HEADERS,
         )
     return JSONResponse(
         content=ChatCompletionResponse(
@@ -2736,6 +5030,7 @@ async def handle_confirmed_session(
             return StreamingResponse(
                 create_sse_stream(model=request.model, content=message),
                 media_type="text/event-stream",
+                headers=_SSE_HEADERS,
             )
         return JSONResponse(
             content=ChatCompletionResponse(
@@ -2776,6 +5071,7 @@ async def handle_confirmed_session(
             return StreamingResponse(
                 create_sse_stream(model=request.model, content=handoff_output),
                 media_type="text/event-stream",
+                headers=_SSE_HEADERS,
             )
         else:
             return JSONResponse(
@@ -2826,6 +5122,7 @@ async def handle_confirmed_session(
                 return StreamingResponse(
                     create_sse_stream(model=request.model, content=error_msg),
                     media_type="text/event-stream",
+                    headers=_SSE_HEADERS,
                 )
             else:
                 return JSONResponse(
@@ -2875,7 +5172,7 @@ async def handle_confirmed_session(
                 model=request.model,
                 session_id=session.session_id,
                 budget_prefix=impl_budget_prefix,
-                show_thinking_logs=config.show_thinking_logs,
+                show_phase_indicators=bool(getattr(config, "show_phase_indicators", True)),
             )
 
         # Non-streaming execution
@@ -3012,6 +5309,7 @@ async def handle_rejected_session(
         return StreamingResponse(
             create_sse_stream(model=request.model, content=output),
             media_type="text/event-stream",
+            headers=_SSE_HEADERS,
         )
     else:
         return JSONResponse(
@@ -3109,6 +5407,7 @@ TERNION_REPORT_HASH={session.report_hash}"""
         return StreamingResponse(
             create_sse_stream(model=request.model, content=clarification_response),
             media_type="text/event-stream",
+            headers=_SSE_HEADERS,
         )
     else:
         return JSONResponse(
@@ -3178,6 +5477,7 @@ The Ternion council provides analysis only - code generation should be done by a
             return StreamingResponse(
                 create_sse_stream(model=request.model, content=reminder),
                 media_type="text/event-stream",
+                headers=_SSE_HEADERS,
             )
         else:
             return JSONResponse(
@@ -3213,6 +5513,7 @@ If you need to make additional changes or start a new analysis, please send a ne
             return StreamingResponse(
                 create_sse_stream(model=request.model, content=completion_notice),
                 media_type="text/event-stream",
+                headers=_SSE_HEADERS,
             )
         else:
             return JSONResponse(
@@ -3290,6 +5591,7 @@ If you'd like to explain what was wrong with the previous analysis, please descr
         return StreamingResponse(
             create_sse_stream(model=request.model, content=guidance),
             media_type="text/event-stream",
+            headers=_SSE_HEADERS,
         )
     else:
         return JSONResponse(
@@ -3343,6 +5645,7 @@ TERNION_REPORT_HASH={session.report_hash}"""
         return StreamingResponse(
             create_sse_stream(model=request.model, content=clarification),
             media_type="text/event-stream",
+            headers=_SSE_HEADERS,
         )
     else:
         return JSONResponse(

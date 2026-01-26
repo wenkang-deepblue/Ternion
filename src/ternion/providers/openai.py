@@ -10,9 +10,11 @@ from typing import Any
 import structlog
 from openai import AsyncOpenAI
 
+from ternion.core.config import settings
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
 from ternion.providers.base import BaseProvider, ProviderResponse
 from ternion.utils.log_manager import log_manager
+from ternion.utils.tool_calls_parser import encode_stream_tool_calls
 
 logger = structlog.get_logger(__name__)
 
@@ -46,6 +48,7 @@ class OpenAIProvider(BaseProvider):
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
+            timeout=float(settings.discussion.timeout_seconds or 600),
         )
 
     @property
@@ -57,6 +60,11 @@ class OpenAIProvider(BaseProvider):
     def default_model(self) -> str:
         """Return default model."""
         return self._default_model
+
+    @property
+    def supports_native_tool_calls(self) -> bool:
+        """OpenAI supports native tool calling via `tools` / `tool_choice`."""
+        return True
 
     async def chat_completion(
         self,
@@ -446,6 +454,7 @@ class OpenAIProvider(BaseProvider):
 
         received_text = ""
         usage_dict: dict[str, int] | None = None
+        final_response: Any = None
 
         async for event in stream:
             etype = getattr(event, "type", None)
@@ -457,8 +466,8 @@ class OpenAIProvider(BaseProvider):
                 continue
 
             if etype == "response.completed":
-                response = getattr(event, "response", None)
-                usage = getattr(response, "usage", None)
+                final_response = getattr(event, "response", None)
+                usage = getattr(final_response, "usage", None) if final_response is not None else None
                 usage_dict = self._usage_dict_from_responses_usage(usage)
 
         if usage_dict is not None:
@@ -489,9 +498,7 @@ class OpenAIProvider(BaseProvider):
                 output_tokens=usage_dict.get("completion_tokens", 0),
                 thoughts_tokens=usage_dict.get("reasoning_tokens", 0),
             )
-            return
-
-        if received_text:
+        elif received_text:
             from ternion.utils.token_estimator import estimate_tokens_from_text
 
             estimated_output = estimate_tokens_from_text(received_text)
@@ -520,6 +527,10 @@ class OpenAIProvider(BaseProvider):
                 thoughts_tokens=0,
             )
 
+        tool_calls = self._extract_tool_calls_from_responses(final_response) if final_response is not None else None
+        if tool_calls:
+            yield encode_stream_tool_calls(tool_calls)
+
     async def _consume_chat_stream(
         self,
         stream: Any,
@@ -529,13 +540,70 @@ class OpenAIProvider(BaseProvider):
         """Consume a chat.completions streaming response and yield text deltas."""
         received_text = ""
         usage_data = None
+        tool_calls_by_index: dict[int, dict[str, Any]] = {}
+        saw_tool_calls = False
+        suppress_text = False
 
         async for chunk in stream:
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_data = chunk.usage
 
-            if chunk.choices and chunk.choices[0].delta.content:
-                content = chunk.choices[0].delta.content
+            if not getattr(chunk, "choices", None):
+                continue
+            choice0 = chunk.choices[0]
+            delta = getattr(choice0, "delta", None)
+            if delta is None:
+                continue
+
+            delta_tool_calls = getattr(delta, "tool_calls", None)
+            if delta_tool_calls:
+                saw_tool_calls = True
+                suppress_text = True
+
+                for item in delta_tool_calls:
+                    idx = getattr(item, "index", None)
+                    if idx is None and isinstance(item, dict):
+                        idx = item.get("index")
+                    if not isinstance(idx, int):
+                        idx = 0
+
+                    call = tool_calls_by_index.get(idx)
+                    if call is None:
+                        call = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                        tool_calls_by_index[idx] = call
+
+                    tc_id = getattr(item, "id", None)
+                    if tc_id is None and isinstance(item, dict):
+                        tc_id = item.get("id")
+                    if isinstance(tc_id, str) and tc_id:
+                        call["id"] = tc_id
+
+                    tc_type = getattr(item, "type", None)
+                    if tc_type is None and isinstance(item, dict):
+                        tc_type = item.get("type")
+                    if isinstance(tc_type, str) and tc_type:
+                        call["type"] = tc_type
+
+                    func = getattr(item, "function", None)
+                    if func is None and isinstance(item, dict):
+                        func = item.get("function")
+                    if func:
+                        name = getattr(func, "name", None)
+                        if name is None and isinstance(func, dict):
+                            name = func.get("name")
+                        if isinstance(name, str) and name:
+                            call["function"]["name"] = name
+
+                        args = getattr(func, "arguments", None)
+                        if args is None and isinstance(func, dict):
+                            args = func.get("arguments")
+                        if isinstance(args, str) and args:
+                            call["function"]["arguments"] = call["function"]["arguments"] + args
+
+                continue
+
+            content = getattr(delta, "content", None)
+            if content and not suppress_text:
                 received_text += content
                 yield content
 
@@ -575,9 +643,12 @@ class OpenAIProvider(BaseProvider):
                 output_tokens=completion_tokens,
                 thoughts_tokens=reasoning_tokens,
             )
+        if saw_tool_calls and tool_calls_by_index:
+            ordered = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index.keys())]
+            yield encode_stream_tool_calls(ordered)
             return
 
-        if received_text:
+        if usage_data is None and received_text:
             from ternion.utils.token_estimator import estimate_tokens_from_text
 
             estimated_output = estimate_tokens_from_text(received_text)

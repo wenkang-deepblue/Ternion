@@ -258,6 +258,7 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         # Workflow outputs
         "ternion_analyses": [],
         "evidence_requests": "",  # Phase 1.5: council member evidence requests
+        "evidence_chain_index": [],
         "is_consensus": False,
         "ternion_report": "",
         "generated_code": "",
@@ -271,6 +272,7 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         "errors": [],
         "thinking_logs": [],
         "final_output": "",
+        "final_output_suffix": "",
     }
 
     # Run the workflow
@@ -357,6 +359,7 @@ async def resume_report_evidence(
         "evidence_bundle": evidence_bundle,
         "evidence_gaps": evidence_gaps,
         "evidence_requests": evidence_requests,
+        "evidence_chain_index": [],
         "ternion_analyses": ternion_analyses,
         # Workflow outputs (initialized)
         "is_consensus": False,
@@ -372,6 +375,7 @@ async def resume_report_evidence(
         "errors": [],
         "thinking_logs": [],
         "final_output": "",
+        "final_output_suffix": "",
     }
 
     # Run workflow starting from report_evidence node

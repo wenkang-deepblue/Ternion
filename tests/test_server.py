@@ -2,9 +2,11 @@
 Tests for the FastAPI server.
 """
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from ternion.core.config_store import RoleConfig
@@ -209,7 +211,96 @@ class TestChatCompletions:
                 {
                     "id": "call_abc",
                     "type": "function",
-                    "function": {"name": "codebase_search", "arguments": "{\"query\":\"foo\"}"},
+                    "function": {"name": "Write", "arguments": "{\"file_path\":\"docs/a.md\",\"content\":\"x\"}"},
+                }
+            ],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.utils.i18n.config_store") as mock_i18n_config,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_i18n_config.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "codebase_search",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["choices"][0]["finish_reason"] == "tool_calls"
+            tool_calls = data["choices"][0]["message"]["tool_calls"]
+            assert tool_calls[0]["id"] == "ternion_0123456789ab_r0001_c00"
+            assert tool_calls[0]["function"]["name"] == "Write"
+
+    def test_doc_only_blocks_mutation_tool_calls(self, client: TestClient) -> None:
+        """Doc-only policy should block mutation tool calls outside docs/."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = False
+        mock_user_config.language = "en"
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "Scope: documentation only. Non-goals: no code changes.",
+            "conversation_history": [{"role": "user", "content": "请只输出方案文档"}],
+            "pending_tool_calls": [
+                {
+                    "id": "call_doc",
+                    "type": "function",
+                    "function": {
+                        "name": "Write",
+                        "arguments": "{\"file_path\":\"src/app.py\",\"content\":\"x\"}",
+                    },
                 }
             ],
             "thinking_logs": [],
@@ -245,27 +336,718 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "Hello"}],
+                    "messages": [{"role": "user", "content": "doc-only request"}],
+                    "stream": False,
                     "tools": [
                         {
                             "type": "function",
                             "function": {
-                                "name": "codebase_search",
+                                "name": "Write",
                                 "description": "dummy",
                                 "parameters": {"type": "object", "properties": {}, "required": []},
                             },
                         }
                     ],
-                    "stream": False,
                 },
             )
+            assert response.status_code == 200
+            data = response.json()
+            message = data["choices"][0]["message"]
+            content = message.get("content") or ""
+            assert "doc-only" in content
+            assert "docs/**" in content
+            assert "src/app.py" in content
+            assert not message.get("tool_calls")
 
+    def test_doc_only_allows_docs_write(self, client: TestClient) -> None:
+        """Doc-only policy should allow writes under docs/."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = False
+        mock_user_config.language = "en"
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "Scope: documentation only. Non-goals: no code changes.",
+            "conversation_history": [{"role": "user", "content": "只要文档"}],
+            "pending_tool_calls": [
+                {
+                    "id": "call_doc",
+                    "type": "function",
+                    "function": {
+                        "name": "Write",
+                        "arguments": "{\"file_path\":\"docs/plan.md\",\"content\":\"x\"}",
+                    },
+                }
+            ],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "doc-only request"}],
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                },
+            )
             assert response.status_code == 200
             data = response.json()
             assert data["choices"][0]["finish_reason"] == "tool_calls"
             tool_calls = data["choices"][0]["message"]["tool_calls"]
-            assert tool_calls[0]["id"] == "ternion_0123456789ab_r0001_c00"
-            assert tool_calls[0]["function"]["name"] == "codebase_search"
+            assert tool_calls[0]["function"]["name"] == "Write"
+
+    def test_doc_only_allows_docs_write_with_path_key(self, client: TestClient) -> None:
+        """Doc-only should allow docs writes when Write uses `path` instead of `file_path`."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = False
+        mock_user_config.language = "en"
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "Scope: documentation only. Non-goals: no code changes.",
+            "conversation_history": [{"role": "user", "content": "只要文档"}],
+            "pending_tool_calls": [
+                {
+                    "id": "call_doc",
+                    "type": "function",
+                    "function": {
+                        "name": "Write",
+                        "arguments": "{\"path\":\"docs/plan.md\",\"content\":\"x\"}",
+                    },
+                }
+            ],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "doc-only request"}],
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["choices"][0]["finish_reason"] == "tool_calls"
+            tool_calls = data["choices"][0]["message"]["tool_calls"]
+            assert tool_calls[0]["function"]["name"] == "Write"
+
+    def test_doc_only_blocks_write_file_tool_name(self, client: TestClient) -> None:
+        """Doc-only should also block mutation calls named write_file (canonical writefile)."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = False
+        mock_user_config.language = "en"
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "Scope: documentation only. Non-goals: no code changes.",
+            "conversation_history": [{"role": "user", "content": "只要文档"}],
+            "pending_tool_calls": [
+                {
+                    "id": "call_doc",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": "{\"path\":\"src/app.py\",\"content\":\"x\"}",
+                    },
+                }
+            ],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "doc-only request"}],
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            message = data["choices"][0]["message"]
+            content = message.get("content") or ""
+            assert "doc-only" in content
+            assert "src/app.py" in content
+            assert not message.get("tool_calls")
+
+    def test_analysis_only_blocks_mutation_tool_calls(self, client: TestClient) -> None:
+        """Analysis-only policy should block mutation tool calls."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = False
+        mock_user_config.language = "en"
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "Scope: analysis only. Non-goals: no file changes.",
+            "conversation_history": [{"role": "user", "content": "只分析，不落盘"}],
+            "pending_tool_calls": [
+                {
+                    "id": "call_doc",
+                    "type": "function",
+                    "function": {
+                        "name": "Write",
+                        "arguments": "{\"file_path\":\"docs/plan.md\",\"content\":\"x\"}",
+                    },
+                }
+            ],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "analysis-only request"}],
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            message = data["choices"][0]["message"]
+            content = message.get("content") or ""
+            assert "analysis-only" in content
+            assert not message.get("tool_calls")
+
+    def test_code_change_allows_src_write(self, client: TestClient) -> None:
+        """Code-change policy should allow writes under src/."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = False
+        mock_user_config.language = "en"
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "Fix Plan: update code.",
+            "conversation_history": [{"role": "user", "content": "请修复代码"}],
+            "pending_tool_calls": [
+                {
+                    "id": "call_doc",
+                    "type": "function",
+                    "function": {
+                        "name": "Write",
+                        "arguments": "{\"file_path\":\"src/app.py\",\"content\":\"x\"}",
+                    },
+                }
+            ],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "code-change request"}],
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["choices"][0]["finish_reason"] == "tool_calls"
+            tool_calls = data["choices"][0]["message"]["tool_calls"]
+            assert tool_calls[0]["function"]["name"] == "Write"
+
+    def test_execution_tool_policy_blocks_read_tool_calls(self, client: TestClient) -> None:
+        """Execution tool policy should block read/search tool calls."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = False
+        mock_user_config.language = "en"
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "REPORT",
+            "conversation_history": [{"role": "user", "content": "do it"}],
+            "pending_tool_calls": [
+                {
+                    "id": "call_read",
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "arguments": "{\"path\":\"src/app.py\"}",
+                    },
+                }
+            ],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "request"}],
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "Read",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            message = data["choices"][0]["message"]
+            content = message.get("content") or ""
+            assert "Read" in content
+            assert not message.get("tool_calls")
+
+    def test_shell_policy_blocks_read_command(self, client: TestClient) -> None:
+        """Shell policy should block read/search commands."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = False
+        mock_user_config.language = "en"
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "REPORT",
+            "conversation_history": [{"role": "user", "content": "do it"}],
+            "pending_tool_calls": [
+                {
+                    "id": "call_shell",
+                    "type": "function",
+                    "function": {
+                        "name": "run_terminal_cmd",
+                        "arguments": "{\"command\":\"cat README.md\"}",
+                    },
+                }
+            ],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "request"}],
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "run_terminal_cmd",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            message = data["choices"][0]["message"]
+            content = message.get("content") or ""
+            assert "run_terminal_cmd" in content
+            assert "cat README.md" in content
+            assert not message.get("tool_calls")
+
+    def test_report_scope_drives_policy_when_user_missing(self) -> None:
+        """Scope/Non-Goals should drive policy when user message is empty."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _resolve_deliverable_policy_from_context
+
+        report = (
+            "## Scope & Non-Goals\n"
+            "- Documentation only\n"
+            "- Do not change code\n\n"
+            "## Fix Plan / Recommendation\n"
+            "- Update src/app.py\n"
+        )
+        deliverable_type, allowed_scope = _resolve_deliverable_policy_from_context([], report)
+        assert deliverable_type == DeliverableType.DOC_ONLY
+        assert allowed_scope == "docs/**"
+
+    def test_doc_only_enforces_write_scope_on_src_mutation(self) -> None:
+        """Doc-only policy should block src mutations in execution guardrail."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _enforce_deliverable_policy
+
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": "{\"file_path\":\"src/app.py\",\"content\":\"x\"}",
+                },
+            }
+        ]
+        filtered, message, deliverable_type, allowed_scope = _enforce_deliverable_policy(
+            workflow_phase="execution",
+            tool_calls=tool_calls,
+            conversation_history=[{"role": "user", "content": "doc-only request"}],
+            ternion_report="Scope: documentation only. Non-goals: no code changes.",
+        )
+
+        assert filtered == []
+        assert deliverable_type == DeliverableType.DOC_ONLY
+        assert allowed_scope == "docs/**"
+        assert message is not None
+        assert "doc-only" in message
+        assert "docs/**" in message
+        assert "src/app.py" in message
+
+    def test_code_change_blocks_outside_repo_mutation(self) -> None:
+        """Code-change policy should block mutations outside project root."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _enforce_deliverable_policy
+
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": "{\"file_path\":\"/tmp/outside.py\",\"content\":\"x\"}",
+                },
+            }
+        ]
+        filtered, message, deliverable_type, allowed_scope = _enforce_deliverable_policy(
+            workflow_phase="execution",
+            tool_calls=tool_calls,
+            conversation_history=[{"role": "user", "content": "please update code"}],
+            ternion_report="REPORT",
+        )
+
+        assert filtered == []
+        assert deliverable_type == DeliverableType.CODE_CHANGE
+        assert allowed_scope == "repo/**"
+        assert message is not None
+        assert "repo/**" in message
+        assert "/tmp/outside.py" in message
+
+    def test_workspace_relative_path_uses_project_root(self, tmp_path) -> None:
+        """Relative path resolution should anchor to project root, not cwd."""
+        from pathlib import Path
+
+        from ternion.server.routes import _resolve_project_root, _workspace_relative_path
+
+        root = _resolve_project_root()
+        docs_path = (root / "docs" / "development_log.md").resolve()
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            relative = _workspace_relative_path(str(docs_path))
+        finally:
+            os.chdir(original_cwd)
+        assert relative == "docs/development_log.md"
 
     def test_responses_alias_accepts_input_payload(self, client: TestClient) -> None:
         """
@@ -431,6 +1213,117 @@ class TestChatCompletions:
             assert kwargs.get("evidence_requests") == mock_result["evidence_requests"]
             assert kwargs.get("ternion_analyses") == mock_result["ternion_analyses"]
 
+    def test_streaming_tool_calls_emits_no_content_deltas(
+        self, client: TestClient
+    ) -> None:
+        """
+        Tool-calls responses must not emit any user-visible content deltas.
+
+        This includes server-side phase indicators: they should be buffered until
+        the first TOKEN_DELTA arrives. If the workflow ends with tool_calls and
+        no tokens were streamed, the SSE stream must contain no delta.content.
+        """
+        import json as json_lib
+
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = False
+        mock_user_config.show_phase_indicators = True
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "REPORT",
+            "pending_tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {"name": "Write", "arguments": "{\"file_path\":\"docs/a.md\",\"content\":\"x\"}"},
+                }
+            ],
+            "conversation_history": [],
+            "current_phase": "optimizer",
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        async def run_discussion_with_phase(ctx):  # type: ignore[no-untyped-def]
+            queue = getattr(ctx, "_stream_queue", None)
+            if queue is not None:
+                await queue.put_phase_start("optimizer")
+            return mock_result
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.side_effect = run_discussion_with_phase
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": True,
+                },
+            ) as response:
+                assert response.status_code == 200
+
+                chunks: list[dict] = []
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line.removeprefix("data: ").strip()
+                    if payload == "[DONE]":
+                        break
+                    chunks.append(json_lib.loads(payload))
+
+                assert chunks, "Expected at least one SSE data chunk"
+
+                for c in chunks:
+                    delta = c.get("choices", [{}])[0].get("delta", {}) or {}
+                    assert not delta.get("content"), f"Unexpected delta.content: {delta.get('content')!r}"
+
+                tool_chunks = [
+                    c for c in chunks
+                    if isinstance(c.get("choices", [{}])[0].get("delta", {}).get("tool_calls"), list)
+                ]
+                assert tool_chunks, "Expected a delta.tool_calls chunk in SSE stream"
+
     def test_execution_followup_routes_by_tool_call_id(self, client: TestClient) -> None:
         """Execution follow-ups should be routed via tool_call_id even without session markers."""
         mock_user_config = MagicMock()
@@ -525,6 +1418,7 @@ class TestChatCompletions:
             report_hash="hash",
             created_at="2026-01-11T00:00:00Z",
             updated_at="2026-01-11T00:00:00Z",
+            round_index=1,
             workflow_phase="report_evidence",
             cursor_system_prompt="SYS",
             execution_messages=[],
@@ -532,16 +1426,6 @@ class TestChatCompletions:
             evidence_gaps="EVIDENCE_GAPS:\n- None",
             evidence_requests="- [P0] path=foo.py:1-2",
             ternion_analyses=[{"ternion_id": "ternion_a", "analysis": "A"}],
-        )
-        tool_session = Session(
-            session_id="fedcba987654",
-            stage=SessionStage.AWAITING_TOOL_RESULTS,
-            execution_mode=ExecutionMode.TERNION_FULL,
-            ternion_report_raw="REPORT",
-            ternion_report_safe="REPORT",
-            report_hash="hash2",
-            created_at="2026-01-11T00:00:00Z",
-            updated_at="2026-01-11T00:00:00Z",
         )
         mock_final_state = {
             "current_phase": "report_evidence",
@@ -571,7 +1455,6 @@ class TestChatCompletions:
         ):
             mock_config_store.load.return_value = mock_user_config
             mock_session_store.load_session.return_value = resume_session
-            mock_session_store.create_session.return_value = tool_session
             mock_session_store.update_session.return_value = resume_session
             mock_budget_manager.check_budget.return_value = (True, None)
             mock_resume.return_value = mock_final_state
@@ -596,25 +1479,72 @@ class TestChatCompletions:
             assert data["choices"][0]["finish_reason"] == "tool_calls"
 
             tool_calls = data["choices"][0]["message"]["tool_calls"]
-            assert tool_calls[0]["id"] == "ternion_fedcba987654_r0001_c00"
+            assert tool_calls[0]["id"] == "ternion_0123456789ab_r0002_c00"
             assert tool_calls[0]["function"]["name"] == "codebase_search"
 
-            kwargs = mock_session_store.create_session.call_args.kwargs
-            assert isinstance(kwargs.get("execution_mode"), ExecutionMode)
-            assert kwargs.get("workflow_phase") == "report_evidence"
-            assert kwargs.get("evidence_bundle") == mock_final_state["evidence_bundle"]
-            assert kwargs.get("evidence_gaps") == mock_final_state["evidence_gaps"]
-            assert kwargs.get("evidence_requests") == mock_final_state["evidence_requests"]
-            assert kwargs.get("ternion_analyses") == mock_final_state["ternion_analyses"]
+            assert mock_session_store.create_session.call_count == 0
 
             saw_tool_session_update = any(
                 call.args
-                and call.args[0] == tool_session.session_id
-                and call.kwargs.get("round_index") == 1
+                and call.args[0] == resume_session.session_id
+                and call.kwargs.get("round_index") == 2
+                and call.kwargs.get("workflow_phase") == "report_evidence"
+                and call.kwargs.get("evidence_bundle") == mock_final_state["evidence_bundle"]
+                and call.kwargs.get("evidence_gaps") == mock_final_state["evidence_gaps"]
+                and call.kwargs.get("evidence_requests") == mock_final_state["evidence_requests"]
+                and call.kwargs.get("ternion_analyses") == mock_final_state["ternion_analyses"]
                 and isinstance(call.kwargs.get("pending_tool_calls"), list)
                 for call in mock_session_store.update_session.call_args_list
             )
             assert saw_tool_session_update
+
+    def test_report_evidence_followup_with_resume_phase_routes_to_execution_followup(
+        self, client: TestClient
+    ) -> None:
+        """Execution-time report_evidence should route to execution follow-up handler."""
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        resume_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+            workflow_phase="report_evidence",
+            report_evidence_resume_phase="execution",
+        )
+
+        with (
+            patch("ternion.server.routes.session_store") as mock_session_store,
+            patch("ternion.server.routes.handle_execution_followup", new_callable=AsyncMock) as mock_exec,
+            patch("ternion.server.routes.handle_report_evidence_followup", new_callable=AsyncMock) as mock_report_evidence,
+        ):
+            mock_session_store.load_session.return_value = resume_session
+            mock_exec.return_value = JSONResponse(content={"ok": "execution_followup"})
+            mock_report_evidence.return_value = JSONResponse(content={"ok": "report_evidence_followup"})
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [
+                        {
+                            "role": "tool",
+                            "tool_call_id": "ternion_0123456789ab_r0001_c00",
+                            "content": "RESULT",
+                        }
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            assert response.json() == {"ok": "execution_followup"}
+            mock_exec.assert_awaited()
+            mock_report_evidence.assert_not_called()
 
     def test_read_file_tool_call_is_paginated_by_server(self, client: TestClient) -> None:
         """Server should enforce offset/limit on read_file tool calls."""

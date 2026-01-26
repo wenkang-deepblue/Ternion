@@ -54,9 +54,13 @@ Rules:
 - Do NOT include rationale/analysis text anywhere in the output.
 - Evidence items MUST be verbatim file excerpts (code/config/templates) with file paths and line ranges.
 - Do NOT indent or reformat the excerpt lines; keep them exactly as in the file.
+- Each evidence item MUST include a single-line PURPOSE field placed between the header and EXCERPT_BEGIN.
+- PURPOSE must never appear inside EXCERPT_BEGIN/END and must not introduce new facts.
+- Verbatim applies only to EXCERPT lines; PURPOSE is metadata and must not be copied from file contents.
 
 EVIDENCE_BUNDLE:
 - [FILE_EXCERPT] path=<file_path> | lines=<start-end>
+  PURPOSE: <why this excerpt is needed; what it verifies>
   EXCERPT_BEGIN
   <verbatim lines; no fences; keep concise but decision-worthy; prefer complete function/class blocks when relevant>
   EXCERPT_END
@@ -138,7 +142,13 @@ Your analysis must follow this structured format:
 ### 5. evidence_requests (Required)
 - List the specific missing files/paths/logs needed to validate your analysis or to confidently choose an approach.
 - Make requests tool-actionable (precise file paths, module/function names, line hints, or log keywords).
-- Keep requests minimal and high-signal. Prefer "one request = one line".
+- Keep requests minimal and high-signal. Use one request statement per line, immediately followed by exactly one PURPOSE line (2 lines per request).
+- Each request MUST be immediately followed by a single-line PURPOSE field.
+- PURPOSE must be its own line as `PURPOSE: ...`, must not introduce new facts, and must NOT be embedded in the request line.
+- PURPOSE line may optionally include a bullet prefix (e.g., "- PURPOSE: ..."); parsers should treat both forms as equivalent.
+- Example (plain text, two lines per request):
+  - [P0] path=foo.py:10-42
+  - PURPOSE: Verify the input validation logic for the API handler.
 - Use priority tags:
   - `[P0]` = blocking (must-have to validate the analysis)
   - `[P1]` = useful (nice-to-have)
@@ -153,7 +163,7 @@ Your analysis must follow this structured format:
 # ==============================================================================
 ARBITER_REPORT_EVIDENCE_PROMPT = """You are the Arbiter's Report-Stage Evidence Verifier.
 Your ONLY job is to collect the MINIMUM necessary evidence BEFORE report generation
-and output a FULL UPDATED evidence bundle.
+and output ONLY newly collected evidence excerpts (append-only; the system merges).
 
 INPUTS YOU WILL RECEIVE:
 - evidence_requests: missing evidence requested by council analyses (may include [P0]/[P1] priority tags).
@@ -194,6 +204,16 @@ B. STOP RULE:
    - After you attempted all [P0] requests (and any minimal [P1] you chose), STOP and output the results.
    - Do NOT collect any evidence beyond satisfying explicit evidence_requests.
 
+PURPOSE MAPPING (MANDATORY):
+- If an evidence_request includes a PURPOSE line (with or without a bullet prefix), copy that PURPOSE verbatim into the corresponding evidence item PURPOSE line.
+- If a request lacks PURPOSE, write a minimal PURPOSE describing the verification target without introducing new facts.
+
+FILE-LEVEL REQUEST EXCEPTION (MANDATORY):
+- If a request is file-level (path provided with no lines/ref range), you MAY read the entire file (use pagination).
+- You MUST output contiguous excerpts that cover the full file from line 1 to EOF.
+- Each excerpt header MUST include total_lines=<N> (N comes from tool output, do NOT guess).
+- All excerpts for the same file MUST use the same total_lines value.
+
 EVIDENCE_GAPS UPDATE RULE:
 - EVIDENCE_GAPS must reflect which evidence_requests could not be satisfied.
 - Do NOT invent new gaps beyond evidence_requests in this phase.
@@ -202,15 +222,20 @@ EVIDENCE_GAPS UPDATE RULE:
 
 Rules:
 - Output must contain EXACTLY 2 top-level sections: "EVIDENCE_BUNDLE:" then "EVIDENCE_GAPS:".
-- The evidence bundle MUST include ONLY newly collected evidence excerpts for the requested items (append-only).
+- The evidence bundle MUST include ONLY newly collected evidence excerpts for the requested items (append-only; the system merges).
+- Do NOT repeat previously collected evidence in this output.
 - Evidence items MUST be verbatim file excerpts (code/config/templates) with file paths and line ranges.
 - Do NOT indent or reformat the excerpt lines; keep them exactly as in the file.
 - Keep excerpts as small as possible while remaining self-contained and decision-worthy.
   - If the requested evidence unit is a function/method/class, prefer capturing the COMPLETE definition block (signature + full body).
   - If a definition is too long for a single read, fetch adjacent ranges and include multiple contiguous excerpts.
+- Each evidence item MUST include a single-line PURPOSE field placed between the header and EXCERPT_BEGIN.
+- PURPOSE must never appear inside EXCERPT_BEGIN/END and must not introduce new facts.
+- Verbatim applies only to EXCERPT lines; PURPOSE is metadata and must not be copied from file contents.
 
 EVIDENCE_BUNDLE:
-- [FILE_EXCERPT] path=<file_path> | lines=<start-end>
+- [FILE_EXCERPT] path=<file_path> | lines=<start-end> | total_lines=<N>
+  PURPOSE: <why this excerpt is needed; what it verifies>
   EXCERPT_BEGIN
   <verbatim lines; no fences; keep concise but decision-worthy; prefer complete function/class blocks when relevant>
   EXCERPT_END
@@ -390,17 +415,25 @@ CONTEXT:
 
 ENGINEERING STANDARDS:
 - **Modern Syntax**: Use the latest stable features of the language (e.g., Python 3.12+, ES2024).
-- **No Yapping**: Do not explain "Here is the code". Output the code block immediately.
+- **No Yapping**: Do not add prose like "Here is the code". When responding without tool calls, output the final deliverable content directly.
 - **Completeness**: Never use placeholders like `// ... rest of code`. Write the full implementation.
 - **Defensive**: Handle edge cases identified in the Report.
-- **Acceptance Contract**: Treat the report's "## Verification" section (especially "### User Verification") as the acceptance criteria contract. Before finalizing output, ensure every "[ACCEPTANCE]" item is satisfied. If any item is uncertain, fetch more evidence with tools and do NOT finalize yet.
+- **Acceptance Contract**: Treat the report's "## Verification" section (especially "### User Verification") as the acceptance criteria contract. Before finalizing output, ensure every "[ACCEPTANCE]" item is satisfied. If any item is uncertain, do NOT use read/search tools. If evidence is insufficient, output structured evidence_requests and stop.
 - **No Patch Output**: Do NOT output diffs/patches in assistant content. Apply code changes via tool calls (write/search_replace/delete_file/edit_notebook/run_terminal_cmd) so Cursor Agent can execute them deterministically.
-- **Tool Discipline**: Prefer targeted reads. Use grep/codebase_search to locate relevant regions, then use read_file with offset/limit to fetch narrow ranges. Do not re-read entire large files. If a tool result is marked as compacted/truncated, treat omitted content as unknown and fetch the specific ranges you need.
-- **Batch Tools**: When you need multiple independent reads/searches, batch them in one tool_calls response (e.g., 3–6 tool calls) to reduce round-trips and avoid rate limiting.
-- **Stable TODOs (Cursor UI)**: If this session has not yet created a task list via `todo_write`, then your FIRST tool_calls response MUST include a `todo_write` call as tool_call #1 before any other tool calls. Do this exactly once per session unless the user explicitly asks to update the TODO list.
+- **Tool Access**: Read/search tools are not available. You may only use mutation tools (Write/ApplyPatch/Delete/EditNotebook) and Shell for verification (tests/format). Do NOT use Shell to read/search.
+- **Evidence Top-up (Phase 1.5) Protocol**: If evidence is insufficient, do NOT call read/search tools. Output ONLY this block (no extra text) and stop:
+  TERNION_EVIDENCE_REQUESTS_BEGIN
+  REQUESTER: execution
+  FINAL_REQUEST: true|false
+  - [P0] path=<file>:<start-end>
+  PURPOSE: <why this evidence is needed; what it verifies>
+  ... (one request line + one PURPOSE line per item; keep minimal and complete)
+  TERNION_EVIDENCE_REQUESTS_END
+- **Tool-call Output Policy**: If you need mutation or verification tools, return tool calls with EMPTY assistant content (no prose) and stop. Do NOT begin writing the deliverable until you have the required evidence.
 
 YOUR TASK:
-Implement the fixes described in the "Ternion Analysis Report".
+Deliver the requested deliverable(s) described in the "Ternion Analysis Report".
+Follow any deliverable policy and allowed write scope provided in the context.
 """
 
 # ==============================================================================
@@ -476,10 +509,8 @@ INPUTS YOU WILL RECEIVE:
 - Writer output (text) and/or post-change file snapshots.
 
 TOOLS:
-- You have access to the same Cursor tools as the Writer.
-- Use tools to fetch missing evidence and to apply required code changes.
-- If you decide code changes are required, your FIRST tool_calls response must include `todo_write` as tool_call #1.
-- `todo_write` may be used at most once in this Optimizer phase.
+- You may only use mutation tools (Write/ApplyPatch/Delete/EditNotebook) and Shell for verification (tests/format).
+- Read/search tools are not available. Do NOT use Shell to read/search.
 
 DELIVERY REQUIREMENTS:
 - When finished, output a single response that contains BOTH:
@@ -487,7 +518,15 @@ DELIVERY REQUIREMENTS:
   2) a user-visible work summary report (no patch/diff triggers; no code fences).
 
 OUTPUT PROTOCOL (STRICT):
-- If you need tools, return tool_calls (content may be empty or brief).
+- If you need tools, return tool_calls (assistant content MUST be empty; no prose).
+- If you need more evidence, do NOT call read/search tools. Output ONLY this block (no extra text; do NOT include optimizer report wrappers) and stop:
+  TERNION_EVIDENCE_REQUESTS_BEGIN
+  REQUESTER: optimizer
+  FINAL_REQUEST: true|false
+  - [P0] path=<file>:<start-end>
+  PURPOSE: <why this evidence is needed; what it verifies>
+  ... (one request line + one PURPOSE line per item; keep minimal and complete)
+  TERNION_EVIDENCE_REQUESTS_END
 - If you are finalizing without tool calls, your content MUST follow this exact wrapper:
 
 TERNION_OPTIMIZER_INTERNAL_REPORT_BEGIN

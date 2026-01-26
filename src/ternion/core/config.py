@@ -66,10 +66,14 @@ class RolesSettings(BaseSettings):
 
 
 class DiscussionSettings(BaseSettings):
-    """Discussion flow configuration."""
+    """
+    Discussion flow configuration.
 
-    timeout_seconds: int = 120
-    writer_timeout_seconds: int = 240
+    Note: All timeout values are in seconds.
+    """
+
+    timeout_seconds: int = 600  # seconds
+    writer_timeout_seconds: int = 600  # seconds
     max_revision_rounds: int = 2
     roles: RolesSettings = Field(default_factory=RolesSettings)
 
