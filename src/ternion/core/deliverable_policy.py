@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from ternion.utils.language_resources import get_deliverable_policy_patterns
+
 
 class DeliverableType(str, Enum):
     """Supported deliverable types for Execution/Optimizer."""
@@ -32,52 +34,19 @@ class DeliverablePolicy:
         return self.deliverable_type != DeliverableType.ANALYSIS_ONLY
 
 
-_DOC_ONLY_PATTERNS = [
-    r"\bdoc[-\s]?only\b",
-    r"\bdocs?\s+only\b",
-    r"\bdocumentation\s+only\b",
-    r"\bonly\s+docs?\b",
-    r"\bonly\s+documentation\b",
-    r"(只要文档|仅文档|只写文档|只做文档|只需要文档|仅需文档)",
-]
+class DeliverableReason(str, Enum):
+    """Reason codes for deliverable policy classification."""
 
-_ANALYSIS_ONLY_PATTERNS = [
-    r"\banalysis\s+only\b",
-    r"\brecommendation\s+only\b",
-    r"\bno\s+file\s+changes\b",
-    r"\bdo\s+not\s+(write|modify|change)\s+files\b",
-    r"(只分析|仅分析|只给建议|不落盘|不写文件|不修改文件)",
-]
-
-_NO_CODE_PATTERNS = [
-    r"\bno\s+code\s+changes?\b",
-    r"\bdo\s+not\s+(change|modify|touch)\s+code\b",
-    r"(不改代码|不要改代码|无需改代码|不修改代码)",
-]
-
-_DOC_HINTS = [
-    r"\bdoc(?:umentation)?\b",
-    r"\bdesign\s+doc\b",
-    r"\bspec(?:ification)?\b",
-    r"\bplan\b",
-    r"(文档|方案|设计|规格|计划|说明|蓝图|方案文档|文档落盘)",
-]
-
-_CODE_HINTS = [
-    r"\bcode\b",
-    r"\bimplement(?:ation)?\b",
-    r"\bfix(?:es|ing)?\b",
-    r"\bbug(?:fix)?\b",
-    r"\bpatch\b",
-    r"\brefactor(?:ing)?\b",
-    r"\bmodify(?:ing)?\b",
-    r"\bupdate(?:ing)?\b",
-    r"\bchange(?:s|ing)?\b",
-    r"\badd(?:ing)?\b",
-    r"\btest(?:s|ing)?\b",
-    r"\bconfig(?:uration)?\b",
-    r"(代码|实现|修复|改代码|修改代码|更新代码|重构|测试|配置|补丁)",
-]
+    EMPTY_INPUT = "empty_input"
+    EXPLICIT_ANALYSIS_ONLY = "explicit_analysis_only"
+    DOC_ONLY_WITH_CODE_SIGNALS = "doc_only_with_code_signals"
+    EXPLICIT_DOC_ONLY = "explicit_doc_only"
+    DOC_AND_CODE_SIGNALS = "doc_and_code_signals"
+    DOC_SIGNALS = "doc_signals"
+    CODE_SIGNALS = "code_signals"
+    NO_CODE_SIGNALS = "no_code_signals"
+    NO_CLEAR_SIGNALS = "no_clear_deliverable_signals"
+    DEFAULT_CODE_CHANGE = "default_code_change"
 
 
 def _has_any_pattern(text: str, patterns: list[str]) -> bool:
@@ -100,67 +69,74 @@ class _DeliverableSignal:
 def _classify_signals(text: str, *, source: str) -> _DeliverableSignal:
     normalized = (text or "").strip()
     if not normalized:
-        return _DeliverableSignal(None, False, "empty input", source)
+        return _DeliverableSignal(None, False, DeliverableReason.EMPTY_INPUT.value, source)
 
-    if _has_any_pattern(normalized, _ANALYSIS_ONLY_PATTERNS):
+    patterns = get_deliverable_policy_patterns()
+
+    if _has_any_pattern(normalized, patterns.analysis_only):
         return _DeliverableSignal(
             DeliverableType.ANALYSIS_ONLY,
             True,
-            "explicit analysis-only instruction",
+            DeliverableReason.EXPLICIT_ANALYSIS_ONLY.value,
             source,
         )
 
-    if _has_any_pattern(normalized, _DOC_ONLY_PATTERNS):
-        no_code = _has_any_pattern(normalized, _NO_CODE_PATTERNS)
-        code_hint = _has_any_pattern(normalized, _CODE_HINTS) and not no_code
+    if _has_any_pattern(normalized, patterns.doc_only):
+        no_code = _has_any_pattern(normalized, patterns.no_code)
+        code_hint = _has_any_pattern(normalized, patterns.code_hints) and not no_code
         if code_hint and not no_code:
             return _DeliverableSignal(
                 DeliverableType.MIXED,
                 False,
-                "doc-only phrasing with code-change signals",
+                DeliverableReason.DOC_ONLY_WITH_CODE_SIGNALS.value,
                 source,
             )
         return _DeliverableSignal(
             DeliverableType.DOC_ONLY,
             True,
-            "explicit doc-only instruction",
+            DeliverableReason.EXPLICIT_DOC_ONLY.value,
             source,
         )
 
-    no_code = _has_any_pattern(normalized, _NO_CODE_PATTERNS)
-    doc_hint = _has_any_pattern(normalized, _DOC_HINTS)
-    code_hint = _has_any_pattern(normalized, _CODE_HINTS) and not no_code
+    no_code = _has_any_pattern(normalized, patterns.no_code)
+    doc_hint = _has_any_pattern(normalized, patterns.doc_hints)
+    code_hint = _has_any_pattern(normalized, patterns.code_hints) and not no_code
 
     if doc_hint and code_hint:
         return _DeliverableSignal(
             DeliverableType.MIXED,
             False,
-            "doc and code signals detected",
+            DeliverableReason.DOC_AND_CODE_SIGNALS.value,
             source,
         )
     if doc_hint:
         return _DeliverableSignal(
             DeliverableType.DOC_ONLY,
             False,
-            "documentation signals detected",
+            DeliverableReason.DOC_SIGNALS.value,
             source,
         )
     if code_hint:
         return _DeliverableSignal(
             DeliverableType.CODE_CHANGE,
             False,
-            "code-change signals detected",
+            DeliverableReason.CODE_SIGNALS.value,
             source,
         )
     if no_code:
         return _DeliverableSignal(
             DeliverableType.DOC_ONLY,
             False,
-            "no-code instruction detected",
+            DeliverableReason.NO_CODE_SIGNALS.value,
             source,
         )
 
-    return _DeliverableSignal(None, False, "no clear deliverable signals", source)
+    return _DeliverableSignal(
+        None,
+        False,
+        DeliverableReason.NO_CLEAR_SIGNALS.value,
+        source,
+    )
 
 
 def resolve_deliverable_policy(user_message: str, ternion_report: str) -> DeliverablePolicy:
@@ -191,7 +167,7 @@ def resolve_deliverable_policy(user_message: str, ternion_report: str) -> Delive
     default_signal = _DeliverableSignal(
         DeliverableType.CODE_CHANGE,
         False,
-        "defaulted to code-change",
+        DeliverableReason.DEFAULT_CODE_CHANGE.value,
         "default",
     )
     return _build_policy(default_signal)

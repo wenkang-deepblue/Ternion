@@ -48,6 +48,11 @@ from ternion.utils.evidence_requests_protocol import (
     extract_evidence_requests_block,
 )
 from ternion.utils.i18n import MessageKey, t
+from ternion.utils.language_resources import (
+    get_language_name,
+    get_optimizer_language_instruction_template,
+    get_report_language_instruction_template,
+)
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import format_report_for_display, parse_structured_report
 from ternion.utils.tool_policy import EXECUTION_ALLOWED_TOOL_CANONICAL
@@ -1928,20 +1933,11 @@ async def convergence_node(state: TernionState) -> TernionState:
     if language_code == "auto":
         language_code = user_config.browser_language or "en"
 
-    # Language code to full name mapping
-    language_names = {
-        "en": "English",
-        "zh": "Simplified Chinese (简体中文)",
-        "es": "Spanish (Español)",
-        "fr": "French (Français)",
-        "de": "German (Deutsch)",
-        "ja": "Japanese (日本語)",
-        "ko": "Korean (한국어)",
-    }
-    language_name = language_names.get(language_code, "English")
-
-    # Create language instruction
-    language_instruction = f"Generate the entire report in {language_name}. All headings, bullet points, and explanations must be in {language_name}."
+    language_name = get_language_name(language_code)
+    instruction_template = get_report_language_instruction_template()
+    language_instruction = (
+        instruction_template.format(language_name=language_name) if instruction_template else ""
+    )
 
     # Build synthesis prompt with language instruction
     convergence_prompt_with_lang = CONVERGENCE_PROMPT.format(language_instruction=language_instruction)
@@ -2070,6 +2066,7 @@ async def convergence_node(state: TernionState) -> TernionState:
 
         # Determine execution mode from state or config (must be explicitly set)
         execution_mode_str = state.get("execution_mode", "") or config_store.load().execution_mode
+        error_msg = t(MessageKey.ARBITER_FALLBACKS_FAILED, error=str(e))
         if execution_mode_str not in ("cursor_handoff", "ternion_full"):
             error_msg = t(MessageKey.EXECUTION_MODE_NOT_CONFIGURED)
             logger.error("execution_mode_not_configured")
@@ -2506,7 +2503,7 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 "await_confirmation": True,
                 "final_output": final_output,
                 "final_output_suffix": final_output_suffix,
-                "errors": state.get("errors", []) + [f"All Arbiter fallbacks failed: {str(e)}"],
+                "errors": state.get("errors", []) + [error_msg],
             }
         else:
             session_id_str = str(state.get("session_id") or "").strip()
@@ -2521,7 +2518,7 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 "ternion_report": fallback_report,
                 "is_consensus": False,
                 "thinking_logs": thinking_logs,
-                "errors": state.get("errors", []) + [f"All Arbiter fallbacks failed: {str(e)}"],
+                "errors": state.get("errors", []) + [error_msg],
             }
 
 
@@ -3093,11 +3090,12 @@ async def execution_node(state: TernionState) -> TernionState:
             category="WORKFLOW",
             message=f"Execution failed | error={str(e)}",
         )
+        error_msg = t(MessageKey.EXECUTION_FAILED, error=str(e))
         return {
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
             "generated_code": "",
-            "errors": state.get("errors", []) + [f"Execution failed: {str(e)}"],
+            "errors": state.get("errors", []) + [error_msg],
             "thinking_logs": thinking_logs
             + [t(MessageKey.EXECUTION_ERROR, error=str(e))],
         }
@@ -3145,7 +3143,7 @@ async def final_check_node(state: TernionState) -> TernionState:
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
             "review_result": ReviewResult.APPROVED.value,
-            "review_feedback": "Max revisions reached, proceeding with current code.",
+            "review_feedback": t(MessageKey.REVIEW_MAX_REVISIONS_REACHED),
             "final_output": generated_code,
             "thinking_logs": thinking_logs,
         }
@@ -3310,6 +3308,7 @@ async def final_check_node(state: TernionState) -> TernionState:
             category="WORKFLOW",
             message=f"Final check failed (skipped) | error={str(e)}",
         )
+        error_msg = t(MessageKey.REVIEW_SKIPPED, error=str(e))
         try:
             from ternion.utils.reviewer_output_capture import (
                 build_reviewer_capture_payload,
@@ -3323,7 +3322,7 @@ async def final_check_node(state: TernionState) -> TernionState:
                     provider="(unknown)",
                     model="(unknown)",
                     review_status="SKIPPED",
-                    review_feedback=f"Review skipped due to error: {str(e)}",
+                    review_feedback=error_msg,
                     revision_count=revision_count,
                     generated_code=generated_code,
                 )
@@ -3335,9 +3334,9 @@ async def final_check_node(state: TernionState) -> TernionState:
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
             "review_result": ReviewResult.APPROVED.value,
-            "review_feedback": f"Review skipped due to error: {str(e)}",
+            "review_feedback": error_msg,
             "final_output": generated_code,
-            "errors": state.get("errors", []) + [f"Review skipped: {str(e)}"],
+            "errors": state.get("errors", []) + [error_msg],
             "thinking_logs": thinking_logs
             + [t(MessageKey.FINAL_CHECK_ERROR, error=str(e))],
         }
@@ -3366,20 +3365,10 @@ async def optimizer_node(state: TernionState) -> TernionState:
     language_code = user_config.language
     if language_code == "auto":
         language_code = user_config.browser_language or "en"
-    language_names = {
-        "en": "English",
-        "zh": "Simplified Chinese (简体中文)",
-        "es": "Spanish (Español)",
-        "fr": "French (Français)",
-        "de": "German (Deutsch)",
-        "ja": "Japanese (日本語)",
-        "ko": "Korean (한국어)",
-    }
-    language_name = language_names.get(language_code, "English")
+    language_name = get_language_name(language_code)
+    instruction_template = get_optimizer_language_instruction_template()
     language_instruction = (
-        "Generate BOTH the internal optimizer report and the user-visible work summary in "
-        f"{language_name}. All headings, bullet points, and explanations must be in {language_name}. "
-        "Do NOT translate the wrapper marker lines."
+        instruction_template.format(language_name=language_name) if instruction_template else ""
     )
     optimizer_prompt_with_lang = f"{OPTIMIZER_PROMPT}\n\nOUTPUT LANGUAGE:\n{language_instruction}\n"
 
@@ -3764,12 +3753,11 @@ async def optimizer_node(state: TernionState) -> TernionState:
             category="WORKFLOW",
             message=f"Optimizer failed | error={str(e)}",
         )
+        error_msg = t(MessageKey.OPTIMIZER_FAILED, error=str(e))
         return {
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
-            "errors": state.get("errors", []) + [f"Optimizer failed: {str(e)}"],
-            "final_output": sanitize_for_cursor_display(
-                f"[Ternion Error] Optimizer failed: {str(e)}"
-            ),
+            "errors": state.get("errors", []) + [error_msg],
+            "final_output": sanitize_for_cursor_display(error_msg),
             "thinking_logs": thinking_logs,
         }

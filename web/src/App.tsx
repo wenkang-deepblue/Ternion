@@ -193,7 +193,7 @@ function AppContent() {
         <div className="max-w-5xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <img src={isDarkMode ? ternionLogoDark : ternionLogo} alt="Ternion" className="h-20" />
+              <img src={isDarkMode ? ternionLogoDark : ternionLogo} alt={t.appTitle} className="h-20" />
               <div>
                 <h1 className="text-xl font-bold text-slate-900 dark:text-white">
                   {t.appTitle}

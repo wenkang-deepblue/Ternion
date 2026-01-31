@@ -45,6 +45,10 @@ from ternion.router.message_router import MessageRouter
 from ternion.utils.cursor_request_capture import schedule_cursor_request_capture
 from ternion.utils.cursor_safety import sanitize_for_cursor_display
 from ternion.utils.i18n import MessageKey, get_web_base_url, t
+from ternion.utils.language_resources import (
+    get_cursor_non_agent_mode_hints,
+    get_report_section_keywords,
+)
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import parse_structured_report
 from ternion.utils.shell_policy import evaluate_shell_command
@@ -84,6 +88,23 @@ _SSE_HEADERS = {
 
 _STREAM_SANITIZE_TAIL_KEEP = 32
 
+_REPORT_SECTION_TITLE_KEYS = {
+    "root_cause": MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE,
+    "evidence": MessageKey.REPORT_SECTION_EVIDENCE_TITLE,
+    "scope": MessageKey.REPORT_SECTION_SCOPE_TITLE,
+    "fix_plan": MessageKey.REPORT_SECTION_FIX_PLAN_TITLE,
+    "verification": MessageKey.REPORT_SECTION_VERIFICATION_TITLE,
+    "risks": MessageKey.REPORT_SECTION_RISKS_TITLE,
+    "if_not_effective": MessageKey.REPORT_SECTION_IF_NOT_EFFECTIVE_TITLE,
+}
+
+
+def _get_report_section_title(key: str) -> str:
+    message_key = _REPORT_SECTION_TITLE_KEYS.get(key)
+    if message_key is None:
+        return key
+    return t(message_key)
+
 
 def _append_stream_safe_cursor_text(
     pending_raw: str,
@@ -113,17 +134,7 @@ def _append_stream_safe_cursor_text(
     return sanitize_for_cursor_display(safe_raw), pending
 
 
-_CURSOR_NON_AGENT_MODE_HINTS = (
-    # Ask mode
-    "Ask mode is active",
-    "The user is in ask mode",
-    # Plan mode
-    "Plan mode is active",
-    # Debug mode
-    "Debug mode is active",
-    "You are now in **DEBUG MODE**",
-    "debug_mode_logging",
-)
+_CURSOR_NON_AGENT_MODE_HINTS = tuple(get_cursor_non_agent_mode_hints())
 
 
 def _iter_message_content_text(content: object) -> Iterable[str]:
@@ -547,6 +558,10 @@ def _enforce_execution_tool_policy(
 
     blocked_tools: list[str] = []
     blocked_shell: list[str] = []
+    none_placeholder = t(MessageKey.TOOL_POLICY_NONE)
+    unknown_tool = t(MessageKey.TOOL_POLICY_UNKNOWN_TOOL)
+    shell_label = t(MessageKey.TOOL_POLICY_SHELL)
+    empty_command = t(MessageKey.TOOL_POLICY_EMPTY_COMMAND)
 
     for tc in tool_calls or []:
         if not isinstance(tc, dict):
@@ -554,7 +569,7 @@ def _enforce_execution_tool_policy(
         name, args_str = _extract_tool_name_and_arguments(tc)
         canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
         if not canonical or canonical not in _EXECUTION_ALLOWED_TOOL_CANONICAL:
-            blocked_tools.append(name or "(unknown tool)")
+            blocked_tools.append(name or unknown_tool)
             continue
 
         if canonical in _SHELL_TOOL_CANONICAL:
@@ -565,7 +580,7 @@ def _enforce_execution_tool_policy(
                 if len(preview) > 200:
                     preview = preview[:200] + "..."
                 blocked_shell.append(
-                    f"{name or '(shell)'} -> {preview or '(empty command)'}"
+                    f"{name or shell_label} -> {preview or empty_command}"
                 )
 
     if not blocked_tools and not blocked_shell:
@@ -576,15 +591,19 @@ def _enforce_execution_tool_policy(
         category="GUARDRAIL",
         message=(
             "execution_tool_policy_blocked | "
-            f"blocked_tools={'; '.join(blocked_tools) or '(none)'} | "
-            f"blocked_shell={'; '.join(blocked_shell) or '(none)'}"
+            f"blocked_tools={'; '.join(blocked_tools) or none_placeholder} | "
+            f"blocked_shell={'; '.join(blocked_shell) or none_placeholder}"
         ),
     )
     blocked_tools_text = (
-        "\n".join(f"- {item}" for item in blocked_tools) if blocked_tools else "- (none)"
+        "\n".join(f"- {item}" for item in blocked_tools)
+        if blocked_tools
+        else f"- {none_placeholder}"
     )
     blocked_shell_text = (
-        "\n".join(f"- {item}" for item in blocked_shell) if blocked_shell else "- (none)"
+        "\n".join(f"- {item}" for item in blocked_shell)
+        if blocked_shell
+        else f"- {none_placeholder}"
     )
     return [], t(
         MessageKey.EXECUTION_TOOL_POLICY_BLOCKED,
@@ -705,6 +724,7 @@ def _collect_deliverable_policy_violations(
     deliverable_type: DeliverableType,
 ) -> list[str]:
     violations: list[str] = []
+    unknown_target = t(MessageKey.TOOL_POLICY_UNKNOWN_TARGET)
     for tc in tool_calls or []:
         if not isinstance(tc, dict):
             continue
@@ -713,7 +733,7 @@ def _collect_deliverable_policy_violations(
         if not canonical or canonical not in _MUTATING_TOOL_NAMES:
             continue
         target = _extract_mutation_target_path(name or "", args_str)
-        target_display = target or "(unknown target)"
+        target_display = target or unknown_target
         relative = _workspace_relative_path(target or "")
         if not relative:
             violations.append(f"{name} -> {target_display}")
@@ -735,7 +755,12 @@ def _deliverable_policy_violation_message(
     allowed_scope: str,
     violations: list[str],
 ) -> str:
-    blocked_targets = "\n".join(f"- {item}" for item in violations) if violations else "- (none)"
+    none_placeholder = t(MessageKey.TOOL_POLICY_NONE)
+    blocked_targets = (
+        "\n".join(f"- {item}" for item in violations)
+        if violations
+        else f"- {none_placeholder}"
+    )
     return t(
         MessageKey.DELIVERABLE_POLICY_BLOCKED,
         deliverable_type=deliverable_type.value,
@@ -920,99 +945,30 @@ def _extract_structured_excerpt(
     """
     q = (question or "").strip().lower()
 
+    keywords = get_report_section_keywords()
+
     # Map question intent to section preference (multi-lingual keyword routing).
     prefer: list[str] = []
-    if any(k in q for k in ["scope", "non-goal", "non goal", "范围", "不要改", "不改", "不需要改", "out of scope"]):
+    if any(k in q for k in keywords.scope):
         prefer = ["scope"]
-    elif any(k in q for k in ["verify", "verification", "test", "acceptance", "criteria", "验收", "验收标准", "验证", "测试", "怎么确认", "如何确认"]):
+    elif any(k in q for k in keywords.verification):
         prefer = ["verification"]
-    elif any(k in q for k in ["rollback", "risk", "risks", "回滚", "风险"]):
+    elif any(k in q for k in keywords.risks):
         prefer = ["risks"]
-    elif any(
-        k in q
-        for k in [
-            "requirement",
-            "requirements",
-            "constraint",
-            "constraints",
-            "assumption",
-            "assumptions",
-            "需求",
-            "约束",
-            "前提",
-            "限制",
-            "成功标准",
-        ]
-    ):
-        # For Design/Feature tasks, \"Evidence / Logs\" often contains requirements/constraints.
+    elif any(k in q for k in keywords.requirements):
+        # For Design/Feature tasks, "Evidence / Logs" often contains requirements/constraints.
         prefer = ["evidence", "scope"]
-    elif any(
-        k in q
-        for k in [
-            "trade-off",
-            "tradeoff",
-            "trade-offs",
-            "pros and cons",
-            "rationale",
-            "why choose",
-            "why this",
-            "优缺点",
-            "利弊",
-            "取舍",
-            "权衡",
-            "为什么选",
-            "为何选",
-        ]
-    ):
-        # For Design/Feature tasks, \"Root Cause\" is the architecture thesis / decision rationale.
+    elif any(k in q for k in keywords.tradeoffs):
+        # For Design/Feature tasks, "Root Cause" is the architecture thesis / decision rationale.
         prefer = ["root_cause", "risks"]
-    elif any(
-        k in q
-        for k in [
-            "architecture",
-            "design",
-            "system design",
-            "ui",
-            "ux",
-            "interaction",
-            "frontend",
-            "front-end",
-            "roadmap",
-            "milestone",
-            "module",
-            "modules",
-            "interface",
-            "interfaces",
-            "api",
-            "data flow",
-            "state machine",
-            "架构",
-            "设计",
-            "系统设计",
-            "界面",
-            "交互",
-            "前端",
-            "动效",
-            "动画",
-            "样式",
-            "布局",
-            "组件",
-            "实现路径",
-            "路线图",
-            "里程碑",
-            "模块",
-            "接口",
-            "数据流",
-            "状态机",
-        ]
-    ):
+    elif any(k in q for k in keywords.design):
         # Prefer the actionable roadmap for design/feature questions to reduce excerpt noise.
         prefer = ["fix_plan"]
-    elif any(k in q for k in ["plan", "fix", "recommendation", "steps", "怎么修", "如何修", "修复", "方案", "计划"]):
+    elif any(k in q for k in keywords.fix_plan):
         prefer = ["fix_plan"]
-    elif any(k in q for k in ["evidence", "log", "logs", "trace", "stack", "日志", "证据", "报错", "堆栈"]):
+    elif any(k in q for k in keywords.evidence):
         prefer = ["evidence"]
-    elif any(k in q for k in ["not effective", "doesn't work", "fallback", "alternative", "无效", "不生效", "替代", "下一步"]):
+    elif any(k in q for k in keywords.if_not_effective):
         prefer = ["if_not_effective"]
     else:
         # Default: most users ask about the core conclusion.
@@ -1022,7 +978,7 @@ def _extract_structured_excerpt(
     for key in prefer:
         value = getattr(parsed, key, "")
         if value:
-            title = key.replace("_", " ").title()
+            title = _get_report_section_title(key)
             chunks.append(f"## {title}\n{value}".strip())
 
     if not chunks:
@@ -5216,7 +5172,7 @@ async def handle_confirmed_session(
         if final_code:
             output_parts.append(final_code)
         else:
-            output_parts.append("[Ternion] Execution completed but no output was generated.")
+            output_parts.append(t(MessageKey.EXECUTION_NO_OUTPUT))
 
         output = "".join(output_parts)
         session_store.update_session(session.session_id, stage=SessionStage.EXECUTED)
@@ -5303,7 +5259,7 @@ async def handle_rejected_session(
     if final_output:
         output_parts.append(final_output)
 
-    output = "".join(output_parts) if output_parts else "[Ternion] Re-analysis completed."
+    output = "".join(output_parts) if output_parts else t(MessageKey.REANALYSIS_COMPLETED)
 
     if request.stream:
         return StreamingResponse(

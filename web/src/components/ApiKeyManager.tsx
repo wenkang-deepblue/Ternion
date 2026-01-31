@@ -271,7 +271,7 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode, language 
                         className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all duration-200 active:scale-85 cursor-pointer"
                         title={t.delete}
                       >
-                        <img src={isDarkMode ? deleteIconDark : deleteIconLight} alt="Delete" className="w-4 h-4" />
+                        <img src={isDarkMode ? deleteIconDark : deleteIconLight} alt={t.delete} className="w-4 h-4" />
                       </button>
                     </div>
                   ))}
@@ -313,7 +313,7 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode, language 
                       onTouchStart={() => setShowKeys(prev => ({ ...prev, [provider]: true }))}
                       onTouchEnd={() => setShowKeys(prev => ({ ...prev, [provider]: false }))}
                     >
-                      <img src={isDarkMode ? visibilityIconDark : visibilityIconLight} alt="Toggle visibility" className="w-5 h-5" />
+                      <img src={isDarkMode ? visibilityIconDark : visibilityIconLight} alt={t.toggleVisibility} className="w-5 h-5" />
                     </button>
                   </div>
                   <button

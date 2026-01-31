@@ -138,7 +138,7 @@ export function SettingsDropdown({
       >
         <img
           src={getSettingsIcon()}
-          alt="Settings"
+          alt={t.settingsTitle}
           className="w-6 h-6 transition-opacity"
         />
       </button>

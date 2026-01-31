@@ -130,7 +130,7 @@ App.css
 # Development-only
 *capture*.py
 reviewer*.py
-*workflow_integratioin.py
+*workflow_integration.py
 
 # Development-only testing tools (not for open source)
 scripts/*e2e*.*

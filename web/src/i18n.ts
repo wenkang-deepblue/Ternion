@@ -154,10 +154,12 @@ export interface Translations {
   usageDontRemind: string;
   usageDailyUsage: string;
   usageMonthlyUsage: string;
+  usageAllProviders: string;
   usageAllTokens: string;
   usageCost: string;
   usageInputTokens: string;
   usageOutputTokens: string;
+  usageThoughtsTokens: string;
   usagePercentage: string;
   usageModifyBudget: string;
   usageCurrentBudget: string;
@@ -168,6 +170,7 @@ export interface Translations {
   // Common UI
   unnamed: string;
   delete: string;
+  toggleVisibility: string;
   confirmDeleteApiKey: string;
 
   // Toast messages
@@ -364,10 +367,12 @@ const EN: Translations = {
   usageDontRemind: "Don't show again",
   usageDailyUsage: 'Daily Usage',
   usageMonthlyUsage: 'Monthly Usage',
+  usageAllProviders: 'All Providers',
   usageAllTokens: 'All Tokens',
   usageCost: 'Cost',
   usageInputTokens: 'Input Tokens',
   usageOutputTokens: 'Output Tokens',
+  usageThoughtsTokens: 'Thoughts Tokens',
   usagePercentage: 'Usage Amount',
   usageModifyBudget: 'Modify',
   usageCurrentBudget: 'Current budget limit',
@@ -378,6 +383,7 @@ const EN: Translations = {
   // Common UI
   unnamed: 'Unnamed',
   delete: 'Delete',
+  toggleVisibility: 'Toggle visibility',
   confirmDeleteApiKey: 'Delete this API Key?',
 
   // API Response Codes
@@ -593,10 +599,12 @@ const ZH: Translations = {
   usageDontRemind: '不再显示',
   usageDailyUsage: '每日用量',
   usageMonthlyUsage: '月度用量',
+  usageAllProviders: '全部提供商',
   usageAllTokens: '全部Token',
   usageCost: '金额',
   usageInputTokens: '输入Token',
   usageOutputTokens: '输出Token',
+  usageThoughtsTokens: '思考Token',
   usagePercentage: '用量金额',
   usageModifyBudget: '修改预算',
   usageCurrentBudget: '当前预算上限',
@@ -607,6 +615,7 @@ const ZH: Translations = {
   // Common UI
   unnamed: '未命名',
   delete: '删除',
+  toggleVisibility: '切换可见性',
   confirmDeleteApiKey: '确定删除此 API Key？',
 
   // API Response Codes
@@ -820,10 +829,12 @@ const ES: Translations = {
   usageDontRemind: 'No volver a mostrar',
   usageDailyUsage: 'Uso Diario',
   usageMonthlyUsage: 'Uso Mensual',
+  usageAllProviders: 'Todos los proveedores',
   usageAllTokens: 'Todos los Tokens',
   usageCost: 'Costo',
   usageInputTokens: 'Tokens de Entrada',
   usageOutputTokens: 'Tokens de Salida',
+  usageThoughtsTokens: 'Tokens de Pensamiento',
   usagePercentage: 'Monto de Uso',
   usageModifyBudget: 'Modificar',
   usageCurrentBudget: 'Límite de presupuesto actual',
@@ -834,6 +845,7 @@ const ES: Translations = {
   // Common UI
   unnamed: 'Sin nombre',
   delete: 'Eliminar',
+  toggleVisibility: 'Alternar visibilidad',
   confirmDeleteApiKey: '¿Eliminar esta clave API?',
 
   // API Response Codes
@@ -1049,10 +1061,12 @@ const FR: Translations = {
   usageDontRemind: 'Ne plus afficher',
   usageDailyUsage: 'Utilisation Quotidienne',
   usageMonthlyUsage: 'Utilisation Mensuelle',
+  usageAllProviders: 'Tous les fournisseurs',
   usageAllTokens: 'Tous les Tokens',
   usageCost: 'Coût',
   usageInputTokens: 'Tokens d\'Entrée',
   usageOutputTokens: 'Tokens de Sortie',
+  usageThoughtsTokens: 'Tokens de réflexion',
   usagePercentage: 'Montant d\'Utilisation',
   usageModifyBudget: 'Modifier',
   usageCurrentBudget: 'Limite de budget actuelle',
@@ -1063,6 +1077,7 @@ const FR: Translations = {
   // Common UI
   unnamed: 'Sans nom',
   delete: 'Supprimer',
+  toggleVisibility: 'Basculer la visibilité',
   confirmDeleteApiKey: 'Supprimer cette clé API ?',
 
   // API Response Codes
@@ -1278,10 +1293,12 @@ const DE: Translations = {
   usageDontRemind: 'Nicht mehr anzeigen',
   usageDailyUsage: 'Tägliche Nutzung',
   usageMonthlyUsage: 'Monatliche Nutzung',
+  usageAllProviders: 'Alle Anbieter',
   usageAllTokens: 'Alle Tokens',
   usageCost: 'Kosten',
   usageInputTokens: 'Eingabe-Tokens',
   usageOutputTokens: 'Ausgabe-Tokens',
+  usageThoughtsTokens: 'Gedanken-Tokens',
   usagePercentage: 'Nutzungsbetrag',
   usageModifyBudget: 'Ändern',
   usageCurrentBudget: 'Aktuelles Budgetlimit',
@@ -1292,6 +1309,7 @@ const DE: Translations = {
   // Common UI
   unnamed: 'Unbenannt',
   delete: 'Löschen',
+  toggleVisibility: 'Sichtbarkeit umschalten',
   confirmDeleteApiKey: 'Diesen API-Schlüssel löschen?',
 
   // API Response Codes
@@ -1507,10 +1525,12 @@ const JA: Translations = {
   usageDontRemind: '今後表示しない',
   usageDailyUsage: '日別使用量',
   usageMonthlyUsage: '月別使用量',
+  usageAllProviders: 'すべての提供元',
   usageAllTokens: 'すべてのトークン',
   usageCost: 'コスト',
   usageInputTokens: '入力トークン',
   usageOutputTokens: '出力トークン',
+  usageThoughtsTokens: '思考トークン',
   usagePercentage: '使用金額',
   usageModifyBudget: '修正',
   usageCurrentBudget: '現在の予算上限',
@@ -1521,6 +1541,7 @@ const JA: Translations = {
   // Common UI
   unnamed: '名前なし',
   delete: '削除',
+  toggleVisibility: '表示を切り替える',
   confirmDeleteApiKey: 'このAPIキーを削除しますか？',
 
   // API Response Codes
@@ -1736,10 +1757,12 @@ const KO: Translations = {
   usageDontRemind: '다시 표시 안 함',
   usageDailyUsage: '일별 사용량',
   usageMonthlyUsage: '월별 사용량',
+  usageAllProviders: '모든 제공자',
   usageAllTokens: '모든 토큰',
   usageCost: '비용',
   usageInputTokens: '입력 토큰',
   usageOutputTokens: '출력 토큰',
+  usageThoughtsTokens: '생각 토큰',
   usagePercentage: '사용 금액',
   usageModifyBudget: '수정',
   usageCurrentBudget: '현재 예산 한도',
@@ -1750,6 +1773,7 @@ const KO: Translations = {
   // Common UI
   unnamed: '이름 없음',
   delete: '삭제',
+  toggleVisibility: '가시성 전환',
   confirmDeleteApiKey: '이 API 키를 삭제하시겠습니까?',
 
   // API Response Codes

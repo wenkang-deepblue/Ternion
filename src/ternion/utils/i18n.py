@@ -79,6 +79,22 @@ class MessageKey(str, Enum):
     DISCUSSION_NO_OUTPUT = "discussion_no_output"
     DISCUSSION_ERRORS_HEADER = "discussion_errors_header"
 
+    # Workflow Errors (Cursor-facing UI text)
+    ARBITER_FALLBACKS_FAILED = "arbiter_fallbacks_failed"
+    EXECUTION_FAILED = "execution_failed"
+    EXECUTION_NO_OUTPUT = "execution_no_output"
+    REANALYSIS_COMPLETED = "reanalysis_completed"
+    REVIEW_SKIPPED = "review_skipped"
+    REVIEW_MAX_REVISIONS_REACHED = "review_max_revisions_reached"
+    OPTIMIZER_FAILED = "optimizer_failed"
+
+    # Tool Policy Placeholders (Cursor-facing UI text)
+    TOOL_POLICY_NONE = "tool_policy_none"
+    TOOL_POLICY_UNKNOWN_TOOL = "tool_policy_unknown_tool"
+    TOOL_POLICY_UNKNOWN_TARGET = "tool_policy_unknown_target"
+    TOOL_POLICY_SHELL = "tool_policy_shell"
+    TOOL_POLICY_EMPTY_COMMAND = "tool_policy_empty_command"
+
     # Streaming Errors (Cursor-facing UI text)
     STREAM_ERROR_GENERIC = "stream_error_generic"
     STREAM_ERROR_INTERRUPTED = "stream_error_interrupted"
@@ -229,6 +245,23 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] Discussion completed but no output was generated.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Errors:\n",
+
+        # Workflow Errors (Cursor-facing UI text)
+        MessageKey.ARBITER_FALLBACKS_FAILED: "All Arbiter fallbacks failed: {error}",
+        MessageKey.EXECUTION_FAILED: "Execution failed: {error}",
+        MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] Execution completed but no output was generated.",
+        MessageKey.REANALYSIS_COMPLETED: "[Ternion] Re-analysis completed.",
+        MessageKey.REVIEW_SKIPPED: "Review skipped due to error: {error}",
+        MessageKey.REVIEW_MAX_REVISIONS_REACHED: "Max revisions reached; proceeding with current code.",
+        MessageKey.OPTIMIZER_FAILED: "[Ternion Error] Optimizer failed: {error}",
+
+        # Tool Policy Placeholders (Cursor-facing UI text)
+        MessageKey.TOOL_POLICY_NONE: "(none)",
+        MessageKey.TOOL_POLICY_UNKNOWN_TOOL: "(unknown tool)",
+        MessageKey.TOOL_POLICY_UNKNOWN_TARGET: "(unknown target)",
+        MessageKey.TOOL_POLICY_SHELL: "(shell)",
+        MessageKey.TOOL_POLICY_EMPTY_COMMAND: "(empty command)",
+
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Streaming error occurred. Please retry.\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] Streaming interrupted. Please retry.\n",
 
@@ -382,6 +415,18 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] 流程已完成，但未生成任何输出。",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] 错误：\n",
+        MessageKey.ARBITER_FALLBACKS_FAILED: "所有 Arbiter 回退均失败：{error}",
+        MessageKey.EXECUTION_FAILED: "执行失败：{error}",
+        MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] 执行已完成，但未生成任何输出。",
+        MessageKey.REANALYSIS_COMPLETED: "[Ternion] 已完成重新分析。",
+        MessageKey.REVIEW_SKIPPED: "审查已因错误跳过：{error}",
+        MessageKey.REVIEW_MAX_REVISIONS_REACHED: "已达到最大修订次数，继续使用当前实现。",
+        MessageKey.OPTIMIZER_FAILED: "[Ternion 错误] Optimizer 失败：{error}",
+        MessageKey.TOOL_POLICY_NONE: "（无）",
+        MessageKey.TOOL_POLICY_UNKNOWN_TOOL: "（未知工具）",
+        MessageKey.TOOL_POLICY_UNKNOWN_TARGET: "（未知目标）",
+        MessageKey.TOOL_POLICY_SHELL: "（Shell）",
+        MessageKey.TOOL_POLICY_EMPTY_COMMAND: "（空命令）",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] 流式输出发生错误，请重试。\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] 流式输出中断，请重试。\n",
 
@@ -536,6 +581,18 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] La discusión finalizó pero no se generó ninguna salida.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Errores:\n",
+        MessageKey.ARBITER_FALLBACKS_FAILED: "Todos los fallbacks del Árbitro fallaron: {error}",
+        MessageKey.EXECUTION_FAILED: "Ejecución falló: {error}",
+        MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] La ejecución se completó pero no se generó ninguna salida.",
+        MessageKey.REANALYSIS_COMPLETED: "[Ternion] Reanálisis completado.",
+        MessageKey.REVIEW_SKIPPED: "Revisión omitida por error: {error}",
+        MessageKey.REVIEW_MAX_REVISIONS_REACHED: "Se alcanzó el máximo de revisiones; se continúa con el código actual.",
+        MessageKey.OPTIMIZER_FAILED: "[Error de Ternion] El optimizador falló: {error}",
+        MessageKey.TOOL_POLICY_NONE: "(ninguno)",
+        MessageKey.TOOL_POLICY_UNKNOWN_TOOL: "(herramienta desconocida)",
+        MessageKey.TOOL_POLICY_UNKNOWN_TARGET: "(destino desconocido)",
+        MessageKey.TOOL_POLICY_SHELL: "(shell)",
+        MessageKey.TOOL_POLICY_EMPTY_COMMAND: "(comando vacío)",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Se produjo un error de streaming. Por favor, inténtalo de nuevo.\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] El streaming se interrumpió. Por favor, inténtalo de nuevo.\n",
 
@@ -691,6 +748,18 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] La discussion est terminée mais aucune sortie n’a été générée.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Erreurs :\n",
+        MessageKey.ARBITER_FALLBACKS_FAILED: "Tous les basculements de l’Arbitre ont échoué : {error}",
+        MessageKey.EXECUTION_FAILED: "Échec de l’exécution : {error}",
+        MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] L’exécution est terminée mais aucune sortie n’a été générée.",
+        MessageKey.REANALYSIS_COMPLETED: "[Ternion] Réanalyse terminée.",
+        MessageKey.REVIEW_SKIPPED: "Révision ignorée en raison d’une erreur : {error}",
+        MessageKey.REVIEW_MAX_REVISIONS_REACHED: "Nombre maximal de révisions atteint ; poursuite avec le code actuel.",
+        MessageKey.OPTIMIZER_FAILED: "[Erreur Ternion] Échec de l’optimiseur : {error}",
+        MessageKey.TOOL_POLICY_NONE: "(aucun)",
+        MessageKey.TOOL_POLICY_UNKNOWN_TOOL: "(outil inconnu)",
+        MessageKey.TOOL_POLICY_UNKNOWN_TARGET: "(cible inconnue)",
+        MessageKey.TOOL_POLICY_SHELL: "(shell)",
+        MessageKey.TOOL_POLICY_EMPTY_COMMAND: "(commande vide)",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Une erreur de streaming s’est produite. Veuillez réessayer.\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] Le streaming a été interrompu. Veuillez réessayer.\n",
 
@@ -846,6 +915,18 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] Die Diskussion ist abgeschlossen, aber es wurde keine Ausgabe erzeugt.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Fehler:\n",
+        MessageKey.ARBITER_FALLBACKS_FAILED: "Alle Arbiter-Fallbacks sind fehlgeschlagen: {error}",
+        MessageKey.EXECUTION_FAILED: "Ausführung fehlgeschlagen: {error}",
+        MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] Ausführung abgeschlossen, aber keine Ausgabe wurde erzeugt.",
+        MessageKey.REANALYSIS_COMPLETED: "[Ternion] Neu-Analyse abgeschlossen.",
+        MessageKey.REVIEW_SKIPPED: "Überprüfung aufgrund eines Fehlers übersprungen: {error}",
+        MessageKey.REVIEW_MAX_REVISIONS_REACHED: "Maximale Anzahl an Revisionen erreicht; aktueller Code wird fortgeführt.",
+        MessageKey.OPTIMIZER_FAILED: "[Ternion-Fehler] Optimierer fehlgeschlagen: {error}",
+        MessageKey.TOOL_POLICY_NONE: "(keine)",
+        MessageKey.TOOL_POLICY_UNKNOWN_TOOL: "(unbekanntes Tool)",
+        MessageKey.TOOL_POLICY_UNKNOWN_TARGET: "(unbekanntes Ziel)",
+        MessageKey.TOOL_POLICY_SHELL: "(shell)",
+        MessageKey.TOOL_POLICY_EMPTY_COMMAND: "(leerer Befehl)",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Beim Streaming ist ein Fehler aufgetreten. Bitte erneut versuchen.\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] Das Streaming wurde unterbrochen. Bitte erneut versuchen.\n",
 
@@ -1001,6 +1082,18 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] ディスカッションは完了しましたが、出力が生成されませんでした。",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] エラー:\n",
+        MessageKey.ARBITER_FALLBACKS_FAILED: "すべてのアービターのフォールバックが失敗しました: {error}",
+        MessageKey.EXECUTION_FAILED: "実行に失敗しました: {error}",
+        MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] 実行は完了しましたが、出力が生成されませんでした。",
+        MessageKey.REANALYSIS_COMPLETED: "[Ternion] 再分析が完了しました。",
+        MessageKey.REVIEW_SKIPPED: "エラーのためレビューをスキップしました: {error}",
+        MessageKey.REVIEW_MAX_REVISIONS_REACHED: "最大修訂回数に達したため、現在のコードで進行します。",
+        MessageKey.OPTIMIZER_FAILED: "[Ternion エラー] 最適化に失敗しました: {error}",
+        MessageKey.TOOL_POLICY_NONE: "（なし）",
+        MessageKey.TOOL_POLICY_UNKNOWN_TOOL: "（不明なツール）",
+        MessageKey.TOOL_POLICY_UNKNOWN_TARGET: "（不明な対象）",
+        MessageKey.TOOL_POLICY_SHELL: "（シェル）",
+        MessageKey.TOOL_POLICY_EMPTY_COMMAND: "（空のコマンド）",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] ストリーミング中にエラーが発生しました。もう一度お試しください。\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] ストリーミングが中断されました。もう一度お試しください。\n",
 
@@ -1156,6 +1249,18 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] 토론이 완료되었지만 출력이 생성되지 않았습니다.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] 오류:\n",
+        MessageKey.ARBITER_FALLBACKS_FAILED: "모든 중재자 폴백이 실패했습니다: {error}",
+        MessageKey.EXECUTION_FAILED: "실행 실패: {error}",
+        MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] 실행은 완료되었지만 출력이 생성되지 않았습니다.",
+        MessageKey.REANALYSIS_COMPLETED: "[Ternion] 재분석이 완료되었습니다.",
+        MessageKey.REVIEW_SKIPPED: "오류로 인해 검토를 건너뜁니다: {error}",
+        MessageKey.REVIEW_MAX_REVISIONS_REACHED: "최대 수정 횟수에 도달하여 현재 코드로 진행합니다.",
+        MessageKey.OPTIMIZER_FAILED: "[Ternion 오류] 최적화 실패: {error}",
+        MessageKey.TOOL_POLICY_NONE: "(없음)",
+        MessageKey.TOOL_POLICY_UNKNOWN_TOOL: "(알 수 없는 도구)",
+        MessageKey.TOOL_POLICY_UNKNOWN_TARGET: "(알 수 없는 대상)",
+        MessageKey.TOOL_POLICY_SHELL: "(쉘)",
+        MessageKey.TOOL_POLICY_EMPTY_COMMAND: "(빈 명령)",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] 스트리밍 중 오류가 발생했습니다. 다시 시도해 주세요.\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] 스트리밍이 중단되었습니다. 다시 시도해 주세요.\n",
 

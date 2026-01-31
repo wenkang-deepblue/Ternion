@@ -100,6 +100,18 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
   const [newBudgetLimit, setNewBudgetLimit] = useState<string>('');
   const [budgetSaving, setBudgetSaving] = useState(false);
   const budgetEditRef = useRef<HTMLDivElement>(null);
+  const providerLabels: Record<ProviderFilter, string> = {
+    all: t.usageAllProviders,
+    google: t.providerGoogle,
+    anthropic: t.providerAnthropic,
+    openai: t.providerOpenai,
+  };
+  const tokenTypeLabels: Record<TokenType, string> = {
+    all: t.usageAllTokens,
+    input: t.usageInputTokens,
+    output: t.usageOutputTokens,
+    thoughts: t.usageThoughtsTokens,
+  };
 
   // Load disclaimer preference from config
   useEffect(() => {
@@ -368,13 +380,13 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
           </div>
         </div>
         <div className="card p-4">
-          <div className="text-sm text-slate-500 dark:text-slate-400">{usage.month} Input Token</div>
+          <div className="text-sm text-slate-500 dark:text-slate-400">{usage.month} {t.usageInputTokens}</div>
           <div className="text-2xl font-bold mt-1 text-slate-900 dark:text-white">
             {formatTokenCount(usage.input_tokens || 0)}
           </div>
         </div>
         <div className="card p-4">
-          <div className="text-sm text-slate-500 dark:text-slate-400">{usage.month} Output Token</div>
+          <div className="text-sm text-slate-500 dark:text-slate-400">{usage.month} {t.usageOutputTokens}</div>
           <div className="text-2xl font-bold mt-1 text-slate-900 dark:text-white">
             {formatTokenCount(usage.output_tokens || 0)}
           </div>
@@ -385,41 +397,41 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
       <div className="grid grid-cols-3 gap-4">
         <div className="card p-4">
           <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-            <img src={geminiLogo} alt="Gemini" className="w-5 h-5" />
-            <span>{usage.month} Gemini</span>
+            <img src={geminiLogo} alt={t.providerGoogle} className="w-5 h-5" />
+            <span>{usage.month} {t.providerGoogle}</span>
           </div>
           <div className="text-xl font-bold mt-1 text-slate-900 dark:text-white">
             ${calcProviderCost(usage.provider_details?.google).toFixed(2)}
           </div>
           <div className="text-xs text-slate-400 mt-1">
-            Input Token: {formatTokenCount(usage.provider_details?.google?.input_tokens || 0)} / 
-            Output Token: {formatTokenCount(usage.provider_details?.google?.output_tokens || 0)}
+            {t.usageInputTokens}: {formatTokenCount(usage.provider_details?.google?.input_tokens || 0)} / 
+            {t.usageOutputTokens}: {formatTokenCount(usage.provider_details?.google?.output_tokens || 0)}
           </div>
         </div>
         <div className="card p-4">
           <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-            <img src={claudeLogo} alt="Claude" className="w-5 h-5" />
-            <span>{usage.month} Claude</span>
+            <img src={claudeLogo} alt={t.providerAnthropic} className="w-5 h-5" />
+            <span>{usage.month} {t.providerAnthropic}</span>
           </div>
           <div className="text-xl font-bold mt-1 text-slate-900 dark:text-white">
             ${calcProviderCost(usage.provider_details?.anthropic).toFixed(2)}
           </div>
           <div className="text-xs text-slate-400 mt-1">
-            Input Token: {formatTokenCount(usage.provider_details?.anthropic?.input_tokens || 0)} / 
-            Output Token: {formatTokenCount(usage.provider_details?.anthropic?.output_tokens || 0)}
+            {t.usageInputTokens}: {formatTokenCount(usage.provider_details?.anthropic?.input_tokens || 0)} / 
+            {t.usageOutputTokens}: {formatTokenCount(usage.provider_details?.anthropic?.output_tokens || 0)}
           </div>
         </div>
         <div className="card p-4">
           <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-            <img src={openaiLogo} alt="GPT" className="w-5 h-5" />
-            <span>{usage.month} GPT</span>
+            <img src={openaiLogo} alt={t.providerOpenai} className="w-5 h-5" />
+            <span>{usage.month} {t.providerOpenai}</span>
           </div>
           <div className="text-xl font-bold mt-1 text-slate-900 dark:text-white">
             ${calcProviderCost(usage.provider_details?.openai).toFixed(2)}
           </div>
           <div className="text-xs text-slate-400 mt-1">
-            Input Token: {formatTokenCount(usage.provider_details?.openai?.input_tokens || 0)} / 
-            Output Token: {formatTokenCount(usage.provider_details?.openai?.output_tokens || 0)}
+            {t.usageInputTokens}: {formatTokenCount(usage.provider_details?.openai?.input_tokens || 0)} / 
+            {t.usageOutputTokens}: {formatTokenCount(usage.provider_details?.openai?.output_tokens || 0)}
           </div>
         </div>
       </div>
@@ -437,7 +449,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                 onClick={handleBudgetEditClick}
                 className="ml-2 px-2.5 h-5 flex items-center text-[10px] font-medium text-white bg-[#1871e6] hover:bg-[#145ab4] rounded shadow-sm hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer"
               >
-                {t.usageModifyBudget || 'Modify'}
+                {t.usageModifyBudget}
               </button>
               {/* Budget Edit Popup */}
               <div
@@ -449,7 +461,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                 style={{ minWidth: '280px' }}
               >
                 <div className="text-sm text-slate-600 dark:text-slate-300 mb-2">
-                  {t.usageCurrentBudget || 'Current budget limit'}: ${usage.monthly_limit_usd.toFixed(2)}, {t.usageChangeTo || 'change to'}:
+                  {t.usageCurrentBudget}: ${usage.monthly_limit_usd.toFixed(2)}, {t.usageChangeTo}:
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="relative flex-1 input-rainbow-glow">
@@ -470,7 +482,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                     disabled={budgetSaving}
                     className="px-4 py-2 text-sm bg-[#1871e6] hover:bg-[#145ab4] text-white rounded-lg transition-all duration-200 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                   >
-                    {budgetSaving ? '...' : (t.usageConfirm || 'Confirm')}
+                    {budgetSaving ? t.loading : t.usageConfirm}
                   </button>
                 </div>
               </div>
@@ -490,7 +502,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
       <div className="card">
         <div className="card-header">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold">{t.usageDailyUsage || 'Daily Usage'}</h3>
+            <h3 className="font-semibold">{t.usageDailyUsage}</h3>
             <div className="flex items-center gap-3">
               <select
                 className="select text-sm py-1 px-2"
@@ -506,20 +518,20 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                 value={dailyProvider}
                 onChange={(e) => setDailyProvider(e.target.value as ProviderFilter)}
               >
-                <option value="all">{t.usageAllTokens?.replace('Token', 'LLM') || 'All LLM'}</option>
-                <option value="google">Gemini</option>
-                <option value="anthropic">Claude</option>
-                <option value="openai">GPT</option>
+                <option value="all">{providerLabels.all}</option>
+                <option value="google">{providerLabels.google}</option>
+                <option value="anthropic">{providerLabels.anthropic}</option>
+                <option value="openai">{providerLabels.openai}</option>
               </select>
               <select
                 className="select text-sm py-1 px-2"
                 value={dailyTokenType}
                 onChange={(e) => setDailyTokenType(e.target.value as TokenType)}
               >
-                <option value="all">{t.usageAllTokens || 'All Tokens'}</option>
-                <option value="input">Input Token</option>
-                <option value="output">Output Token</option>
-                <option value="thoughts">Thoughts Token</option>
+                <option value="all">{tokenTypeLabels.all}</option>
+                <option value="input">{tokenTypeLabels.input}</option>
+                <option value="output">{tokenTypeLabels.output}</option>
+                <option value="thoughts">{tokenTypeLabels.thoughts}</option>
               </select>
             </div>
           </div>
@@ -552,7 +564,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                 <Bar 
                   yAxisId="left" 
                   dataKey={getCostField(dailyTokenType)} 
-                  name={dailyTokenType === 'all' ? (t.usageCost || 'Cost') : `${dailyTokenType.charAt(0).toUpperCase() + dailyTokenType.slice(1)} Cost`}
+                  name={t.usageCost}
                   fill={chartColors.cost} 
                   radius={[4, 4, 0, 0]}
                 />
@@ -562,7 +574,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                       yAxisId="right" 
                       type="monotone" 
                       dataKey="input_tokens" 
-                      name="Input"
+                      name={tokenTypeLabels.input}
                       stroke="#22c55e" 
                       strokeWidth={2}
                       dot={false}
@@ -571,7 +583,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                       yAxisId="right" 
                       type="monotone" 
                       dataKey="output_tokens" 
-                      name="Output"
+                      name={tokenTypeLabels.output}
                       stroke={chartColors.tokens} 
                       strokeWidth={2}
                       dot={false}
@@ -582,7 +594,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                     yAxisId="right" 
                     type="monotone" 
                     dataKey={getTokenField(dailyTokenType)} 
-                    name={dailyTokenType.charAt(0).toUpperCase() + dailyTokenType.slice(1)}
+                    name={tokenTypeLabels[dailyTokenType]}
                     stroke={chartColors.tokens} 
                     strokeWidth={2}
                     dot={false}
@@ -602,7 +614,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
       <div className="card">
         <div className="card-header">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold">{t.usageMonthlyUsage || 'Monthly Usage'}</h3>
+            <h3 className="font-semibold">{t.usageMonthlyUsage}</h3>
             <div className="flex items-center gap-3">
               <select
                 className="select text-sm py-1 px-2"
@@ -618,20 +630,20 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                 value={monthlyProvider}
                 onChange={(e) => setMonthlyProvider(e.target.value as ProviderFilter)}
               >
-                <option value="all">{t.usageAllTokens?.replace('Token', 'LLM') || 'All LLM'}</option>
-                <option value="google">Gemini</option>
-                <option value="anthropic">Claude</option>
-                <option value="openai">GPT</option>
+                <option value="all">{providerLabels.all}</option>
+                <option value="google">{providerLabels.google}</option>
+                <option value="anthropic">{providerLabels.anthropic}</option>
+                <option value="openai">{providerLabels.openai}</option>
               </select>
               <select
                 className="select text-sm py-1 px-2"
                 value={monthlyTokenType}
                 onChange={(e) => setMonthlyTokenType(e.target.value as TokenType)}
               >
-                <option value="all">{t.usageAllTokens || 'All Tokens'}</option>
-                <option value="input">Input Token</option>
-                <option value="output">Output Token</option>
-                <option value="thoughts">Thoughts Token</option>
+                <option value="all">{tokenTypeLabels.all}</option>
+                <option value="input">{tokenTypeLabels.input}</option>
+                <option value="output">{tokenTypeLabels.output}</option>
+                <option value="thoughts">{tokenTypeLabels.thoughts}</option>
               </select>
             </div>
           </div>
@@ -664,7 +676,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                 <Bar 
                   yAxisId="left" 
                   dataKey={getCostField(monthlyTokenType)} 
-                  name={monthlyTokenType === 'all' ? (t.usageCost || 'Cost') : `${monthlyTokenType.charAt(0).toUpperCase() + monthlyTokenType.slice(1)} Cost`}
+                  name={t.usageCost}
                   fill={chartColors.cost} 
                   radius={[4, 4, 0, 0]}
                 />
@@ -674,7 +686,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                       yAxisId="right" 
                       type="monotone" 
                       dataKey="input_tokens" 
-                      name="Input"
+                      name={tokenTypeLabels.input}
                       stroke="#22c55e" 
                       strokeWidth={2}
                       dot={false}
@@ -683,7 +695,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                       yAxisId="right" 
                       type="monotone" 
                       dataKey="output_tokens" 
-                      name="Output"
+                      name={tokenTypeLabels.output}
                       stroke={chartColors.tokens} 
                       strokeWidth={2}
                       dot={false}
@@ -694,7 +706,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                     yAxisId="right" 
                     type="monotone" 
                     dataKey={getTokenField(monthlyTokenType)} 
-                    name={monthlyTokenType.charAt(0).toUpperCase() + monthlyTokenType.slice(1)}
+                    name={tokenTypeLabels[monthlyTokenType]}
                     stroke={chartColors.tokens} 
                     strokeWidth={2}
                     dot={false}
