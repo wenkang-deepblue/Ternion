@@ -269,7 +269,7 @@ def _is_cursor_agent_request(request: ChatCompletionRequest) -> bool:
     return not _is_high_confidence_non_agent_mode(request)
 
 
-def _phase_start_indicator_text(phase: str) -> str | None:
+def _phase_start_indicator_text(phase: str, *, session_id: str | None = None) -> str | None:
     """
     Build a localized, Cursor-visible phase start indicator.
 
@@ -281,6 +281,20 @@ def _phase_start_indicator_text(phase: str) -> str | None:
     if phase_lower == "convergence":
         return t(MessageKey.CONVERGENCE_START)
     if phase_lower == "execution":
+        session_id_str = str(session_id or "").strip()
+        if session_id_str:
+            session = session_store.load_session(session_id_str)
+            if session is not None:
+                if not getattr(session, "execution_phase_announced", False):
+                    session_store.update_session(session_id_str, execution_phase_announced=True)
+                    return t(MessageKey.EXECUTION_START)
+
+                previous_phase = str(getattr(session, "workflow_phase", "") or "").strip().lower()
+                resume_phase = str(getattr(session, "report_evidence_resume_phase", "") or "").strip().lower()
+                if previous_phase == "report_evidence" and resume_phase == "execution":
+                    return t(MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE)
+                return None
+
         return t(MessageKey.EXECUTION_START)
     if phase_lower == "optimizer":
         return t(MessageKey.OPTIMIZER_START)
@@ -1157,28 +1171,38 @@ async def _run_discussion_streaming(
                         yield f"data: {chunk.model_dump_json()}\n\n"
 
                 elif event.event_type == StreamEventType.PHASE_START:
-                    # Optionally emit phase start indicator
                     if show_phase_indicators and event.phase:
-                        indicator = _phase_start_indicator_text(event.phase)
-                        if indicator:
-                            phase_lower = str(event.phase or "").strip().lower()
-                            if phase_lower == "convergence":
+                        phase_lower = str(event.phase or "").strip().lower()
+                        if convergence_pending_raw and phase_lower != "convergence":
+                            flushed = sanitize_for_cursor_display(convergence_pending_raw)
+                            convergence_pending_raw = ""
+                            if flushed:
+                                streamed_any_convergence = True
+                                streamed_content += flushed
                                 chunk = ChatCompletionChunk(
                                     id=chunk_id,
                                     created=created,
                                     model=model,
-                                    choices=[
-                                        StreamChoice(
-                                            delta=ChoiceDelta(
-                                                role=MessageRole.ASSISTANT,
-                                                content=indicator,
-                                            )
-                                        )
-                                    ],
+                                    choices=[StreamChoice(delta=ChoiceDelta(content=flushed))],
                                 )
                                 yield f"data: {chunk.model_dump_json()}\n\n"
+                        indicator = _phase_start_indicator_text(event.phase, session_id=getattr(context, "session_id", None))
+                        if indicator:
+                            if phase_lower == "convergence":
+                                delta = ChoiceDelta(
+                                    role=MessageRole.ASSISTANT,
+                                    content=indicator,
+                                )
                             else:
-                                pending_phase_indicator = indicator
+                                delta = ChoiceDelta(content="\n" + indicator)
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=model,
+                                choices=[StreamChoice(delta=delta)],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+                            pending_phase_indicator = None
 
                 elif event.event_type == StreamEventType.ERROR:
                     # Forward error
@@ -1214,6 +1238,7 @@ async def _run_discussion_streaming(
                     context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str)
                 ) else ""
                 workflow_phase = str(final_state.get("current_phase") or "execution")
+                execution_phase_announced = bool(show_phase_indicators) and workflow_phase in {"execution", "optimizer"}
                 session = session_store.create_session(
                     ternion_report=final_state.get("ternion_report", "") or "",
                     execution_mode=ExecutionMode.TERNION_FULL,
@@ -1223,6 +1248,7 @@ async def _run_discussion_streaming(
                     cursor_tool_choice=getattr(context, "cursor_tool_choice", None),
                     execution_messages=list(final_state.get("conversation_history", []) or []),
                     workflow_phase=workflow_phase,
+                    execution_phase_announced=execution_phase_announced,
                     # Phase 1.5 evidence state (required for report_evidence follow-ups)
                     evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
                     evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
@@ -1588,12 +1614,20 @@ async def _run_implementation_streaming(
 
                 elif event.event_type == StreamEventType.PHASE_START:
                     if show_phase_indicators and event.phase:
-                        indicator = _phase_start_indicator_text(event.phase)
+                        indicator = _phase_start_indicator_text(event.phase, session_id=session_id)
                         if indicator:
-                            # Buffer phase indicator until we see the first visible token delta.
-                            # This prevents producing any user-visible content in responses that
-                            # ultimately finish with tool_calls.
-                            pending_phase_indicator = indicator
+                            chunk = ChatCompletionChunk(
+                                id=chunk_id,
+                                created=created,
+                                model=model,
+                                choices=[
+                                    StreamChoice(
+                                        delta=ChoiceDelta(content="\n" + indicator),
+                                    )
+                                ],
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+                            pending_phase_indicator = None
 
                 elif event.event_type == StreamEventType.ERROR:
                     error_text = t(MessageKey.STREAM_ERROR_GENERIC)
@@ -2339,6 +2373,7 @@ async def chat_completions(
                 cursor_tool_choice=request.tool_choice,
                 execution_messages=list(final_state.get("conversation_history", []) or []),
                 workflow_phase=workflow_phase,
+                execution_phase_announced=False,
                 # Phase 1.5 evidence state (P0-1 fix)
                 evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
                 evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
@@ -2816,26 +2851,37 @@ async def handle_report_evidence_followup(
 
                     elif event.event_type == StreamEventType.PHASE_START:
                         if show_phase_indicators and event.phase:
-                            indicator = _phase_start_indicator_text(event.phase)
-                            if indicator:
-                                phase_lower = str(event.phase or "").strip().lower()
-                                if phase_lower == "convergence":
+                            phase_lower = str(event.phase or "").strip().lower()
+                            if convergence_pending_raw and phase_lower != "convergence":
+                                flushed = sanitize_for_cursor_display(convergence_pending_raw)
+                                convergence_pending_raw = ""
+                                if flushed:
+                                    streamed_any_convergence = True
+                                    streamed_content += flushed
                                     chunk = ChatCompletionChunk(
                                         id=chunk_id,
                                         created=created,
                                         model=request.model,
-                                        choices=[
-                                            StreamChoice(
-                                                delta=ChoiceDelta(
-                                                    role=MessageRole.ASSISTANT,
-                                                    content=indicator,
-                                                )
-                                            )
-                                        ],
+                                        choices=[StreamChoice(delta=ChoiceDelta(content=flushed))],
                                     )
                                     yield f"data: {chunk.model_dump_json()}\n\n"
+                            indicator = _phase_start_indicator_text(event.phase, session_id=session.session_id)
+                            if indicator:
+                                if phase_lower == "convergence":
+                                    delta = ChoiceDelta(
+                                        role=MessageRole.ASSISTANT,
+                                        content=indicator,
+                                    )
                                 else:
-                                    pending_phase_indicator = indicator
+                                    delta = ChoiceDelta(content="\n" + indicator)
+                                chunk = ChatCompletionChunk(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=request.model,
+                                    choices=[StreamChoice(delta=delta)],
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+                                pending_phase_indicator = None
 
                     elif event.event_type == StreamEventType.ERROR:
                         error_text = t(MessageKey.STREAM_ERROR_GENERIC)
@@ -3604,26 +3650,37 @@ async def handle_evidence_followup(
 
                     elif event.event_type == StreamEventType.PHASE_START:
                         if show_phase_indicators and event.phase:
-                            indicator = _phase_start_indicator_text(event.phase)
-                            if indicator:
-                                phase_lower = str(event.phase or "").strip().lower()
-                                if phase_lower == "convergence":
+                            phase_lower = str(event.phase or "").strip().lower()
+                            if convergence_pending_raw and phase_lower != "convergence":
+                                flushed = sanitize_for_cursor_display(convergence_pending_raw)
+                                convergence_pending_raw = ""
+                                if flushed:
+                                    streamed_any_convergence = True
+                                    streamed_content += flushed
                                     chunk = ChatCompletionChunk(
                                         id=chunk_id,
                                         created=created,
                                         model=request.model,
-                                        choices=[
-                                            StreamChoice(
-                                                delta=ChoiceDelta(
-                                                    role=MessageRole.ASSISTANT,
-                                                    content=indicator,
-                                                )
-                                            )
-                                        ],
+                                        choices=[StreamChoice(delta=ChoiceDelta(content=flushed))],
                                     )
                                     yield f"data: {chunk.model_dump_json()}\n\n"
+                            indicator = _phase_start_indicator_text(event.phase, session_id=session.session_id)
+                            if indicator:
+                                if phase_lower == "convergence":
+                                    delta = ChoiceDelta(
+                                        role=MessageRole.ASSISTANT,
+                                        content=indicator,
+                                    )
                                 else:
-                                    pending_phase_indicator = indicator
+                                    delta = ChoiceDelta(content="\n" + indicator)
+                                chunk = ChatCompletionChunk(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=request.model,
+                                    choices=[StreamChoice(delta=delta)],
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+                                pending_phase_indicator = None
 
                     elif event.event_type == StreamEventType.ERROR:
                         error_text = t(MessageKey.STREAM_ERROR_GENERIC)
@@ -4339,9 +4396,20 @@ async def handle_execution_followup(
                             yield f"data: {chunk.model_dump_json()}\n\n"
                     elif event.event_type == StreamEventType.PHASE_START:
                         if show_phase_indicators and event.phase:
-                            indicator = _phase_start_indicator_text(event.phase)
+                            indicator = _phase_start_indicator_text(event.phase, session_id=session.session_id)
                             if indicator:
-                                pending_phase_indicator = indicator
+                                chunk = ChatCompletionChunk(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=request.model,
+                                    choices=[
+                                        StreamChoice(
+                                            delta=ChoiceDelta(content="\n" + indicator),
+                                        )
+                                    ],
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+                                pending_phase_indicator = None
                     elif event.event_type == StreamEventType.ERROR:
                         error_text = t(MessageKey.STREAM_ERROR_GENERIC)
                         chunk = ChatCompletionChunk(

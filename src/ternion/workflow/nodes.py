@@ -2066,7 +2066,6 @@ async def convergence_node(state: TernionState) -> TernionState:
 
         # Determine execution mode from state or config (must be explicitly set)
         execution_mode_str = state.get("execution_mode", "") or config_store.load().execution_mode
-        error_msg = t(MessageKey.ARBITER_FALLBACKS_FAILED, error=str(e))
         if execution_mode_str not in ("cursor_handoff", "ternion_full"):
             error_msg = t(MessageKey.EXECUTION_MODE_NOT_CONFIGURED)
             logger.error("execution_mode_not_configured")

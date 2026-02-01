@@ -140,6 +140,7 @@ class Session:
     todo_written: bool = False
     optimizer_todo_written: bool = False
     optimizer_phase_announced: bool = False
+    execution_phase_announced: bool = False
     confirmation_reason: str | None = None
     # Phase 1.5 evidence state (for report_evidence tool loop)
     evidence_bundle: str = ""
@@ -244,6 +245,7 @@ class SessionStore:
         optimizer_review_report: str = "",
         optimizer_todo_written: bool = False,
         optimizer_phase_announced: bool = False,
+        execution_phase_announced: bool = False,
         evidence_bundle: str = "",
         evidence_gaps: str = "",
         evidence_requests: str = "",
@@ -300,6 +302,7 @@ class SessionStore:
             optimizer_review_report=optimizer_review_report,
             optimizer_todo_written=optimizer_todo_written,
             optimizer_phase_announced=optimizer_phase_announced,
+            execution_phase_announced=execution_phase_announced,
             evidence_bundle=evidence_bundle,
             evidence_gaps=evidence_gaps,
             evidence_requests=evidence_requests,
@@ -392,6 +395,7 @@ class SessionStore:
         todo_written: bool | None = None,
         optimizer_todo_written: bool | None = None,
         optimizer_phase_announced: bool | None = None,
+        execution_phase_announced: bool | None = None,
         confirmation_reason: str | None = None,
         evidence_bundle: str | None = None,
         evidence_gaps: str | None = None,
@@ -473,6 +477,8 @@ class SessionStore:
             session.optimizer_todo_written = optimizer_todo_written
         if optimizer_phase_announced is not None:
             session.optimizer_phase_announced = optimizer_phase_announced
+        if execution_phase_announced is not None:
+            session.execution_phase_announced = execution_phase_announced
         if confirmation_reason is not None:
             session.confirmation_reason = confirmation_reason
         if evidence_bundle is not None:

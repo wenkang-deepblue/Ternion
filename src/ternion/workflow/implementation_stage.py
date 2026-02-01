@@ -113,6 +113,10 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
             if state.get("pending_tool_calls"):
                 return state
 
+            # Execution-time Phase 1.5 evidence top-up.
+            if state.get("current_phase") == WorkflowPhase.REPORT_EVIDENCE.value:
+                continue
+
             # Transition to optimizer when the Writer produced an implementation.
             if state.get("current_phase") == WorkflowPhase.OPTIMIZER.value:
                 if not (state.get("writer_output_files") or {}):
@@ -129,5 +133,9 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
             # Stop immediately if tool calls are pending (server will route follow-up).
             if state.get("pending_tool_calls"):
                 return state
+
+            # Optimizer-time Phase 1.5 evidence top-up.
+            if state.get("current_phase") == WorkflowPhase.REPORT_EVIDENCE.value:
+                continue
 
             return state

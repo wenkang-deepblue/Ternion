@@ -48,3 +48,8 @@ def test_shell_policy_blocks_backticks() -> None:
 def test_shell_policy_allows_dollar_brace_variable() -> None:
     result = evaluate_shell_command("pytest -q ${HOME}")
     assert result.allowed
+
+
+def test_shell_policy_allows_file_meta_tool() -> None:
+    result = evaluate_shell_command("python -m ternion.utils.file_meta docs/advanced_feature_plan.md")
+    assert result.allowed

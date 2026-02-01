@@ -19,6 +19,7 @@ _ALLOWLIST_PATTERNS = [
     r"^pnpm\s+(run\s+)?(lint|test|format|typecheck|check)(\s+.*)?$",
     r"^yarn\s+(lint|test|format|typecheck|check)(\s+.*)?$",
     r"^make\s+(lint|test|format|check)(\s+.*)?$",
+    r"^(python3?|py)\s+-m\s+ternion\.utils\.file_meta(\s+.*)?$",
 ]
 
 _BLOCKLIST_PATTERNS = [

@@ -61,3 +61,81 @@ async def test_run_implementation_stage_supports_report_evidence_and_resumes_to_
     assert mock_report_evidence.await_count == 1
     assert mock_execution.await_count == 1
 
+
+@pytest.mark.asyncio
+async def test_run_implementation_stage_transitions_from_execution_to_report_evidence():
+    """Execution node may request Phase 1.5; the runner must not terminate early."""
+    state = {
+        "ternion_report": "REPORT",
+        "conversation_history": [{"role": "user", "content": "hi"}],
+        "current_phase": WorkflowPhase.EXECUTION.value,
+    }
+
+    with (
+        patch("ternion.workflow.implementation_stage.execution_node", new_callable=AsyncMock) as mock_execution,
+        patch("ternion.workflow.implementation_stage.report_evidence_node", new_callable=AsyncMock) as mock_report_evidence,
+    ):
+        async def report_impl(s):  # type: ignore[no-untyped-def]
+            return {**s, "current_phase": WorkflowPhase.EXECUTION.value}
+
+        call_idx = {"n": 0}
+
+        async def exec_impl(s):  # type: ignore[no-untyped-def]
+            call_idx["n"] += 1
+            if call_idx["n"] == 1:
+                return {
+                    **s,
+                    "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                    "evidence_requests": "- [P0] path=foo.py:1-2\nPURPOSE: verify foo",
+                    "report_evidence_resume_phase": WorkflowPhase.EXECUTION.value,
+                }
+            return {**s, "current_phase": WorkflowPhase.COMPLETE.value, "final_output": "DONE"}
+
+        mock_execution.side_effect = exec_impl
+        mock_report_evidence.side_effect = report_impl
+
+        out = await run_implementation_stage(state)
+
+    assert out.get("final_output") == "DONE"
+    assert mock_report_evidence.await_count == 1
+    assert mock_execution.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_implementation_stage_transitions_from_optimizer_to_report_evidence():
+    """Optimizer node may request Phase 1.5; the runner must not terminate early."""
+    state = {
+        "ternion_report": "REPORT",
+        "conversation_history": [{"role": "user", "content": "hi"}],
+        "current_phase": WorkflowPhase.OPTIMIZER.value,
+    }
+
+    with (
+        patch("ternion.workflow.implementation_stage.optimizer_node", new_callable=AsyncMock) as mock_optimizer,
+        patch("ternion.workflow.implementation_stage.report_evidence_node", new_callable=AsyncMock) as mock_report_evidence,
+    ):
+        async def report_impl(s):  # type: ignore[no-untyped-def]
+            return {**s, "current_phase": WorkflowPhase.OPTIMIZER.value}
+
+        call_idx = {"n": 0}
+
+        async def opt_impl(s):  # type: ignore[no-untyped-def]
+            call_idx["n"] += 1
+            if call_idx["n"] == 1:
+                return {
+                    **s,
+                    "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                    "evidence_requests": "- [P0] path=bar.py:3-4\nPURPOSE: verify bar",
+                    "report_evidence_resume_phase": WorkflowPhase.OPTIMIZER.value,
+                }
+            return {**s, "current_phase": WorkflowPhase.COMPLETE.value, "final_output": "DONE"}
+
+        mock_optimizer.side_effect = opt_impl
+        mock_report_evidence.side_effect = report_impl
+
+        out = await run_implementation_stage(state)
+
+    assert out.get("final_output") == "DONE"
+    assert mock_report_evidence.await_count == 1
+    assert mock_optimizer.await_count == 2
+

@@ -28,6 +28,7 @@ class MessageKey(str, Enum):
     CONVERGENCE_ERROR = "convergence_error"
     CONVERGENCE_ALL_ARBITERS_FAILED = "convergence_all_arbiters_failed"
     EXECUTION_START = "execution_start"
+    EXECUTION_CONTINUE_AFTER_EVIDENCE = "execution_continue_after_evidence"
     EXECUTION_COMPLETE = "execution_complete"
     EXECUTION_ERROR = "execution_error"
     OPTIMIZER_START = "optimizer_start"
@@ -129,6 +130,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[Arbiter]**: Error during convergence: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "All Arbiters failed; using raw analysis.",
         MessageKey.EXECUTION_START: "> **[Writer]**: Generating code from analysis report...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Evidence collected. Continuing deliverable generation...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Writer]**: Code generation complete\n",
         MessageKey.EXECUTION_ERROR: "> **[Writer]**: Error during execution: {error}\n",
         MessageKey.OPTIMIZER_START: (
@@ -302,6 +304,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[Arbiter]**: 综合分析错误: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "所有 Arbiter 失败，使用原始分析作为回退。",
         MessageKey.EXECUTION_START: "> **[Writer]**: 基于分析报告生成代码中...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> 证据补齐完成，继续生成交付内容...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Writer]**: 代码生成完成\n",
         MessageKey.EXECUTION_ERROR: "> **[Writer]**: 代码生成错误: {error}\n",
         MessageKey.OPTIMIZER_START: "> **[Optimizer]**: 基于Ternion Report的验收标准校验并改进代码中...\n",
@@ -466,6 +469,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[Árbitro]**: Error durante convergencia: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "Todos los Árbitros fallaron; usando el análisis en bruto.",
         MessageKey.EXECUTION_START: "> **[Escritor]**: Generando código del informe de análisis...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Evidencia recopilada. Continuando la generación del entregable...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Escritor]**: Generación de código completa\n",
         MessageKey.EXECUTION_ERROR: "> **[Escritor]**: Error durante ejecución: {error}\n",
         MessageKey.OPTIMIZER_START: "> **[Optimizador]**: Validando y mejorando la implementación...\n",
@@ -633,6 +637,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[Arbitre]**: Erreur pendant la convergence : {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "Tous les Arbitres ont échoué ; utilisation de l'analyse brute.",
         MessageKey.EXECUTION_START: "> **[Rédacteur]**: Génération du code à partir du rapport d'analyse...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Preuves collectées. Reprise de la génération des livrables...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Rédacteur]**: Génération de code terminée\n",
         MessageKey.EXECUTION_ERROR: "> **[Rédacteur]**: Erreur pendant l'exécution : {error}\n",
         MessageKey.OPTIMIZER_START: "> **[Optimiseur]**: Validation et amélioration de l’implémentation...\n",
@@ -800,6 +805,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[Schiedsrichter]**: Fehler bei der Konvergenz: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "Alle Arbiter sind fehlgeschlagen; es wird die Roh-Analyse verwendet.",
         MessageKey.EXECUTION_START: "> **[Verfasser]**: Code aus Analysebericht generieren...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Belege gesammelt. Generierung der Ergebnisse wird fortgesetzt...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Verfasser]**: Code-Generierung abgeschlossen\n",
         MessageKey.EXECUTION_ERROR: "> **[Verfasser]**: Fehler bei der Ausführung: {error}\n",
         MessageKey.OPTIMIZER_START: "> **[Optimierer]**: Implementierung prüfen und verbessern...\n",
@@ -967,6 +973,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[調停者]**: 収束中にエラー: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "すべてのアービターが失敗したため、生の分析を使用します。",
         MessageKey.EXECUTION_START: "> **[執筆者]**: 分析レポートからコードを生成中...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> 証拠の補完が完了しました。成果物の生成を続行します...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[執筆者]**: コード生成完了\n",
         MessageKey.EXECUTION_ERROR: "> **[執筆者]**: 実行中にエラー: {error}\n",
         MessageKey.OPTIMIZER_START: "> **[最適化担当]**: 受け入れ基準に基づき実装を検証・改善中...\n",
@@ -1134,6 +1141,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[중재자]**: 수렴 중 오류: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "모든 Arbiter가 실패하여 원본 분석을 사용합니다.",
         MessageKey.EXECUTION_START: "> **[작성자]**: 분석 보고서에서 코드 생성 중...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> 증거 보완 완료. 산출물 생성을 계속합니다...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[작성자]**: 코드 생성 완료\n",
         MessageKey.EXECUTION_ERROR: "> **[작성자]**: 실행 중 오류: {error}\n",
         MessageKey.OPTIMIZER_START: "> **[최적화 담당]**: 수용 기준에 따라 구현을 검증·개선 중...\n",

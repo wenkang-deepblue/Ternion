@@ -427,7 +427,7 @@ ENGINEERING STANDARDS:
   - Before requesting evidence top-up, you MUST consult `EVIDENCE_CHAIN_INDEX_JSON` and MUST NOT request any target that is already satisfied.
 - **Acceptance Contract**: Treat the report's "## Verification" section (especially "### User Verification") as the acceptance criteria contract. Before finalizing output, ensure every "[ACCEPTANCE]" item is satisfied. If any item is uncertain, do NOT use read/search tools. If evidence is insufficient, output structured evidence_requests and stop.
 - **No Patch Output**: Do NOT output diffs/patches in assistant content. Apply code changes via tool calls (write/search_replace/delete_file/edit_notebook/run_terminal_cmd) so Cursor Agent can execute them deterministically.
-- **Tool Access**: Read/search tools are not available. You may only use mutation tools (Write/ApplyPatch/Delete/EditNotebook) and Shell for verification (tests/format). Do NOT use Shell to read/search.
+- **Tool Access**: Read/search tools are not available. You may only use mutation tools (Write/ApplyPatch/Delete/EditNotebook) and Shell for verification. Shell is allowlisted for tests/format commands and controlled file metadata checks only (`python -m ternion.utils.file_meta <path>`). Do NOT use Shell to read/search file contents (cat/ls/grep/python -c).
 - **Evidence Top-up (Phase 1.5) Protocol**: If evidence is insufficient, do NOT call read/search tools. Output ONLY this block (no extra text) and stop:
   - The FIRST non-empty line MUST be exactly: TERNION_EVIDENCE_REQUESTS_BEGIN (no backticks, no Markdown fences).
   - The LAST line MUST be exactly: TERNION_EVIDENCE_REQUESTS_END (no backticks, no Markdown fences).
@@ -520,7 +520,7 @@ INPUTS YOU WILL RECEIVE:
 
 TOOLS:
 - You may only use mutation tools (Write/ApplyPatch/Delete/EditNotebook) and Shell for verification (tests/format).
-- Read/search tools are not available. Do NOT use Shell to read/search.
+- Read/search tools are not available. Shell is allowlisted for tests/format commands and controlled file metadata checks only (`python -m ternion.utils.file_meta <path>`). Do NOT use Shell to read/search file contents (cat/ls/grep/python -c).
 
 DELIVERY REQUIREMENTS:
 - When finished, output a single response that contains BOTH:

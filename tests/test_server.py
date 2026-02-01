@@ -1316,7 +1316,12 @@ class TestChatCompletions:
 
                 for c in chunks:
                     delta = c.get("choices", [{}])[0].get("delta", {}) or {}
-                    assert not delta.get("content"), f"Unexpected delta.content: {delta.get('content')!r}"
+                    # Tool-call chunks must never include assistant content.
+                    # Phase indicators (UI hints) may be streamed as separate content deltas.
+                    if isinstance(delta.get("tool_calls"), list):
+                        assert not delta.get("content"), (
+                            f"Unexpected delta.content in tool_calls chunk: {delta.get('content')!r}"
+                        )
 
                 tool_chunks = [
                     c for c in chunks
