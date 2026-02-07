@@ -388,7 +388,7 @@ async def resume_report_evidence(
     logger.info(
         "report_evidence_resume_complete",
         phase=final_state.get("current_phase"),
-        has_output=bool(final_state.get("final_output")),
+        has_output=bool(final_state.get("final_output") or final_state.get("generated_code")),
         error_count=len(final_state.get("errors", [])),
     )
 

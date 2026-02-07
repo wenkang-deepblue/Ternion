@@ -127,8 +127,12 @@ class Session:
     cursor_tool_choice: Any | None = None
     execution_messages: list[dict[str, Any]] = field(default_factory=list)
     pending_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_call_index: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_results_raw: dict[str, str] = field(default_factory=dict)
     tool_results_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Tool-loop workspace state captured before executing pending tool calls.
+    # This is used to detect and attribute potential Shell side effects.
+    tool_loop_pre_git_status: dict[str, Any] = field(default_factory=dict)
     round_index: int = 0
     revision_count: int = 0
     workflow_phase: str = "execution"
@@ -187,6 +191,8 @@ class Session:
         data.setdefault("confirmation_reason", None)
         data.setdefault("evidence_topup_round", 0)
         data.setdefault("report_evidence_resume_phase", "")
+        data.setdefault("tool_call_index", {})
+        data.setdefault("tool_loop_pre_git_status", {})
 
         return cls(**data)
 
@@ -199,6 +205,80 @@ def generate_session_id() -> str:
 def compute_report_hash(report: str) -> str:
     """Compute hash of report content for verification."""
     return hashlib.sha256(report.encode()).hexdigest()[:16]
+
+
+_TOOL_CALL_INDEX_ARGS_MAX_CHARS = 4_000
+_TOOL_CALL_INDEX_ARGS_PREVIEW_CHARS = 800
+
+
+def _sha256_16(text: str) -> str:
+    """Return a short, stable hash for indexing/traceability."""
+    digest = hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def _extract_tool_call_index_entries(
+    tool_calls: list[dict[str, Any]],
+    *,
+    workflow_phase: str,
+    round_index: int,
+) -> dict[str, dict[str, Any]]:
+    """
+    Build a persistent tool_call_id -> meta index from tool call payloads.
+    """
+    entries: dict[str, dict[str, Any]] = {}
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        tc_id = tc.get("id")
+        if not isinstance(tc_id, str) or not tc_id.strip():
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        arguments = fn.get("arguments")
+        if arguments is None:
+            args_str = "{}"
+        elif isinstance(arguments, str):
+            args_str = arguments
+        else:
+            args_str = json.dumps(arguments, ensure_ascii=False)
+
+        meta: dict[str, Any] = {
+            "tool_name": name.strip(),
+            "workflow_phase": str(workflow_phase or ""),
+            "round_index": int(round_index or 0),
+            "tool_arguments_sha256_16": _sha256_16(args_str),
+        }
+        if len(args_str) <= _TOOL_CALL_INDEX_ARGS_MAX_CHARS:
+            meta["tool_arguments"] = args_str
+        else:
+            preview = args_str[:_TOOL_CALL_INDEX_ARGS_PREVIEW_CHARS]
+            if len(args_str) > _TOOL_CALL_INDEX_ARGS_PREVIEW_CHARS:
+                preview = preview.rstrip() + "…"
+            meta["tool_arguments_preview"] = preview
+            meta["tool_arguments_truncated"] = True
+            meta["tool_arguments_chars"] = len(args_str)
+
+        entries[tc_id.strip()] = meta
+    return entries
+
+
+def _merge_tool_call_index(
+    existing: dict[str, dict[str, Any]] | None,
+    additions: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = dict(existing or {})
+    for key, value in (additions or {}).items():
+        if not isinstance(key, str) or not key:
+            continue
+        if not isinstance(value, dict):
+            continue
+        merged[key] = value
+    return merged
 
 
 class SessionStore:
@@ -234,6 +314,7 @@ class SessionStore:
         cursor_tool_choice: Any | None = None,
         execution_messages: list[dict[str, Any]] | None = None,
         pending_tool_calls: list[dict[str, Any]] | None = None,
+        tool_call_index: dict[str, dict[str, Any]] | None = None,
         tool_results_raw: dict[str, str] | None = None,
         tool_results_meta: dict[str, dict[str, Any]] | None = None,
         round_index: int = 0,
@@ -276,6 +357,14 @@ class SessionStore:
         # Generate safe version once at creation time
         safe_report = sanitize_for_cursor_display(ternion_report)
 
+        pending_calls = list(pending_tool_calls or [])
+        if tool_call_index is None and pending_calls:
+            tool_call_index = _extract_tool_call_index_entries(
+                pending_calls,
+                workflow_phase=workflow_phase,
+                round_index=round_index,
+            )
+
         session = Session(
             session_id=generate_session_id(),
             stage=stage,
@@ -290,7 +379,8 @@ class SessionStore:
             cursor_tools=list(cursor_tools or []),
             cursor_tool_choice=cursor_tool_choice,
             execution_messages=list(execution_messages or []),
-            pending_tool_calls=list(pending_tool_calls or []),
+            pending_tool_calls=pending_calls,
+            tool_call_index=dict(tool_call_index or {}),
             tool_results_raw=dict(tool_results_raw or {}),
             tool_results_meta=dict(tool_results_meta or {}),
             round_index=round_index,
@@ -383,8 +473,10 @@ class SessionStore:
         cursor_tool_choice: Any | None = None,
         execution_messages: list[dict[str, Any]] | None = None,
         pending_tool_calls: list[dict[str, Any]] | None = None,
+        tool_call_index: dict[str, dict[str, Any]] | None = None,
         tool_results_raw: dict[str, str] | None = None,
         tool_results_meta: dict[str, dict[str, Any]] | None = None,
+        tool_loop_pre_git_status: dict[str, Any] | None = None,
         round_index: int | None = None,
         revision_count: int | None = None,
         workflow_phase: str | None = None,
@@ -457,6 +549,8 @@ class SessionStore:
             session.tool_results_raw = tool_results_raw
         if tool_results_meta is not None:
             session.tool_results_meta = tool_results_meta
+        if tool_loop_pre_git_status is not None:
+            session.tool_loop_pre_git_status = tool_loop_pre_git_status
         if round_index is not None:
             session.round_index = round_index
         if revision_count is not None:
@@ -495,6 +589,20 @@ class SessionStore:
             session.report_evidence_resume_phase = str(report_evidence_resume_phase or "")
         if ternion_analyses is not None:
             session.ternion_analyses = ternion_analyses
+
+        if tool_call_index is not None:
+            session.tool_call_index = tool_call_index
+        elif pending_tool_calls is not None and pending_tool_calls:
+            entries = _extract_tool_call_index_entries(
+                list(pending_tool_calls),
+                workflow_phase=str(session.workflow_phase or ""),
+                round_index=int(session.round_index or 0),
+            )
+            if entries:
+                session.tool_call_index = _merge_tool_call_index(
+                    getattr(session, "tool_call_index", None),
+                    entries,
+                )
 
         session.updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         self._save_session(session)

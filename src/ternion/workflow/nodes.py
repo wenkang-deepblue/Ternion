@@ -4,9 +4,12 @@ Node implementations for the Ternion LangGraph workflow.
 Each node represents a step in the 4-step discussion flow.
 """
 
+import ast
 import asyncio
+import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -39,7 +42,11 @@ from ternion.router.prompts import (
 )
 from ternion.utils.cursor_safety import sanitize_for_cursor_display, sanitize_for_preview
 from ternion.utils.evidence_chain import (
+    compute_missing_ranges,
+    is_deterministic_range_request,
+    merge_adjacent_or_overlapping_ranges,
     merge_missing_purpose_gaps,
+    parse_evidence_bundle,
     parse_evidence_requests,
     reconcile_evidence_chain,
 )
@@ -55,7 +62,8 @@ from ternion.utils.language_resources import (
 )
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import format_report_for_display, parse_structured_report
-from ternion.utils.tool_policy import EXECUTION_ALLOWED_TOOL_CANONICAL
+from ternion.utils.shell_policy import evaluate_shell_command
+from ternion.utils.tool_policy import EXECUTION_ALLOWED_TOOL_CANONICAL, SHELL_TOOL_CANONICAL
 from ternion.utils.tool_calls_parser import (
     TOOL_CALLS_BEGIN,
     build_text_tool_calls_instruction,
@@ -102,6 +110,137 @@ DEFAULT_TIMEOUT_SECONDS = settings.discussion.timeout_seconds
 WRITER_TIMEOUT_SECONDS = max(DEFAULT_TIMEOUT_SECONDS, settings.discussion.writer_timeout_seconds)
 
 _MAX_EVIDENCE_TOPUP_ROUNDS = 2
+
+
+def _coerce_json_object(text: str) -> dict[str, Any]:
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    try:
+        data = json.loads(text)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _extract_tool_name_and_arguments(tool_call: dict[str, Any]) -> tuple[str | None, str]:
+    """
+    Extract tool name + arguments payload (as JSON string) from a normalized tool call dict.
+    """
+    if not isinstance(tool_call, dict):
+        return None, "{}"
+    fn = tool_call.get("function")
+    if isinstance(fn, dict):
+        name = fn.get("name")
+        arguments = fn.get("arguments")
+    else:
+        name = tool_call.get("name")
+        arguments = tool_call.get("arguments")
+
+    if not isinstance(name, str) or not name.strip():
+        return None, "{}"
+
+    if arguments is None:
+        return name, "{}"
+    if isinstance(arguments, str):
+        return name, arguments
+    try:
+        return name, json.dumps(arguments, ensure_ascii=False)
+    except Exception:
+        return name, "{}"
+
+
+def _extract_shell_command_from_arguments(arguments_json: str) -> str | None:
+    args = _coerce_json_object(arguments_json)
+    for key in ("command", "cmd", "commands"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, list):
+            parts = [v for v in value if isinstance(v, str) and v.strip()]
+            if parts:
+                return " && ".join(parts)
+    return None
+
+
+def _detect_blocked_execution_tool_calls(
+    tool_calls: list[dict[str, Any]] | None,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """
+    Detect tool calls that would be blocked by the Execution/Optimizer tool policy.
+
+    Returns:
+      (blocked_tools, blocked_shell)
+      - blocked_tools: list of tool names that are not allowed in execution/optimizer
+      - blocked_shell: list of dicts: {"tool": <tool_name>, "command": <cmd>, "reason": <why>}
+    """
+    blocked_tools: list[str] = []
+    blocked_shell: list[dict[str, str]] = []
+
+    for tc in tool_calls or []:
+        name, args_str = _extract_tool_name_and_arguments(tc)
+        canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+        if not canonical or canonical not in EXECUTION_ALLOWED_TOOL_CANONICAL:
+            blocked_tools.append(name or "(unknown)")
+            continue
+
+        if canonical in SHELL_TOOL_CANONICAL:
+            command = _extract_shell_command_from_arguments(args_str) or ""
+            decision = evaluate_shell_command(command)
+            if not decision.allowed:
+                preview = command.strip().replace("\n", " ")
+                if len(preview) > 200:
+                    preview = preview[:200] + "..."
+                blocked_shell.append(
+                    {
+                        "tool": name or "Shell",
+                        "command": preview or "(empty)",
+                        "reason": decision.reason,
+                    }
+                )
+
+    return blocked_tools, blocked_shell
+
+
+def _format_shell_allowlist_summary_for_model() -> str:
+    # Keep this short: categories only (avoid dumping regex patterns).
+    return (
+        "- Tests: `pytest ...`, `python -m pytest ...`\n"
+        "- Lint/Format/Typecheck/Build: `ruff ...`, `black ...`, `npm|pnpm|yarn (run) lint|test|format|typecheck|check|build ...`, `make lint|test|format|check|build ...`\n"
+        "- Working dir: `cd <repo_subdir> && <allowed command>` or `npm --prefix <repo_subdir> ...` / `pnpm|yarn -C <repo_subdir> ...`\n"
+        "- File metadata: `python -m ternion.utils.file_meta <repo_path>`\n"
+        "- Sanity: `pwd`, `python --version` / `python -V`, `node --version` / `node -v`, `npm|pnpm|yarn --version` / `-v`"
+    )
+
+
+def _build_tool_policy_guardrail_feedback(
+    *,
+    blocked_tools: list[str],
+    blocked_shell: list[dict[str, str]],
+    role_label: str,
+) -> str:
+    blocked_lines: list[str] = []
+    for tool in blocked_tools:
+        blocked_lines.append(f"- Tool not allowed in {role_label}: {tool}")
+    for item in blocked_shell:
+        tool_name = item.get("tool", "Shell")
+        cmd = item.get("command", "")
+        reason = item.get("reason", "")
+        blocked_lines.append(f"- {tool_name} -> {cmd} (reason: {reason})")
+    blocked_text = "\n".join(blocked_lines) if blocked_lines else "- (none)"
+
+    return (
+        "Your previous tool calls were BLOCKED by the host tool policy.\n\n"
+        "Blocked items:\n"
+        f"{blocked_text}\n\n"
+        "Allowed Shell commands (verification-only summary):\n"
+        f"{_format_shell_allowlist_summary_for_model()}\n\n"
+        "Hard rules (MANDATORY):\n"
+        "- Do NOT attempt any other Shell commands (especially any that read/search file contents or modify the workspace/git).\n"
+        "- If you need to read/search/list directories/view file contents, you MUST request evidence top-up by outputting ONLY the "
+        f"`{EVIDENCE_REQUESTS_BEGIN}`...`TERNION_EVIDENCE_REQUESTS_END` block and STOP.\n"
+        "- You may use `python -m ternion.utils.file_meta <path>` for repo-internal file metadata checks only.\n"
+        "- Now: replace the blocked tool calls with a compliant alternative plan.\n"
+    )
 
 
 def _validate_evidence_topup_request(*, used_round: int, final_request: bool) -> str | None:
@@ -1559,6 +1698,169 @@ def _has_real_evidence_requests(requests: str) -> bool:
     return True
 
 
+_DETERMINISTIC_EVIDENCE_READ_CHUNK_LINES = 200
+_TOOL_TEXT_FIELD_RE = re.compile(
+    r"text=(?P<quote>'|\")(?P<body>(?:\\.|(?!\1).)*)(?P=quote)",
+    flags=re.DOTALL,
+)
+_NUMBERED_PIPE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
+_NUMBERED_L_PREFIX_RE = re.compile(r"^L(\d+):(.*)$")
+_REPO_ROOT_CACHE: Path | None = None
+
+
+def _get_repo_root() -> Path:
+    """
+    Best-effort repository root detection (used for absolute tool paths).
+    """
+    global _REPO_ROOT_CACHE
+    if _REPO_ROOT_CACHE is not None:
+        return _REPO_ROOT_CACHE
+
+    start = Path.cwd().resolve()
+    for candidate in (start, *start.parents):
+        if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
+            _REPO_ROOT_CACHE = candidate
+            return candidate
+    _REPO_ROOT_CACHE = start
+    return start
+
+
+def _to_repo_relative_path(raw_path: str | None) -> str:
+    """
+    Normalize a tool path to a repo-relative, forward-slash path when possible.
+    """
+    if not raw_path or not isinstance(raw_path, str):
+        return ""
+    cleaned = raw_path.strip().strip('"').strip("'").strip("`")
+    if not cleaned:
+        return ""
+
+    p = Path(cleaned).expanduser()
+    if p.is_absolute():
+        try:
+            rel = p.resolve(strict=False).relative_to(_get_repo_root())
+            return rel.as_posix()
+        except Exception:
+            return cleaned.replace("\\", "/")
+
+    cleaned = cleaned.removeprefix("./").removeprefix(".\\")
+    return cleaned.replace("\\", "/")
+
+
+def _to_repo_absolute_path(repo_rel_path: str) -> str:
+    """
+    Convert a repo-relative path to an absolute path under the repo root.
+    """
+    rel = (repo_rel_path or "").strip().removeprefix("./").removeprefix(".\\")
+    if not rel:
+        return ""
+    p = Path(rel)
+    if p.is_absolute():
+        return str(p)
+    return str((_get_repo_root() / p).resolve(strict=False))
+
+
+def _extract_tool_text(tool_content: str | None) -> str:
+    """
+    Extract text payloads from Cursor tool outputs when they are wrapped as TextContent repr.
+    """
+    raw = tool_content or ""
+    if not raw:
+        return ""
+
+    matches = list(_TOOL_TEXT_FIELD_RE.finditer(raw))
+    if not matches:
+        return raw
+
+    parts: list[str] = []
+    for m in matches:
+        quote = m.group("quote")
+        body = m.group("body")
+        literal = f"{quote}{body}{quote}"
+        try:
+            value = ast.literal_eval(literal)
+            if isinstance(value, str) and value:
+                parts.append(value)
+        except Exception:
+            if body:
+                parts.append(body)
+    return "\n".join(parts) if parts else raw
+
+
+def _extract_numbered_lines(text: str) -> list[tuple[int, str]]:
+    """
+    Extract numbered lines from tool output. Supports both `123|...` and `L123:...`.
+    """
+    parsed: list[tuple[int, str]] = []
+    for raw_line in (text or "").splitlines():
+        match = _NUMBERED_PIPE_RE.match(raw_line)
+        if match:
+            num = int(match.group(1))
+            parsed.append((num, raw_line.rstrip()))
+            continue
+        match = _NUMBERED_L_PREFIX_RE.match(raw_line)
+        if match:
+            num = int(match.group(1))
+            rendered = f"{num}|{match.group(2).lstrip()}"
+            parsed.append((num, rendered.rstrip()))
+    return parsed
+
+
+def _group_contiguous_numbered_lines(
+    lines: list[tuple[int, str]],
+    *,
+    within: tuple[int, int] | None = None,
+) -> list[list[tuple[int, str]]]:
+    """
+    Group numbered lines into contiguous runs.
+    """
+    if not lines:
+        return []
+
+    if within is not None:
+        r_start, r_end = within
+        filtered = [(n, s) for n, s in lines if r_start <= n <= r_end]
+    else:
+        filtered = list(lines)
+
+    if not filtered:
+        return []
+
+    runs: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    prev_num: int | None = None
+    for num, raw in filtered:
+        if prev_num is None or num == prev_num + 1:
+            current.append((num, raw))
+        else:
+            if current:
+                runs.append(current)
+            current = [(num, raw)]
+        prev_num = num
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _sha256_16(text: str) -> str:
+    digest = hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def _format_purpose_for_deterministic_evidence(purposes: set[str]) -> str:
+    cleaned = [p.strip() for p in purposes if isinstance(p, str) and p.strip()]
+    if not cleaned:
+        return "Satisfy deterministic evidence request(s)."
+    unique: list[str] = []
+    seen: set[str] = set()
+    for p in cleaned:
+        if p in seen:
+            continue
+        seen.add(p)
+        unique.append(p)
+    return " / ".join(unique)
+
+
 async def report_evidence_node(state: TernionState) -> TernionState:
     """
     Phase 1.5: Report Evidence Verification - Arbiter collects requested evidence.
@@ -1614,24 +1916,339 @@ async def report_evidence_node(state: TernionState) -> TernionState:
 
     session_id = str(state.get("session_id") or "").strip()
 
+    cursor_tools = _filter_read_only_cursor_tools(state.get("cursor_tools") or [])
+    cursor_tool_choice = state.get("cursor_tool_choice")
+    role_cfg = config_store.get_role_config("arbiter")
+    history = state.get("conversation_history", [])
+
+    parsed_requests = parse_evidence_requests(evidence_requests)
+    deterministic_targets: list[dict[str, Any]] = []
+    non_deterministic_entries: list[Any] = []
+    for req in parsed_requests:
+        det = is_deterministic_range_request(req)
+        if det is not None:
+            path, line_range = det
+            deterministic_targets.append(
+                {
+                    "path": path,
+                    "line_range": line_range,
+                    "purpose": str(getattr(req, "purpose", "") or ""),
+                }
+            )
+        else:
+            non_deterministic_entries.append(req)
+
+    deterministic_paths = {
+        str(t.get("path") or "")
+        for t in deterministic_targets
+        if isinstance(t, dict) and t.get("path")
+    }
+
+    existing_bundle = state.get("evidence_bundle") or ""
+    updated_bundle = existing_bundle
+    attempted_reads: set[tuple[str, int, int]] = set()
+
+    if deterministic_targets:
+        existing_items = parse_evidence_bundle(existing_bundle)
+        existing_keys = {
+            (
+                _to_repo_relative_path(item.path),
+                (item.lines or "").strip(),
+                item.excerpt_hash_raw,
+            )
+            for item in existing_items
+            if item.path and item.lines
+        }
+
+        tool_contents_by_id: dict[str, str] = {}
+        for msg in history:
+            if msg.get("role") != "tool":
+                continue
+            tool_call_id = msg.get("tool_call_id")
+            if not isinstance(tool_call_id, str) or not tool_call_id:
+                continue
+            content = msg.get("content")
+            tool_contents_by_id[tool_call_id] = content if isinstance(content, str) else str(content)
+
+        new_item_blocks: list[str] = []
+
+        def ranges_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
+            return not (a[1] < b[0] or a[0] > b[1])
+
+        for msg in history:
+            if msg.get("role") != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list) or not tool_calls:
+                continue
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                tc_id = tc.get("id")
+                fn = tc.get("function")
+                if not isinstance(fn, dict):
+                    continue
+                name = fn.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                canonical = re.sub(r"[^a-z0-9]+", "", name.strip().lower())
+                if canonical not in {"read", "readfile"}:
+                    continue
+                args_raw = fn.get("arguments")
+                if not isinstance(args_raw, str) or not args_raw.strip():
+                    continue
+                try:
+                    args = json.loads(args_raw)
+                except Exception:
+                    continue
+                if not isinstance(args, dict):
+                    continue
+
+                raw_path = str(args.get("path") or args.get("target_file") or args.get("file_path") or "")
+                path_rel = _to_repo_relative_path(raw_path)
+                if not path_rel or path_rel not in deterministic_paths:
+                    continue
+
+                offset = args.get("offset")
+                limit = args.get("limit")
+                if not isinstance(offset, int) or not isinstance(limit, int) or limit <= 0:
+                    continue
+                start = max(1, offset)
+                end = start + limit - 1
+                attempted_reads.add((path_rel, start, end))
+
+                if not isinstance(tc_id, str) or not tc_id:
+                    continue
+                tool_raw = tool_contents_by_id.get(tc_id) or ""
+                if not tool_raw:
+                    continue
+                extracted = _extract_tool_text(tool_raw)
+                numbered = _extract_numbered_lines(extracted)
+                runs = _group_contiguous_numbered_lines(numbered, within=(start, end))
+                if not runs:
+                    continue
+
+                for run in runs:
+                    run_start = run[0][0]
+                    run_end = run[-1][0]
+                    purposes = {
+                        str(t.get("purpose") or "")
+                        for t in deterministic_targets
+                        if t.get("path") == path_rel
+                        and isinstance(t.get("line_range"), tuple)
+                        and ranges_overlap(t["line_range"], (run_start, run_end))
+                    }
+                    purpose = _format_purpose_for_deterministic_evidence(purposes)
+                    excerpt_lines = ["  " + raw for _, raw in run]
+                    excerpt_raw = "\n".join(excerpt_lines).rstrip()
+                    excerpt_hash_raw = _sha256_16(excerpt_raw)
+                    lines_value = f"{run_start}-{run_end}"
+                    key = (path_rel, lines_value, excerpt_hash_raw)
+                    if key in existing_keys:
+                        continue
+                    existing_keys.add(key)
+                    new_item_blocks.append(
+                        (
+                            f"- [FILE_EXCERPT] path={path_rel} | lines={lines_value}\n"
+                            f"  PURPOSE: {purpose}\n"
+                            "  EXCERPT_BEGIN\n"
+                            + "\n".join(excerpt_lines)
+                            + "\n"
+                            "  EXCERPT_END"
+                        )
+                    )
+
+        if new_item_blocks:
+            if updated_bundle and updated_bundle.strip().startswith("EVIDENCE_BUNDLE:") and "- None" not in updated_bundle:
+                updated_bundle = updated_bundle.rstrip() + "\n\n" + "\n".join(new_item_blocks)
+            else:
+                updated_bundle = "EVIDENCE_BUNDLE:\n" + "\n".join(new_item_blocks)
+
+    deterministic_tool_calls: list[dict[str, Any]] = []
+    if deterministic_targets:
+        bundle_items = parse_evidence_bundle(updated_bundle)
+        covered_by_path: dict[str, list[tuple[int, int]]] = {}
+        for item in bundle_items:
+            if item.line_range is None:
+                continue
+            path_rel = _to_repo_relative_path(item.path)
+            if not path_rel or path_rel not in deterministic_paths:
+                continue
+            covered_by_path.setdefault(path_rel, []).append(item.line_range)
+
+        segments_by_path: dict[str, list[tuple[int, int, str]]] = {}
+        for target in deterministic_targets:
+            path = str(target.get("path") or "")
+            req_range = target.get("line_range")
+            if not path or not isinstance(req_range, tuple):
+                continue
+            missing = compute_missing_ranges(
+                request_range=req_range,
+                covered_ranges=covered_by_path.get(path, []),
+            )
+            for seg_start, seg_end in missing:
+                segments_by_path.setdefault(path, []).append(
+                    (seg_start, seg_end, str(target.get("purpose") or ""))
+                )
+
+        for path, segments in segments_by_path.items():
+            seg_ranges = [(s, e) for s, e, _ in segments]
+            merged = merge_adjacent_or_overlapping_ranges(seg_ranges)
+            for seg_start, seg_end in merged:
+                purposes = {
+                    p
+                    for s, e, p in segments
+                    if p and not (e < seg_start or s > seg_end)
+                }
+                chunk_start = seg_start
+                while chunk_start <= seg_end:
+                    chunk_end = min(
+                        seg_end,
+                        chunk_start + _DETERMINISTIC_EVIDENCE_READ_CHUNK_LINES - 1,
+                    )
+                    if (path, chunk_start, chunk_end) not in attempted_reads:
+                        deterministic_tool_calls.append(
+                            {
+                                "path": path,
+                                "start": chunk_start,
+                                "end": chunk_end,
+                                "purposes": purposes,
+                            }
+                        )
+                    chunk_start = chunk_end + 1
+
+    if deterministic_tool_calls:
+        read_tool_name: str | None = None
+        path_key = "path"
+        offset_key = "offset"
+        limit_key = "limit"
+        for tool in cursor_tools:
+            if not isinstance(tool, dict):
+                continue
+            fn = tool.get("function")
+            if not isinstance(fn, dict):
+                continue
+            name = fn.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            canonical = re.sub(r"[^a-z0-9]+", "", name.strip().lower())
+            if canonical not in {"read", "readfile"}:
+                continue
+            read_tool_name = name
+            params = fn.get("parameters")
+            if isinstance(params, dict):
+                props = params.get("properties")
+                if isinstance(props, dict):
+                    if "path" in props:
+                        path_key = "path"
+                    elif "target_file" in props:
+                        path_key = "target_file"
+                    elif "file_path" in props:
+                        path_key = "file_path"
+                    if "offset" in props:
+                        offset_key = "offset"
+                    if "limit" in props:
+                        limit_key = "limit"
+            break
+
+        if read_tool_name:
+            tool_calls: list[dict[str, Any]] = []
+            for idx, item in enumerate(deterministic_tool_calls):
+                rel_path = str(item.get("path") or "")
+                abs_path = _to_repo_absolute_path(rel_path)
+                start = int(item.get("start") or 0)
+                end = int(item.get("end") or 0)
+                if not abs_path or start <= 0 or end < start:
+                    continue
+                args = {
+                    path_key: abs_path,
+                    offset_key: start,
+                    limit_key: end - start + 1,
+                }
+                tool_calls.append(
+                    {
+                        "id": f"deterministic_report_evidence_{idx}",
+                        "type": "function",
+                        "function": {
+                            "name": read_tool_name,
+                            "arguments": json.dumps(args, ensure_ascii=False),
+                        },
+                    }
+                )
+
+            if tool_calls:
+                log_manager.emit(
+                    level="INFO",
+                    category="WORKFLOW",
+                    message=(
+                        "report_evidence_deterministic_tool_calls_ready | "
+                        f"session_id={session_id} | "
+                        f"count={len(tool_calls)}"
+                    ),
+                )
+                return {
+                    **state,
+                    "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
+                    "pending_tool_calls": tool_calls,
+                    "evidence_bundle": updated_bundle,
+                    "thinking_logs": thinking_logs,
+                }
+
+    if non_deterministic_entries:
+        non_det_lines: list[str] = []
+        for entry in non_deterministic_entries:
+            req_line = str(getattr(entry, "request", "") or "").strip()
+            if not req_line:
+                continue
+            non_det_lines.append(f"- {req_line}")
+            purpose = str(getattr(entry, "purpose", "") or "").strip()
+            if purpose:
+                non_det_lines.append(f"PURPOSE: {purpose}")
+        effective_evidence_requests = "\n".join(non_det_lines).strip()
+    else:
+        effective_evidence_requests = ""
+
+    if (
+        deterministic_targets
+        and not _has_real_evidence_requests(effective_evidence_requests)
+        and not deterministic_tool_calls
+    ):
+        reconciled_gaps, evidence_chain_index = reconcile_evidence_chain(
+            evidence_bundle=updated_bundle,
+            evidence_gaps=state.get("evidence_gaps") or "",
+            evidence_requests=evidence_requests,
+        )
+        return {
+            **state,
+            "current_phase": next_phase,
+            "evidence_bundle": updated_bundle,
+            "evidence_gaps": reconciled_gaps,
+            "evidence_chain_index": evidence_chain_index,
+            "conversation_history": _filter_conversation_history_for_analysis(
+                state.get("conversation_history", [])
+            ),
+            "thinking_logs": thinking_logs,
+        }
+
+    if _has_real_evidence_requests(effective_evidence_requests):
+        host_evidence_requests = effective_evidence_requests
+    else:
+        host_evidence_requests = evidence_requests
+
+    if updated_bundle != existing_bundle:
+        state = {**state, "evidence_bundle": updated_bundle}
+
     system_prompt = _prepend_global_security_rules(ARBITER_REPORT_EVIDENCE_PROMPT)
     messages: list[ChatMessage] = [
         ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
     ]
-
-    # Add evidence_requests as user message (this is the only input the prompt needs)
     messages.append(
         ChatMessage(
             role=MessageRole.USER,
-            content=f"[EVIDENCE_REQUESTS]\n{evidence_requests}",
+            content=f"[EVIDENCE_REQUESTS]\n{host_evidence_requests}",
         )
     )
 
-    cursor_tools = _filter_read_only_cursor_tools(state.get("cursor_tools") or [])
-    cursor_tool_choice = state.get("cursor_tool_choice")
-    role_cfg = config_store.get_role_config("arbiter")
-
-    history = state.get("conversation_history", [])
     assistant_with_tools_count = 0
     tool_msg_count = 0
     raw_tool_msg_count = 0
@@ -1673,7 +2290,6 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         else:
             pending_tool_call_ids = set()
 
-    # Log message composition for debugging tool_call_id mismatch issues
     if raw_tool_msg_count > 0:
         log_manager.emit(
             level="DEBUG" if assistant_with_tools_count > 0 else "WARN",
@@ -1688,13 +2304,16 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             ),
         )
         if assistant_with_tools_count == 0 and raw_tool_msg_count > 0:
-            # This will cause OpenAI 400 error - tool messages without preceding assistant tool_calls
             logger.warning(
                 "report_evidence_tool_messages_without_assistant",
                 history_len=len(history),
                 tool_msg_count=raw_tool_msg_count,
                 history_roles=[msg.get("role") for msg in history],
-                history_has_tool_calls=[bool(msg.get("tool_calls")) for msg in history if msg.get("role") == "assistant"],
+                history_has_tool_calls=[
+                    bool(msg.get("tool_calls"))
+                    for msg in history
+                    if msg.get("role") == "assistant"
+                ],
             )
         if dropped_tool_msg_count > 0:
             logger.warning(
@@ -2816,21 +3435,71 @@ async def execution_node(state: TernionState) -> TernionState:
                     ),
                 )
             if response.tool_calls:
-                log_manager.emit(
-                    level="INFO",
-                    category="WORKFLOW",
-                    message=(
-                        "execution_writer_tool_calls_ready | "
-                        f"session_id={session_id} | "
-                        f"count={len(response.tool_calls)}"
-                    ),
+                blocked_tools, blocked_shell = _detect_blocked_execution_tool_calls(
+                    response.tool_calls
                 )
-                return {
-                    **state,
-                    "current_phase": WorkflowPhase.EXECUTION.value,
-                    "pending_tool_calls": response.tool_calls,
-                    "thinking_logs": thinking_logs,
-                }
+                if blocked_tools or blocked_shell:
+                    log_manager.emit(
+                        level="INFO",
+                        category="GUARDRAIL",
+                        message=(
+                            "execution_tool_policy_soft_retry | "
+                            f"session_id={session_id} | "
+                            f"blocked_tools={len(blocked_tools)} | "
+                            f"blocked_shell={len(blocked_shell)}"
+                        ),
+                    )
+                    last = messages[-1] if messages else None
+                    feedback = _build_tool_policy_guardrail_feedback(
+                        blocked_tools=blocked_tools,
+                        blocked_shell=blocked_shell,
+                        role_label="Writer (execution)",
+                    )
+                    if (
+                        last
+                        and last.role == MessageRole.USER
+                        and isinstance(last.content, str)
+                    ):
+                        last.content += "\n\n[TERNION TOOL POLICY GUARDRAIL]\n\n" + feedback
+                    else:
+                        messages.append(
+                            ChatMessage(
+                                role=MessageRole.USER,
+                                content="[TERNION TOOL POLICY GUARDRAIL]\n\n" + feedback,
+                            )
+                        )
+                    # IMPORTANT: Use non-streaming retry to avoid duplicate phase-start
+                    # indicators and noisy partial output in Cursor.
+                    response = await _call_with_timeout(
+                        provider=provider,
+                        messages=messages,
+                        model=model,
+                        temperature=0.3,
+                        timeout_seconds=writer_timeout,
+                        **extra_kwargs,
+                    )
+                    if supports_text_tools and not response.tool_calls:
+                        parsed_tool_calls = extract_tool_calls_from_text(response.content)
+                        if parsed_tool_calls:
+                            response.tool_calls = parsed_tool_calls
+                            response.content = ""
+
+                if response.tool_calls:
+                    log_manager.emit(
+                        level="INFO",
+                        category="WORKFLOW",
+                        message=(
+                            "execution_writer_tool_calls_ready | "
+                            f"session_id={session_id} | "
+                            f"count={len(response.tool_calls)}"
+                        ),
+                    )
+                    return {
+                        **state,
+                        "current_phase": WorkflowPhase.EXECUTION.value,
+                        "pending_tool_calls": response.tool_calls,
+                        "thinking_logs": thinking_logs,
+                    }
             if not (response.content or "").strip():
                 raise ValueError("writer_returned_empty_output")
             topup_block = extract_evidence_requests_block(
@@ -3594,12 +4263,63 @@ async def optimizer_node(state: TernionState) -> TernionState:
         )
 
         if response.tool_calls:
-            return {
-                **state,
-                "current_phase": WorkflowPhase.OPTIMIZER.value,
-                "pending_tool_calls": response.tool_calls,
-                "thinking_logs": thinking_logs,
-            }
+            blocked_tools, blocked_shell = _detect_blocked_execution_tool_calls(
+                response.tool_calls
+            )
+            if blocked_tools or blocked_shell:
+                log_manager.emit(
+                    level="INFO",
+                    category="GUARDRAIL",
+                    message=(
+                        "optimizer_tool_policy_soft_retry | "
+                        f"session_id={session_id} | "
+                        f"blocked_tools={len(blocked_tools)} | "
+                        f"blocked_shell={len(blocked_shell)}"
+                    ),
+                )
+                last = messages[-1] if messages else None
+                feedback = _build_tool_policy_guardrail_feedback(
+                    blocked_tools=blocked_tools,
+                    blocked_shell=blocked_shell,
+                    role_label="Optimizer (optimizer)",
+                )
+                if (
+                    last
+                    and last.role == MessageRole.USER
+                    and isinstance(last.content, str)
+                ):
+                    last.content += "\n\n[TERNION TOOL POLICY GUARDRAIL]\n\n" + feedback
+                else:
+                    messages.append(
+                        ChatMessage(
+                            role=MessageRole.USER,
+                            content="[TERNION TOOL POLICY GUARDRAIL]\n\n" + feedback,
+                        )
+                    )
+
+                # IMPORTANT: Use non-streaming retry to avoid duplicate phase-start
+                # indicators and noisy partial output in Cursor.
+                response = await _call_with_timeout(
+                    provider=provider,
+                    messages=messages,
+                    model=model,
+                    temperature=0.2,
+                    timeout_seconds=optimizer_timeout,
+                    **extra_kwargs,
+                )
+                if supports_text_tools and not response.tool_calls:
+                    parsed_tool_calls = extract_tool_calls_from_text(response.content)
+                    if parsed_tool_calls:
+                        response.tool_calls = parsed_tool_calls
+                        response.content = ""
+
+            if response.tool_calls:
+                return {
+                    **state,
+                    "current_phase": WorkflowPhase.OPTIMIZER.value,
+                    "pending_tool_calls": response.tool_calls,
+                    "thinking_logs": thinking_logs,
+                }
 
         topup_block = extract_evidence_requests_block(
             response.content,

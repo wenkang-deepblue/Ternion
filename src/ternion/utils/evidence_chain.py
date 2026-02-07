@@ -86,7 +86,7 @@ def _parse_header_fields(header: str) -> dict[str, str]:
 def _parse_line_range(value: str | None) -> tuple[int, int] | None:
     if not value:
         return None
-    match = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", value)
+    match = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*(?:$|\s)", value)
     if not match:
         return None
     start = int(match.group(1))
@@ -111,7 +111,7 @@ def _parse_total_lines(value: str | None) -> int | None:
 def _normalize_path(path: str | None) -> str:
     if not path:
         return ""
-    cleaned = path.strip().strip('"').strip("'")
+    cleaned = path.strip().strip('"').strip("'").strip("`")
     return cleaned
 
 
@@ -178,22 +178,24 @@ def parse_evidence_bundle(bundle: str) -> list[EvidenceItem]:
 
 
 def _extract_field(text: str, key: str) -> str | None:
-    marker = f"{key}="
-    if marker not in text:
+    if not text or not key:
         return None
-    remainder = text.split(marker, 1)[1]
-    if " | " in remainder:
-        value = remainder.split(" | ", 1)[0]
-    else:
-        value = remainder
-    return value.strip() or None
+    pattern = re.compile(
+        rf"(?:^|\s){re.escape(key)}\s*=\s*(?P<value>.+?)(?=\s+\w+\s*=|\s*\|\s*|$)",
+        flags=re.IGNORECASE,
+    )
+    match = pattern.search(text)
+    if not match:
+        return None
+    value = match.group("value").strip()
+    return value or None
 
 
 def _split_path_and_lines(value: str | None) -> tuple[str | None, str | None]:
     if not value:
         return None, None
     cleaned = _normalize_path(value)
-    match = re.match(r"^(.*):(\d+\s*-\s*\d+)$", cleaned)
+    match = re.match(r"^(.*):(\d+\s*-\s*\d+)(?:\s+.*)?$", cleaned)
     if match:
         return _normalize_path(match.group(1)), match.group(2).replace(" ", "")
     return cleaned, None
@@ -210,12 +212,115 @@ def _extract_target_from_ref(ref: str | None) -> tuple[str | None, str | None]:
     if not ref:
         return None, None
     cleaned = ref.strip()
-    match = re.match(r"^(.*):(\d+\s*-\s*\d+)$", cleaned)
+    match = re.match(r"^(.*):(\d+\s*-\s*\d+)(?:\s+.*)?$", cleaned)
     if match:
         return _normalize_path(match.group(1)), match.group(2).replace(" ", "")
     if _looks_like_path(cleaned):
         return _normalize_path(cleaned), None
     return None, None
+
+
+def merge_adjacent_or_overlapping_ranges(
+    ranges: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """
+    Merge ranges using the rule: merge only when overlapping or adjacent.
+    """
+    normalized: list[tuple[int, int]] = []
+    for start, end in ranges or []:
+        if not isinstance(start, int) or not isinstance(end, int):
+            continue
+        if start <= 0 or end <= 0:
+            continue
+        if end < start:
+            continue
+        normalized.append((start, end))
+    if not normalized:
+        return []
+
+    normalized.sort(key=lambda r: (r[0], r[1]))
+    merged: list[tuple[int, int]] = []
+    cur_start, cur_end = normalized[0]
+    for start, end in normalized[1:]:
+        if start <= cur_end + 1:
+            cur_end = max(cur_end, end)
+            continue
+        merged.append((cur_start, cur_end))
+        cur_start, cur_end = start, end
+    merged.append((cur_start, cur_end))
+    return merged
+
+
+def compute_missing_ranges(
+    *,
+    request_range: tuple[int, int],
+    covered_ranges: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """
+    Compute missing subranges within request_range that are not covered.
+    """
+    start, end = request_range
+    if start <= 0 or end <= 0 or end < start:
+        return []
+
+    clipped: list[tuple[int, int]] = []
+    for c_start, c_end in covered_ranges or []:
+        if not isinstance(c_start, int) or not isinstance(c_end, int):
+            continue
+        if c_end < c_start:
+            continue
+        if c_end < start or c_start > end:
+            continue
+        clipped.append((max(start, c_start), min(end, c_end)))
+
+    merged = merge_adjacent_or_overlapping_ranges(clipped)
+    if not merged:
+        return [(start, end)]
+
+    gaps: list[tuple[int, int]] = []
+    cursor = start
+    for seg_start, seg_end in merged:
+        if seg_start > cursor:
+            gaps.append((cursor, seg_start - 1))
+        cursor = max(cursor, seg_end + 1)
+        if cursor > end:
+            break
+    if cursor <= end:
+        gaps.append((cursor, end))
+    return gaps
+
+
+def is_deterministic_range_request(
+    request: EvidenceRequest,
+) -> tuple[str, tuple[int, int]] | None:
+    """
+    Return (path, line_range) when the request is a deterministic single-file range request.
+    """
+    target_path, request_range = _resolve_request_target(request)
+    if not target_path or request_range is None:
+        return None
+
+    start, end = request_range
+    if start < 1 or end < start:
+        return None
+
+    cleaned = _normalize_path(target_path)
+    if not cleaned:
+        return None
+    if cleaned.startswith(("~", "/", "\\")):
+        return None
+    cleaned = cleaned.removeprefix("./").removeprefix(".\\")
+    if ":" in cleaned:
+        return None
+    if any(ch.isspace() for ch in cleaned):
+        return None
+    parts = [p for p in re.split(r"[\\/]+", cleaned) if p]
+    if any(p == ".." for p in parts):
+        return None
+    normalized = "/".join(parts)
+    if not normalized:
+        return None
+    return normalized, (start, end)
 
 
 def parse_evidence_requests(requests: str) -> list[EvidenceRequest]:

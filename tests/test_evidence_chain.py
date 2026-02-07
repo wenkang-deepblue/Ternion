@@ -1,4 +1,11 @@
-from ternion.utils.evidence_chain import merge_missing_purpose_gaps, reconcile_evidence_chain
+from ternion.utils.evidence_chain import (
+    compute_missing_ranges,
+    is_deterministic_range_request,
+    merge_adjacent_or_overlapping_ranges,
+    merge_missing_purpose_gaps,
+    parse_evidence_requests,
+    reconcile_evidence_chain,
+)
 
 
 def test_reconcile_evidence_chain_matches_requests_and_updates_gaps() -> None:
@@ -298,3 +305,101 @@ def test_merge_missing_purpose_gaps_is_deduped() -> None:
     )
 
     assert merged == evidence_gaps
+
+
+def test_range_request_allows_trailing_comment_in_path_range() -> None:
+    evidence_bundle = (
+        "EVIDENCE_BUNDLE:\n"
+        "- [FILE_EXCERPT] path=src/app.py | lines=10-20\n"
+        "  PURPOSE: Verify handler logic\n"
+        "  EXCERPT_BEGIN\n"
+        "  def handler():\n"
+        "      return 1\n"
+        "  EXCERPT_END\n"
+    )
+    evidence_requests = (
+        "- [P0] path=src/app.py:10-20 need confirm insert point\n"
+        "PURPOSE: Verify handler logic.\n"
+    )
+    reconciled_gaps, index = reconcile_evidence_chain(
+        evidence_bundle=evidence_bundle,
+        evidence_gaps="EVIDENCE_GAPS:\n- None",
+        evidence_requests=evidence_requests,
+    )
+
+    assert reconciled_gaps == "EVIDENCE_GAPS:\n- None"
+    assert index[0]["satisfied"] is True
+    assert index[0]["match_scope"] == "range_level"
+
+
+def test_range_request_allows_trailing_comment_in_lines_field() -> None:
+    evidence_bundle = (
+        "EVIDENCE_BUNDLE:\n"
+        "- [FILE_EXCERPT] path=src/app.py | lines=10-20\n"
+        "  PURPOSE: Verify handler logic\n"
+        "  EXCERPT_BEGIN\n"
+        "  def handler():\n"
+        "      return 1\n"
+        "  EXCERPT_END\n"
+    )
+    evidence_requests = (
+        "- [P0] path=src/app.py lines=10-20 need confirm insert point\n"
+        "PURPOSE: Verify handler logic.\n"
+    )
+    reconciled_gaps, index = reconcile_evidence_chain(
+        evidence_bundle=evidence_bundle,
+        evidence_gaps="EVIDENCE_GAPS:\n- None",
+        evidence_requests=evidence_requests,
+    )
+
+    assert reconciled_gaps == "EVIDENCE_GAPS:\n- None"
+    assert index[0]["satisfied"] is True
+    assert index[0]["match_scope"] == "range_level"
+
+
+def test_merge_adjacent_or_overlapping_ranges_does_not_merge_gaps() -> None:
+    merged = merge_adjacent_or_overlapping_ranges([
+        (30, 60),
+        (100, 150),
+        (61, 99),
+    ])
+    assert merged == [(30, 150)]
+
+    merged = merge_adjacent_or_overlapping_ranges([
+        (30, 60),
+        (100, 150),
+    ])
+    assert merged == [(30, 60), (100, 150)]
+
+
+def test_compute_missing_ranges_returns_gaps() -> None:
+    missing = compute_missing_ranges(
+        request_range=(10, 20),
+        covered_ranges=[(10, 14), (16, 20)],
+    )
+    assert missing == [(15, 15)]
+
+
+def test_is_deterministic_range_request_matches_supported_shapes() -> None:
+    entries = parse_evidence_requests(
+        "- [P0] path=web/src/App.tsx:290-310\n"
+        "PURPOSE: verify\n"
+        "- [P1] path=src/app.py lines=1-2\n"
+        "PURPOSE: verify\n"
+        "- [P0] ref=src/app.py:10-20 trailing\n"
+        "PURPOSE: verify\n"
+    )
+    assert len(entries) == 3
+
+    det0 = is_deterministic_range_request(entries[0])
+    det1 = is_deterministic_range_request(entries[1])
+    det2 = is_deterministic_range_request(entries[2])
+    assert det0 == ("web/src/App.tsx", (290, 310))
+    assert det1 == ("src/app.py", (1, 2))
+    assert det2 == ("src/app.py", (10, 20))
+
+    non_det = parse_evidence_requests(
+        "- [P0] path=web/src/components/RoleModelConfig.tsx: 下拉 options 渲染相关代码段\n"
+        "PURPOSE: locate\n"
+    )
+    assert is_deterministic_range_request(non_det[0]) is None

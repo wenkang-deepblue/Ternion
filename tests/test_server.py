@@ -1135,6 +1135,8 @@ class TestChatCompletions:
             "evidence_bundle": "EVIDENCE_BUNDLE:\n- [FILE_EXCERPT] path=foo.py | lines=1-2",
             "evidence_gaps": "EVIDENCE_GAPS:\n- None",
             "evidence_requests": "- [P0] path=foo.py:1-2",
+            "evidence_topup_round": 1,
+            "report_evidence_resume_phase": "execution",
             "ternion_analyses": [{"ternion_id": "ternion_a", "analysis": "A"}],
             "thinking_logs": [],
             "errors": [],
@@ -1211,7 +1213,93 @@ class TestChatCompletions:
             assert kwargs.get("evidence_bundle") == mock_result["evidence_bundle"]
             assert kwargs.get("evidence_gaps") == mock_result["evidence_gaps"]
             assert kwargs.get("evidence_requests") == mock_result["evidence_requests"]
+            assert kwargs.get("evidence_topup_round") == mock_result["evidence_topup_round"]
+            assert kwargs.get("report_evidence_resume_phase") == mock_result["report_evidence_resume_phase"]
             assert kwargs.get("ternion_analyses") == mock_result["ternion_analyses"]
+
+    def test_non_streaming_tool_calls_persist_report_evidence_resume_and_topup_round(
+        self, client: TestClient
+    ) -> None:
+        """Non-streaming tool-loop sessions must persist Phase 1.5 resume and top-up state."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = True
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+            "writer": RoleConfig(provider="openai", model="gpt-4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+
+        mock_result = {
+            "ternion_report": "REPORT",
+            "pending_tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {"name": "codebase_search", "arguments": "{\"query\":\"foo\"}"},
+                }
+            ],
+            "conversation_history": [],
+            "current_phase": "report_evidence",
+            "evidence_bundle": "EVIDENCE_BUNDLE:\n- [FILE_EXCERPT] path=foo.py | lines=1-2",
+            "evidence_gaps": "EVIDENCE_GAPS:\n- None",
+            "evidence_requests": "- [P0] path=foo.py:1-2",
+            "evidence_topup_round": 1,
+            "report_evidence_resume_phase": "execution",
+            "ternion_analyses": [{"ternion_id": "ternion_a", "analysis": "A"}],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        fake_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": False,
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["choices"][0]["finish_reason"] == "tool_calls"
+
+            mock_session_store.create_session.assert_called_once()
+            kwargs = mock_session_store.create_session.call_args.kwargs
+            assert kwargs.get("workflow_phase") == "report_evidence"
+            assert kwargs.get("evidence_topup_round") == mock_result["evidence_topup_round"]
+            assert kwargs.get("report_evidence_resume_phase") == mock_result["report_evidence_resume_phase"]
 
     def test_streaming_tool_calls_emits_no_content_deltas(
         self, client: TestClient
@@ -1566,6 +1654,30 @@ class TestChatCompletions:
         args = rewritten[0]["function"]["arguments"]
         assert "\"offset\": 1" in args
         assert "\"limit\"" in args
+
+    def test_rewrite_tool_call_ids_normalizes_repo_relative_read_paths(self, client: TestClient) -> None:
+        """Server should normalize repo-relative Read paths like /docs/x.md."""
+        import json as json_lib
+        from pathlib import Path
+
+        from ternion.server.routes import _rewrite_tool_call_ids
+
+        repo_root = Path.cwd().resolve()
+        tool_calls = [
+            {
+                "id": "call_abc",
+                "type": "function",
+                "function": {"name": "Read", "arguments": "{\"path\":\"/docs/development_log.md\"}"},
+            }
+        ]
+        rewritten = _rewrite_tool_call_ids(
+            tool_calls,
+            session_id="0123456789ab",
+            round_index=1,
+            workflow_phase="report_evidence",
+        )
+        args = json_lib.loads(rewritten[0]["function"]["arguments"])
+        assert args["path"] == str(repo_root / "docs" / "development_log.md")
 
     def test_cursor_handoff_agent_auto_switches_to_ternion_full(
         self, client: TestClient

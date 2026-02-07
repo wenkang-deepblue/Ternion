@@ -6,6 +6,7 @@ Implements OpenAI-compatible endpoints for chat completions and models listing.
 
 import json
 import re
+import subprocess
 from functools import lru_cache
 from collections.abc import Iterable
 from pathlib import Path
@@ -393,6 +394,9 @@ def _rewrite_tool_call_ids(
                 arguments_str,
                 max_limit=read_file_max_limit,
             )
+            arguments_str = _rewrite_tool_call_repo_paths(name, arguments_str)
+        elif canonical_name in {"ls", "glob", "grep", "semanticsearch", "readlints"}:
+            arguments_str = _rewrite_tool_call_repo_paths(name, arguments_str)
 
         new_id = f"ternion_{session_id}_r{round_index:04d}_c{idx:02d}"
         rewritten.append({
@@ -405,6 +409,140 @@ def _rewrite_tool_call_ids(
         })
 
     return rewritten
+
+
+def _is_safe_repo_relative_path(path_str: str) -> bool:
+    """
+    Validate a repo-relative path (no parent traversal; no absolute roots).
+    """
+    if not isinstance(path_str, str) or not path_str.strip():
+        return False
+    s = path_str.strip()
+    if s.startswith(("/", "\\", "~")):
+        return False
+    if "$" in s:
+        return False
+    normalized = s.replace("\\", "/")
+    parts = [p for p in normalized.split("/") if p]
+    for part in parts:
+        if part == ".":
+            continue
+        if part == "..":
+            return False
+    return True
+
+
+def _rewrite_repo_internal_path_value(raw_path: str) -> str:
+    """
+    Rewrite common repo-relative path mistakes into an absolute repo-internal path.
+
+    Examples:
+    - "/docs/x.md" -> "<repo_root>/docs/x.md"
+    - "./web/src/App.tsx" -> "<repo_root>/web/src/App.tsx"
+    """
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return raw_path
+
+    repo_root = _resolve_project_root()
+    cleaned = raw_path.strip().strip('"').strip("'").strip("`")
+
+    p = Path(cleaned).expanduser()
+    if p.is_absolute():
+        try:
+            resolved = p.resolve(strict=False)
+        except Exception:
+            resolved = p
+        try:
+            resolved.relative_to(repo_root)
+            return str(resolved)
+        except Exception:
+            pass
+
+        if resolved.exists():
+            return str(resolved)
+
+        if cleaned.startswith("/"):
+            candidate_rel = cleaned.lstrip("/")
+        else:
+            return raw_path
+    else:
+        candidate_rel = cleaned[2:] if cleaned.startswith("./") else cleaned
+
+    if not _is_safe_repo_relative_path(candidate_rel):
+        return raw_path
+
+    first = candidate_rel.replace("\\", "/").split("/", 1)[0]
+    if first and (repo_root / first).exists():
+        try:
+            return str((repo_root / candidate_rel).resolve(strict=False))
+        except Exception:
+            return str(repo_root / candidate_rel)
+    return raw_path
+
+
+def _rewrite_tool_call_repo_paths(tool_name: str, arguments_json: str) -> str:
+    """
+    Normalize repo-relative paths for read/search tool calls.
+
+    This improves robustness when models emit absolute-looking paths like "/docs/x.md".
+    """
+    import json
+
+    canonical = re.sub(r"[^a-z0-9]+", "", (tool_name or "").strip().lower())
+    try:
+        args = json.loads(arguments_json or "{}")
+    except Exception:
+        return arguments_json
+    if not isinstance(args, dict):
+        return arguments_json
+
+    changed = False
+
+    def rewrite_key(key: str) -> None:
+        nonlocal changed
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            rewritten = _rewrite_repo_internal_path_value(value)
+            if rewritten != value:
+                args[key] = rewritten
+                changed = True
+
+    def rewrite_list_key(key: str) -> None:
+        nonlocal changed
+        value = args.get(key)
+        if not isinstance(value, list):
+            return
+        rewritten_list: list[str] = []
+        list_changed = False
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            rewritten = _rewrite_repo_internal_path_value(item)
+            if rewritten != item:
+                list_changed = True
+            rewritten_list.append(rewritten)
+        if list_changed:
+            args[key] = rewritten_list
+            changed = True
+
+    if canonical in {"read", "readfile"}:
+        rewrite_key("path")
+        rewrite_key("target_file")
+        rewrite_key("target_notebook")
+    elif canonical == "ls":
+        rewrite_key("target_directory")
+    elif canonical == "glob":
+        rewrite_key("target_directory")
+    elif canonical == "grep":
+        rewrite_key("path")
+    elif canonical == "semanticsearch":
+        rewrite_list_key("target_directories")
+    elif canonical == "readlints":
+        rewrite_list_key("paths")
+
+    if not changed:
+        return arguments_json
+    return json.dumps(args, ensure_ascii=False)
 
 
 def _enforce_read_file_pagination(arguments_json: str, *, max_limit: int) -> str:
@@ -559,6 +697,92 @@ def _extract_shell_command(arguments_json: str) -> str | None:
             parts = [v for v in value if isinstance(v, str) and v.strip()]
             if parts:
                 return " && ".join(parts)
+    return None
+
+
+_SHELL_EXIT_CODE_RE = re.compile(
+    r"(?:\bexit[_\s-]*code\b|\blast[_\s-]*exit[_\s-]*code\b)\s*[:=]\s*(\d+)",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+_SHELL_ELAPSED_MS_RE = re.compile(
+    r"(?:\belapsed[_\s-]*ms\b|\bduration[_\s-]*ms\b)\s*[:=]\s*(\d+)",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+_SHELL_COMPLETED_MS_RE = re.compile(
+    r"\bcompleted\s+in\s+(\d+)\s*ms\b",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+
+
+def _extract_shell_purpose(arguments_json: str) -> str | None:
+    args = _coerce_json_object(arguments_json)
+    for key in ("description", "purpose"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _extract_shell_working_directory(arguments_json: str) -> str | None:
+    args = _coerce_json_object(arguments_json)
+    for key in ("working_directory", "cwd"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _normalize_shell_command_for_dedup(command: str) -> str:
+    s = (command or "").strip()
+    if not s:
+        return ""
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _extract_shell_result_metrics(raw_content: str) -> tuple[int | None, int | None]:
+    """
+    Best-effort extraction of exit_code / elapsed_ms from a Shell tool result.
+
+    Cursor/clients may embed these values in the tool output text. If not present,
+    this returns (None, None).
+    """
+    text = raw_content or ""
+    exit_code: int | None = None
+    elapsed_ms: int | None = None
+
+    m = _SHELL_EXIT_CODE_RE.search(text)
+    if m:
+        try:
+            exit_code = int(m.group(1))
+        except Exception:
+            exit_code = None
+
+    m = _SHELL_ELAPSED_MS_RE.search(text) or _SHELL_COMPLETED_MS_RE.search(text)
+    if m:
+        try:
+            elapsed_ms = int(m.group(1))
+        except Exception:
+            elapsed_ms = None
+
+    return exit_code, elapsed_ms
+
+
+def _find_duplicate_shell_call(
+    tool_results_meta: dict[str, dict],
+    *,
+    dedup_key: str,
+) -> str | None:
+    if not dedup_key:
+        return None
+    for tool_call_id, meta in (tool_results_meta or {}).items():
+        if not isinstance(meta, dict):
+            continue
+        key = meta.get("shell_dedup_key")
+        if isinstance(key, str) and key == dedup_key:
+            return tool_call_id
+        cmd = meta.get("shell_command")
+        if isinstance(cmd, str) and _normalize_shell_command_for_dedup(cmd) == dedup_key:
+            return tool_call_id
     return None
 
 
@@ -724,6 +948,161 @@ def _resolve_project_root() -> Path:
         return Path.cwd().resolve()
     except Exception:
         return Path.cwd()
+
+
+_GIT_CMD_TIMEOUT_SECONDS = 2.0
+
+
+def _parse_git_status_porcelain(
+    output: str,
+    *,
+    repo_root: Path,
+) -> tuple[set[str], set[str]]:
+    """
+    Parse `git status --porcelain=v1` output into absolute path sets.
+
+    Returns:
+        (modified_paths, untracked_paths)
+    """
+    modified: set[str] = set()
+    untracked: set[str] = set()
+    for raw in (output or "").splitlines():
+        line = raw.rstrip("\n")
+        if len(line) < 3:
+            continue
+        status = line[:2]
+        if status == "!!":
+            continue
+        path_part = line[3:].strip()
+        if not path_part:
+            continue
+        if " -> " in path_part:
+            path_part = path_part.split(" -> ", 1)[1].strip()
+        normalized = _normalize_file_path(str(repo_root / path_part))
+        if not normalized:
+            continue
+        if status == "??":
+            untracked.add(normalized)
+        else:
+            modified.add(normalized)
+    return modified, untracked
+
+
+def _try_get_git_status_snapshot() -> dict:
+    """
+    Best-effort workspace status snapshot for Shell side-effect tracking.
+    """
+    repo_root = _resolve_project_root()
+    if not (repo_root / ".git").exists():
+        return {}
+    try:
+        result = subprocess.run(  # nosec - controlled local command
+            ["git", "-C", str(repo_root), "status", "--porcelain=v1"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_GIT_CMD_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except Exception:
+        return {}
+    if result.returncode != 0:
+        return {}
+    modified, untracked = _parse_git_status_porcelain(result.stdout, repo_root=repo_root)
+    return {
+        "repo_root": str(repo_root),
+        "modified": sorted(modified),
+        "untracked": sorted(untracked),
+    }
+
+
+def _try_read_git_head_file(relative_path: str) -> str | None:
+    """
+    Best-effort read of a file at HEAD for baseline reconstruction.
+    """
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        return None
+    repo_root = _resolve_project_root()
+    if not (repo_root / ".git").exists():
+        return None
+    ref = f"HEAD:{relative_path.strip()}"
+    try:
+        result = subprocess.run(  # nosec - controlled local command
+            ["git", "-C", str(repo_root), "show", ref],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_GIT_CMD_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def _has_shell_tool_call(tool_calls: list[dict]) -> bool:
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        name, _args = _extract_tool_name_and_arguments(tc)
+        canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+        if canonical in _SHELL_TOOL_CANONICAL:
+            return True
+    return False
+
+
+def _capture_tool_loop_pre_git_status(
+    tool_calls: list[dict],
+    *,
+    round_index: int,
+    workflow_phase: str,
+) -> dict:
+    if not _has_shell_tool_call(tool_calls):
+        return {}
+    snapshot = _try_get_git_status_snapshot()
+    if not snapshot:
+        return {}
+    snapshot["round_index"] = int(round_index or 0)
+    snapshot["workflow_phase"] = str(workflow_phase or "")
+    return snapshot
+
+
+def _shell_command_may_write(command: str) -> bool:
+    """
+    Best-effort classification for Shell commands that may write to the workspace.
+
+    This is used for observability only; it must not be relied on for policy.
+    """
+    s = (command or "").strip().lower()
+    if not s:
+        return False
+
+    # Formatters may write by default unless explicitly in check/diff mode.
+    if " -m black" in s or re.search(r"(?:^|\s)black(?:\s|$)", s):
+        return "--check" not in s and "--diff" not in s
+
+    if " -m ruff" in s or re.search(r"(?:^|\s)ruff(?:\s|$)", s):
+        if "--fix" in s or "--fix-only" in s or "--unsafe-fixes" in s:
+            return True
+        if re.search(r"(?:^|\s)ruff\s+format(?:\s|$)", s):
+            return "--check" not in s and "--diff" not in s
+        return False
+
+    # Script targets are project-defined; treat obvious "fix/format" scripts as potentially mutating.
+    if re.search(r"(?:^|\s)(npm|pnpm|yarn)(?:\s|$)", s):
+        if any(key in s for key in (":fix", "-fix", "_fix", ".fix")):
+            return True
+        if "format" in s:
+            return True
+
+    if re.search(r"(?:^|\s)make(?:\s|$)", s):
+        return "format" in s or "fix" in s
+
+    return False
 
 
 def _is_docs_relative_path(relative_path: str) -> bool:
@@ -1256,6 +1635,10 @@ async def _run_discussion_streaming(
                     evidence_chain_index=list(
                         final_state.get("evidence_chain_index", []) or []
                     ),
+                    evidence_topup_round=int(final_state.get("evidence_topup_round", 0) or 0),
+                    report_evidence_resume_phase=str(
+                        final_state.get("report_evidence_resume_phase", "") or ""
+                    ),
                     ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
                 )
                 filtered_tool_calls = list(pending_tool_calls or [])
@@ -1355,6 +1738,11 @@ async def _run_discussion_streaming(
                     pending_tool_calls=rewritten_tool_calls,
                     round_index=1,
                     workflow_phase=workflow_phase,
+                    tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
+                        rewritten_tool_calls,
+                        round_index=1,
+                        workflow_phase=workflow_phase,
+                    ),
                     modified_files=modified_files,
                     baseline_file_snapshots=baseline,
                     todo_written=bool(getattr(session, "todo_written", False)) or todo_written_now,
@@ -1809,6 +2197,11 @@ async def _run_implementation_streaming(
                     review_feedback=final_state.get("review_feedback") or getattr(session, "review_feedback", ""),
                     revision_count=final_state.get("revision_count", getattr(session, "revision_count", 0)),
                     workflow_phase=workflow_phase,
+                    tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
+                        rewritten_tool_calls,
+                        round_index=next_round,
+                        workflow_phase=workflow_phase,
+                    ),
                     modified_files=modified_files,
                     baseline_file_snapshots=baseline,
                     writer_output_files=dict(
@@ -2379,6 +2772,10 @@ async def chat_completions(
                 evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
                 evidence_requests=str(final_state.get("evidence_requests", "") or ""),
                 evidence_chain_index=list(final_state.get("evidence_chain_index", []) or []),
+                evidence_topup_round=int(final_state.get("evidence_topup_round", 0) or 0),
+                report_evidence_resume_phase=str(
+                    final_state.get("report_evidence_resume_phase", "") or ""
+                ),
                 ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
             )
             filtered_tool_calls = list(pending_tool_calls or [])
@@ -2462,6 +2859,11 @@ async def chat_completions(
                 pending_tool_calls=rewritten_tool_calls,
                 round_index=1,
                 workflow_phase=workflow_phase,
+                tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
+                    rewritten_tool_calls,
+                    round_index=1,
+                    workflow_phase=workflow_phase,
+                ),
                 modified_files=modified_files,
                 baseline_file_snapshots=baseline,
                 todo_written=bool(getattr(session, "todo_written", False)) or todo_written_now,
@@ -3074,6 +3476,11 @@ async def handle_report_evidence_followup(
                         pending_tool_calls=rewritten_tool_calls,
                         round_index=next_round,
                         workflow_phase=workflow_phase,
+                        tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
+                            rewritten_tool_calls,
+                            round_index=next_round,
+                            workflow_phase=workflow_phase,
+                        ),
                         modified_files=modified_files,
                         baseline_file_snapshots=baseline,
                         todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
@@ -3160,6 +3567,95 @@ async def handle_report_evidence_followup(
                         context="streaming_report_evidence_followup_output",
                         suppressed_from_chat=True,
                     )
+
+                try:
+                    errors = final_state.get("errors", []) or []
+                    final_code = final_state.get("final_output", "") or final_state.get("generated_code", "")
+                    final_phase = str(final_state.get("current_phase") or "report_evidence")
+                    if isinstance(final_code, str) and final_code.strip() and not errors:
+                        new_stage = SessionStage.EXECUTED
+                    elif errors:
+                        new_stage = SessionStage.EXECUTION_IN_PROGRESS
+                    else:
+                        new_stage = SessionStage.RCA_COMPLETE
+
+                    session_store.update_session(
+                        session.session_id,
+                        stage=new_stage,
+                        workflow_phase=final_phase,
+                        pending_tool_calls=[],
+                        ternion_report_raw=str(
+                            final_state.get("ternion_report")
+                            or getattr(session, "ternion_report_raw", "")
+                            or ""
+                        ),
+                        generated_code=str(
+                            final_state.get("generated_code")
+                            or getattr(session, "generated_code", "")
+                            or ""
+                        ),
+                        review_feedback=str(
+                            final_state.get("review_feedback")
+                            or getattr(session, "review_feedback", "")
+                            or ""
+                        ),
+                        revision_count=int(
+                            final_state.get(
+                                "revision_count",
+                                getattr(session, "revision_count", 0),
+                            )
+                            or 0
+                        ),
+                        writer_output_files=dict(
+                            final_state.get("writer_output_files")
+                            or getattr(session, "writer_output_files", {})
+                            or {}
+                        ),
+                        optimizer_review_report=str(
+                            final_state.get("optimizer_review_report")
+                            or getattr(session, "optimizer_review_report", "")
+                            or ""
+                        ),
+                        evidence_bundle=str(
+                            final_state.get("evidence_bundle")
+                            or getattr(session, "evidence_bundle", "")
+                            or ""
+                        ),
+                        evidence_gaps=str(
+                            final_state.get("evidence_gaps")
+                            or getattr(session, "evidence_gaps", "")
+                            or ""
+                        ),
+                        evidence_requests=str(
+                            final_state.get("evidence_requests")
+                            or getattr(session, "evidence_requests", "")
+                            or ""
+                        ),
+                        evidence_chain_index=list(
+                            final_state.get("evidence_chain_index")
+                            or getattr(session, "evidence_chain_index", [])
+                            or []
+                        ),
+                        evidence_topup_round=int(
+                            final_state.get(
+                                "evidence_topup_round",
+                                getattr(session, "evidence_topup_round", 0),
+                            )
+                            or 0
+                        ),
+                        report_evidence_resume_phase=str(
+                            final_state.get("report_evidence_resume_phase")
+                            or getattr(session, "report_evidence_resume_phase", "")
+                            or ""
+                        ),
+                        ternion_analyses=list(
+                            final_state.get("ternion_analyses")
+                            or getattr(session, "ternion_analyses", [])
+                            or []
+                        ),
+                    )
+                except Exception:
+                    pass
 
                 final_chunk = ChatCompletionChunk(
                     id=chunk_id,
@@ -3300,6 +3796,11 @@ async def handle_report_evidence_followup(
             pending_tool_calls=rewritten_tool_calls,
             round_index=next_round,
             workflow_phase=workflow_phase,
+            tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
+                rewritten_tool_calls,
+                round_index=next_round,
+                workflow_phase=workflow_phase,
+            ),
             modified_files=modified_files,
             baseline_file_snapshots=baseline,
             todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
@@ -3334,6 +3835,36 @@ async def handle_report_evidence_followup(
     thinking_logs = final_state.get("thinking_logs", [])
     errors = final_state.get("errors", []) or []
     final_code = final_state.get("final_output", "") or final_state.get("generated_code", "")
+    try:
+        final_phase = str(final_state.get("current_phase") or "report_evidence")
+        if isinstance(final_code, str) and final_code.strip() and not errors:
+            new_stage = SessionStage.EXECUTED
+        elif errors:
+            new_stage = SessionStage.EXECUTION_IN_PROGRESS
+        else:
+            new_stage = SessionStage.RCA_COMPLETE
+
+        session_store.update_session(
+            session.session_id,
+            stage=new_stage,
+            workflow_phase=final_phase,
+            pending_tool_calls=[],
+            ternion_report_raw=str(final_state.get("ternion_report") or session.ternion_report_raw or ""),
+            generated_code=str(final_state.get("generated_code") or session.generated_code or ""),
+            review_feedback=str(final_state.get("review_feedback") or session.review_feedback or ""),
+            revision_count=int(final_state.get("revision_count", session.revision_count) or 0),
+            writer_output_files=dict(final_state.get("writer_output_files") or session.writer_output_files or {}),
+            optimizer_review_report=str(final_state.get("optimizer_review_report") or session.optimizer_review_report or ""),
+            evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
+            evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
+            evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+            evidence_chain_index=list(final_state.get("evidence_chain_index") or getattr(session, "evidence_chain_index", []) or []),
+            evidence_topup_round=int(final_state.get("evidence_topup_round", getattr(session, "evidence_topup_round", 0)) or 0),
+            report_evidence_resume_phase=str(final_state.get("report_evidence_resume_phase") or getattr(session, "report_evidence_resume_phase", "") or ""),
+            ternion_analyses=list(final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []),
+        )
+    except Exception:
+        pass
     is_patch_output = _is_patch_or_diff_output(final_code)
     _emit_thinking_logs_to_observability(
         thinking_logs,
@@ -3873,6 +4404,11 @@ async def handle_evidence_followup(
                         pending_tool_calls=rewritten_tool_calls,
                         round_index=next_round,
                         workflow_phase=workflow_phase,
+                        tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
+                            rewritten_tool_calls,
+                            round_index=next_round,
+                            workflow_phase=workflow_phase,
+                        ),
                         modified_files=modified_files,
                         baseline_file_snapshots=baseline,
                         todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
@@ -4093,6 +4629,11 @@ async def handle_evidence_followup(
             pending_tool_calls=rewritten_tool_calls,
             round_index=next_round,
             workflow_phase=workflow_phase,
+            tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
+                rewritten_tool_calls,
+                round_index=next_round,
+                workflow_phase=workflow_phase,
+            ),
             modified_files=modified_files,
             baseline_file_snapshots=baseline,
             todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
@@ -4191,6 +4732,38 @@ async def handle_execution_followup(
     updated_execution_messages = list(session.execution_messages or [])
     tool_results_raw = dict(getattr(session, "tool_results_raw", {}) or {})
     tool_results_meta = dict(getattr(session, "tool_results_meta", {}) or {})
+    tool_call_index = dict(getattr(session, "tool_call_index", {}) or {})
+
+    baseline = dict(getattr(session, "baseline_file_snapshots", {}) or {})
+    modified_files = list(getattr(session, "modified_files", []) or [])
+    modified_set = set(modified_files)
+
+    git_cursor = dict(getattr(session, "tool_loop_pre_git_status", {}) or {})
+    git_cursor_modified = {
+        p
+        for p in (git_cursor.get("modified") or [])
+        if isinstance(p, str) and p.strip()
+    }
+    git_cursor_untracked = {
+        p
+        for p in (git_cursor.get("untracked") or [])
+        if isinstance(p, str) and p.strip()
+    }
+
+    history_tool_calls_by_id: dict[str, dict] = {}
+    for msg in (session.execution_messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            tc_id = tc.get("id")
+            if isinstance(tc_id, str) and tc_id:
+                history_tool_calls_by_id[tc_id] = tc
+
     for msg in request.messages:
         if msg.role != MessageRole.TOOL:
             continue
@@ -4202,10 +4775,19 @@ async def handle_execution_followup(
         if not match or match.group(1).lower() != session.session_id.lower():
             continue
         raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
-        tool_call = pending_by_id.get(msg.tool_call_id) or {}
+        tool_call = pending_by_id.get(msg.tool_call_id) or history_tool_calls_by_id.get(msg.tool_call_id) or {}
         fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
         tool_name = fn.get("name") if isinstance(fn.get("name"), str) else None
         tool_args = fn.get("arguments") if isinstance(fn.get("arguments"), str) else None
+        if not tool_name:
+            indexed = tool_call_index.get(msg.tool_call_id)
+            if isinstance(indexed, dict):
+                indexed_name = indexed.get("tool_name")
+                if isinstance(indexed_name, str) and indexed_name.strip():
+                    tool_name = indexed_name.strip()
+                indexed_args = indexed.get("tool_arguments")
+                if tool_args is None and isinstance(indexed_args, str) and indexed_args.strip():
+                    tool_args = indexed_args
 
         compacted_content, meta = compact_tool_result(
             tool_name=tool_name,
@@ -4213,6 +4795,137 @@ async def handle_execution_followup(
             tool_arguments=tool_args,
         )
         meta["source_ref"] = msg.tool_call_id
+        canonical_tool = re.sub(r"[^a-z0-9]+", "", (tool_name or "").strip().lower())
+        if canonical_tool in _MUTATING_TOOL_NAMES:
+            target = _extract_mutation_target_path(tool_name or "", tool_args or "{}")
+            normalized = _normalize_file_path(target or "")
+            if normalized:
+                git_cursor_modified.add(normalized)
+        if canonical_tool in {"shell"}:
+            shell_command = _extract_shell_command(tool_args or "{}") or ""
+            shell_purpose = _extract_shell_purpose(tool_args or "{}")
+            shell_workdir = _extract_shell_working_directory(tool_args or "{}")
+            dedup_key = _normalize_shell_command_for_dedup(shell_command)
+            duplicate_of = _find_duplicate_shell_call(tool_results_meta, dedup_key=dedup_key)
+            exit_code, elapsed_ms = _extract_shell_result_metrics(raw_content)
+            indexed = tool_call_index.get(msg.tool_call_id) if isinstance(tool_call_index, dict) else None
+            phase = (
+                str(indexed.get("workflow_phase"))
+                if isinstance(indexed, dict) and isinstance(indexed.get("workflow_phase"), str)
+                else str(getattr(session, "workflow_phase", "") or "")
+            )
+            role = "optimizer" if phase == "optimizer" else "writer"
+            shell_may_write = _shell_command_may_write(shell_command)
+
+            dirty_before_count = 0
+            dirty_after_count = 0
+            delta_added_count = 0
+            delta_removed_count = 0
+            delta_added_paths: list[str] = []
+            delta_removed_paths: list[str] = []
+            delta_truncated = False
+
+            if isinstance(git_cursor, dict) and "repo_root" in git_cursor:
+                snapshot = _try_get_git_status_snapshot()
+                if snapshot:
+                    post_modified = {
+                        p
+                        for p in (snapshot.get("modified") or [])
+                        if isinstance(p, str) and p.strip()
+                    }
+                    post_untracked = {
+                        p
+                        for p in (snapshot.get("untracked") or [])
+                        if isinstance(p, str) and p.strip()
+                    }
+                    pre_all = set(git_cursor_modified) | set(git_cursor_untracked)
+                    post_all = post_modified | post_untracked
+                    dirty_before_count = len(pre_all)
+                    dirty_after_count = len(post_all)
+
+                    added = sorted(post_all - pre_all)
+                    removed = sorted(pre_all - post_all)
+                    delta_added_count = len(added)
+                    delta_removed_count = len(removed)
+
+                    max_paths = 50
+                    delta_truncated = len(added) > max_paths or len(removed) > max_paths
+                    for abs_path in added[:max_paths]:
+                        rel = _workspace_relative_path(abs_path)
+                        if rel:
+                            delta_added_paths.append(rel)
+                    for abs_path in removed[:max_paths]:
+                        rel = _workspace_relative_path(abs_path)
+                        if rel:
+                            delta_removed_paths.append(rel)
+
+                    for abs_path in added:
+                        if abs_path not in modified_set:
+                            modified_files.append(abs_path)
+                            modified_set.add(abs_path)
+                        if abs_path in baseline:
+                            continue
+                        rel = _workspace_relative_path(abs_path)
+                        if not rel:
+                            continue
+                        if abs_path in post_untracked:
+                            baseline[abs_path] = ""
+                            continue
+                        base_content = _try_read_git_head_file(rel)
+                        if base_content is not None:
+                            baseline[abs_path] = base_content
+
+                    git_cursor_modified = post_modified
+                    git_cursor_untracked = post_untracked
+                    git_cursor["repo_root"] = snapshot.get(
+                        "repo_root",
+                        git_cursor.get("repo_root", ""),
+                    )
+                    git_cursor["modified"] = sorted(post_modified)
+                    git_cursor["untracked"] = sorted(post_untracked)
+
+            meta.update({
+                "shell_command": shell_command,
+                "shell_purpose": shell_purpose or "",
+                "shell_working_directory": shell_workdir or "",
+                "shell_exit_code": exit_code,
+                "shell_elapsed_ms": elapsed_ms,
+                "shell_dedup_key": dedup_key,
+                "shell_is_duplicate": bool(duplicate_of),
+                "shell_duplicate_of": duplicate_of or "",
+                "shell_phase": phase,
+                "shell_role": role,
+                "shell_may_write": bool(shell_may_write),
+                "shell_dirty_before_count": int(dirty_before_count),
+                "shell_dirty_after_count": int(dirty_after_count),
+                "shell_dirty_added_count": int(delta_added_count),
+                "shell_dirty_removed_count": int(delta_removed_count),
+                "shell_dirty_added_paths": delta_added_paths,
+                "shell_dirty_removed_paths": delta_removed_paths,
+                "shell_dirty_paths_truncated": bool(delta_truncated),
+            })
+            preview = shell_command.strip().replace("\n", " ")
+            if len(preview) > 200:
+                preview = preview[:200] + "..."
+            log_manager.emit(
+                level="INFO",
+                category="OBSERVABILITY",
+                message=(
+                    "shell_tool_result | "
+                    f"session_id={session.session_id} | "
+                    f"tool_call_id={msg.tool_call_id} | "
+                    f"phase={phase or '(unknown)'} | "
+                    f"role={role} | "
+                    f"exit_code={exit_code if exit_code is not None else '(unknown)'} | "
+                    f"elapsed_ms={elapsed_ms if elapsed_ms is not None else '(unknown)'} | "
+                    f"duplicate={bool(duplicate_of)} | "
+                    f"may_write={bool(shell_may_write)} | "
+                    f"delta_added={delta_added_count} | "
+                    f"delta_removed={delta_removed_count} | "
+                    f"purpose={sanitize_for_cursor_display(shell_purpose or '')[:120]} | "
+                    f"command={preview}"
+                ),
+            )
         tool_results_meta[msg.tool_call_id] = meta
         if meta.get("compacted") is True:
             tool_results_raw[msg.tool_call_id] = raw_content
@@ -4222,6 +4935,10 @@ async def handle_execution_followup(
             "tool_call_id": msg.tool_call_id,
         })
         existing_tool_ids.add(msg.tool_call_id)
+
+    if isinstance(git_cursor, dict) and "repo_root" in git_cursor:
+        git_cursor["modified"] = sorted(git_cursor_modified)
+        git_cursor["untracked"] = sorted(git_cursor_untracked)
 
     resume_phase = str(getattr(session, "workflow_phase", "") or "execution")
     resume_stage = (
@@ -4239,6 +4956,9 @@ async def handle_execution_followup(
         pending_tool_calls=[],
         tool_results_raw=tool_results_raw,
         tool_results_meta=tool_results_meta,
+        tool_loop_pre_git_status=git_cursor,
+        modified_files=modified_files,
+        baseline_file_snapshots=baseline,
         evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
         evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
         evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
@@ -4301,8 +5021,8 @@ async def handle_execution_followup(
         "report_evidence_resume_phase": str(
             getattr(session, "report_evidence_resume_phase", "") or ""
         ),
-        "baseline_file_snapshots": dict(getattr(session, "baseline_file_snapshots", {}) or {}),
-        "modified_files": list(getattr(session, "modified_files", []) or []),
+        "baseline_file_snapshots": baseline,
+        "modified_files": modified_files,
         "writer_output_files": dict(getattr(session, "writer_output_files", {}) or {}),
         "optimizer_review_report": str(getattr(session, "optimizer_review_report", "") or ""),
         "cursor_tools": cursor_tools,
@@ -4575,6 +5295,11 @@ async def handle_execution_followup(
                         review_feedback=final_state.get("review_feedback") or session.review_feedback,
                         revision_count=final_state.get("revision_count", session.revision_count),
                         workflow_phase=workflow_phase,
+                        tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
+                            rewritten_tool_calls,
+                            round_index=next_round,
+                            workflow_phase=workflow_phase,
+                        ),
                         modified_files=modified_files,
                         baseline_file_snapshots=baseline,
                         writer_output_files=dict(
@@ -4861,6 +5586,11 @@ async def handle_execution_followup(
             review_feedback=final_state.get("review_feedback") or session.review_feedback,
             revision_count=final_state.get("revision_count", session.revision_count),
             workflow_phase=workflow_phase,
+            tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
+                rewritten_tool_calls,
+                round_index=next_round,
+                workflow_phase=workflow_phase,
+            ),
             modified_files=modified_files,
             baseline_file_snapshots=baseline,
             writer_output_files=dict(final_state.get("writer_output_files") or getattr(session, "writer_output_files", {}) or {}),

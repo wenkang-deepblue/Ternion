@@ -246,6 +246,40 @@ class TestSessionStore:
         assert updated.ternion_report_safe != new_report
         assert updated.report_hash == compute_report_hash(new_report)
 
+    def test_update_session_populates_tool_call_index(self, store):
+        """Setting pending_tool_calls should populate tool_call_index for backfill."""
+        session = store.create_session(
+            ternion_report="Tool call index test",
+            execution_mode=ExecutionMode.TERNION_FULL,
+        )
+        tool_calls = [
+            {
+                "id": "ternion_test_r0001_c00",
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": "{\"path\":\"docs/test.md\",\"contents\":\"hi\"}",
+                },
+            }
+        ]
+        updated = store.update_session(
+            session.session_id,
+            pending_tool_calls=tool_calls,
+            workflow_phase="execution",
+            round_index=1,
+        )
+
+        assert updated is not None
+        assert "ternion_test_r0001_c00" in (updated.tool_call_index or {})
+        meta = updated.tool_call_index["ternion_test_r0001_c00"]
+        assert meta.get("tool_name") == "Write"
+
+        # Clearing pending_tool_calls should not erase the index.
+        store.update_session(session.session_id, pending_tool_calls=[])
+        reloaded = store.load_session(session.session_id)
+        assert reloaded is not None
+        assert "ternion_test_r0001_c00" in (reloaded.tool_call_index or {})
+
     def test_update_session_not_found(self, store):
         """Should return None when updating non-existent session."""
         result = store.update_session("nonexistent", stage=SessionStage.CONFIRMED)
