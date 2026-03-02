@@ -4,13 +4,15 @@ Deterministic evidence chain parsing and reconciliation utilities.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
-
 _FILE_EXCERPT_PREFIX = "- [FILE_EXCERPT]"
+_FILE_META_PREFIX = "- [FILE_META]"
 _BUNDLE_HEADER = "EVIDENCE_BUNDLE:"
 _GAPS_HEADER = "EVIDENCE_GAPS:"
 _PURPOSE_PREFIX = "PURPOSE:"
@@ -63,7 +65,7 @@ def _strip_optional_bullet(line: str) -> str:
 def _extract_purpose(line: str) -> str | None:
     normalized = _strip_optional_bullet(line).strip()
     if normalized.upper().startswith(_PURPOSE_PREFIX):
-        return normalized[len(_PURPOSE_PREFIX):].strip()
+        return normalized[len(_PURPOSE_PREFIX) :].strip()
     return None
 
 
@@ -115,6 +117,95 @@ def _normalize_path(path: str | None) -> str:
     return cleaned
 
 
+_CN_PAREN_TAIL_RE = re.compile(r"（.*$")
+_WS_PAREN_TAIL_RE = re.compile(r"\s+\(.*$")
+_TRAILING_PUNCT_CHARS = "，,。.;；"
+
+
+def _clean_path_value(value: str | None) -> str:
+    """
+    Normalize a path-like field value from evidence requests/gaps.
+
+    This is intentionally conservative: it strips surrounding quotes/backticks and removes
+    trailing annotation text in fullwidth parentheses "（...）" or in whitespace-delimited
+    parentheses " (...)".
+    """
+    cleaned = _normalize_path(value)
+    if not cleaned:
+        return ""
+    cleaned = cleaned.split("|", 1)[0].strip()
+    cleaned = _CN_PAREN_TAIL_RE.sub("", cleaned).strip()
+    cleaned = _WS_PAREN_TAIL_RE.sub("", cleaned).strip()
+    return cleaned.rstrip(_TRAILING_PUNCT_CHARS).strip()
+
+
+def _canonicalize_path_for_match(value: str | None) -> str:
+    """
+    Canonicalize a path string for best-effort matching.
+
+    Notes:
+    - This does NOT resolve relative paths to absolute paths.
+    - This does expand "~" when present.
+    """
+    s = _clean_path_value(value)
+    if not s:
+        return ""
+    s = s.replace("\\", "/")
+    s = re.sub(r"/{2,}", "/", s).strip()
+    if s.startswith("./"):
+        s = s[2:]
+    if s.startswith("~"):
+        with contextlib.suppress(Exception):
+            s = str(Path(s).expanduser())
+        s = s.replace("\\", "/")
+        s = re.sub(r"/{2,}", "/", s).strip()
+    return s
+
+
+def _is_absolute_like(path: str) -> bool:
+    if not path:
+        return False
+    if path.startswith(("/", "\\")):
+        return True
+    return bool(re.match(r"^[A-Za-z]:/", path))
+
+
+def _paths_equivalent(left: str | None, right: str | None) -> bool:
+    left_canon = _canonicalize_path_for_match(left)
+    right_canon = _canonicalize_path_for_match(right)
+    if not left_canon or not right_canon:
+        return False
+    if left_canon == right_canon:
+        return True
+    left_abs = _is_absolute_like(left_canon)
+    right_abs = _is_absolute_like(right_canon)
+    if not left_abs and right_abs and right_canon.endswith("/" + left_canon):
+        return True
+    return bool(left_abs and not right_abs and left_canon.endswith("/" + right_canon))
+
+
+def _lookup_total_lines_info(
+    target_path: str,
+    total_lines_index: dict[str, dict[str, object]],
+) -> dict[str, object] | None:
+    if not target_path or not isinstance(total_lines_index, dict):
+        return None
+    direct = total_lines_index.get(target_path)
+    if isinstance(direct, dict):
+        return direct
+
+    candidates: list[tuple[int, dict[str, object]]] = []
+    for key, info in total_lines_index.items():
+        if not isinstance(info, dict):
+            continue
+        if _paths_equivalent(target_path, key):
+            candidates.append((len(str(key)), info))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
 def _hash_excerpt(excerpt: str) -> str:
     digest = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()
     return digest[:16]
@@ -131,7 +222,7 @@ def parse_evidence_bundle(bundle: str) -> list[EvidenceItem]:
         raw = lines[idx]
         stripped = raw.strip()
         if stripped.startswith(_FILE_EXCERPT_PREFIX):
-            header = stripped[len(_FILE_EXCERPT_PREFIX):].strip()
+            header = stripped[len(_FILE_EXCERPT_PREFIX) :].strip()
             fields = _parse_header_fields(header)
             path = _normalize_path(fields.get("path", ""))
             lines_value = fields.get("lines", "").strip()
@@ -177,6 +268,53 @@ def parse_evidence_bundle(bundle: str) -> list[EvidenceItem]:
     return items
 
 
+def _parse_total_lines_index(bundle: str) -> dict[str, dict[str, object]]:
+    """
+    Build a per-path total_lines index from an evidence bundle.
+
+    Selection rule:
+    - Treat the evidence bundle as append-only and use the *latest* (last-seen)
+      positive total_lines value for a given path.
+    """
+    lines = (bundle or "").splitlines()
+    totals_by_path: dict[str, list[int]] = {}
+    for raw in lines:
+        stripped = (raw or "").strip()
+        if stripped.startswith(_FILE_META_PREFIX):
+            header = stripped[len(_FILE_META_PREFIX) :].strip()
+        elif stripped.startswith(_FILE_EXCERPT_PREFIX):
+            header = stripped[len(_FILE_EXCERPT_PREFIX) :].strip()
+        else:
+            continue
+
+        fields = _parse_header_fields(header)
+        path = _normalize_path(fields.get("path", ""))
+        total = _parse_total_lines(fields.get("total_lines"))
+        if not path or total is None:
+            continue
+        totals_by_path.setdefault(path, []).append(total)
+
+    index: dict[str, dict[str, object]] = {}
+    for path, totals in totals_by_path.items():
+        if not totals:
+            continue
+        candidates: list[int] = []
+        seen: set[int] = set()
+        for item in totals:
+            if item in seen:
+                continue
+            seen.add(item)
+            candidates.append(item)
+        selected = totals[-1]
+        index[path] = {
+            "total_lines_selected": selected,
+            "total_lines_candidates": candidates,
+            "total_lines_conflict": len(candidates) > 1,
+            "total_lines_source": "bundle_latest",
+        }
+    return index
+
+
 def _extract_field(text: str, key: str) -> str | None:
     if not text or not key:
         return None
@@ -194,10 +332,10 @@ def _extract_field(text: str, key: str) -> str | None:
 def _split_path_and_lines(value: str | None) -> tuple[str | None, str | None]:
     if not value:
         return None, None
-    cleaned = _normalize_path(value)
+    cleaned = _clean_path_value(value)
     match = re.match(r"^(.*):(\d+\s*-\s*\d+)(?:\s+.*)?$", cleaned)
     if match:
-        return _normalize_path(match.group(1)), match.group(2).replace(" ", "")
+        return _clean_path_value(match.group(1)), match.group(2).replace(" ", "")
     return cleaned, None
 
 
@@ -211,12 +349,12 @@ def _looks_like_path(value: str) -> bool:
 def _extract_target_from_ref(ref: str | None) -> tuple[str | None, str | None]:
     if not ref:
         return None, None
-    cleaned = ref.strip()
+    cleaned = _clean_path_value(ref)
     match = re.match(r"^(.*):(\d+\s*-\s*\d+)(?:\s+.*)?$", cleaned)
     if match:
-        return _normalize_path(match.group(1)), match.group(2).replace(" ", "")
+        return _clean_path_value(match.group(1)), match.group(2).replace(" ", "")
     if _looks_like_path(cleaned):
-        return _normalize_path(cleaned), None
+        return _clean_path_value(cleaned), None
     return None, None
 
 
@@ -361,7 +499,7 @@ def parse_evidence_requests(requests: str) -> list[EvidenceRequest]:
 
 def _build_request_entry(request_line: str, purpose: str) -> EvidenceRequest:
     normalized = _strip_optional_bullet(request_line).strip()
-    path_field = _extract_field(normalized, "path")
+    path_field = _extract_field(normalized, "path") or _extract_field(normalized, "file")
     lines_field = _extract_field(normalized, "lines")
     ref_field = _extract_field(normalized, "ref")
     path, path_lines = _split_path_and_lines(path_field)
@@ -379,7 +517,7 @@ def _build_request_entry(request_line: str, purpose: str) -> EvidenceRequest:
 
 
 def _hash_request_id(request: str, purpose: str) -> str:
-    payload = f"{request}\n{purpose}".encode("utf-8")
+    payload = f"{request}\n{purpose}".encode()
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
@@ -396,16 +534,71 @@ def _resolve_request_target(
     return target_path or None, _parse_line_range(target_lines)
 
 
+def _clip_range_to_eof_if_possible(
+    *,
+    target_path: str,
+    request_range: tuple[int, int],
+    total_lines_index: dict[str, dict[str, object]],
+) -> tuple[tuple[int, int], dict[str, object]]:
+    info = _lookup_total_lines_info(target_path, total_lines_index)
+    total_lines_selected: int | None = None
+    total_lines_candidates: list[object] = []
+    total_lines_conflict = False
+    total_lines_source = ""
+    if isinstance(info, dict):
+        selected_raw = info.get("total_lines_selected")
+        if isinstance(selected_raw, int):
+            total_lines_selected = selected_raw
+
+        candidates_raw = info.get("total_lines_candidates")
+        if isinstance(candidates_raw, list):
+            total_lines_candidates = list(candidates_raw)
+
+        conflict_raw = info.get("total_lines_conflict")
+        if isinstance(conflict_raw, bool):
+            total_lines_conflict = conflict_raw
+
+        source_raw = info.get("total_lines_source")
+        if isinstance(source_raw, str):
+            total_lines_source = source_raw
+    if total_lines_selected is None or total_lines_selected <= 0:
+        return request_range, {}
+
+    start, end = request_range
+    clipped_range = request_range
+    clip_applied = bool(end > total_lines_selected and total_lines_selected >= start)
+    if clip_applied:
+        clipped_range = (start, total_lines_selected)
+
+    meta: dict[str, object] = {
+        "total_lines_selected": total_lines_selected,
+        "total_lines_candidates": total_lines_candidates,
+        "total_lines_conflict": total_lines_conflict,
+        "total_lines_source": total_lines_source,
+        "eof_clip_applied": clip_applied,
+    }
+    return clipped_range, meta
+
+
 def _match_request_to_evidence(
-    request: EvidenceRequest, evidence: list[EvidenceItem]
-) -> tuple[list[EvidenceItem], MatchScope]:
+    request: EvidenceRequest,
+    evidence: list[EvidenceItem],
+    *,
+    total_lines_index: dict[str, dict[str, object]],
+) -> tuple[list[EvidenceItem], MatchScope, dict[str, object]]:
     target_path, request_range = _resolve_request_target(request)
     if not target_path:
-        return [], "none"
+        return [], "none", {}
     matches: list[EvidenceItem] = []
     if request_range is not None:
+        effective_range, clip_meta = _clip_range_to_eof_if_possible(
+            target_path=target_path,
+            request_range=request_range,
+            total_lines_index=total_lines_index,
+        )
+        request_range = effective_range
         for item in evidence:
-            if _normalize_path(item.path) != target_path:
+            if not _paths_equivalent(item.path, target_path):
                 continue
             if item.line_range is None:
                 continue
@@ -413,30 +606,37 @@ def _match_request_to_evidence(
                 continue
             matches.append(item)
         if not matches:
-            return [], "none"
+            return [], "none", clip_meta
         ranges = [item.line_range for item in matches if item.line_range is not None]
         if _range_is_fully_covered(request_range, ranges):
-            return matches, "range_level"
-        return matches, "range_level_partial"
+            return matches, "range_level", clip_meta
+        return matches, "range_level_partial", clip_meta
 
     for item in evidence:
-        if _normalize_path(item.path) != target_path:
+        if not _paths_equivalent(item.path, target_path):
             continue
         matches.append(item)
-    return matches, "file_level" if matches else "none"
+    return matches, "file_level" if matches else "none", {}
 
 
-def _is_full_file_covered(path: str, evidence_items: list[EvidenceItem]) -> bool:
+def _is_full_file_covered(
+    path: str,
+    evidence_items: list[EvidenceItem],
+    *,
+    total_lines_index: dict[str, dict[str, object]],
+) -> bool:
     if not path:
         return False
-    matching = [item for item in evidence_items if _normalize_path(item.path) == path]
+    matching = [item for item in evidence_items if _paths_equivalent(item.path, path)]
     if not matching:
         return False
-    totals = {item.file_total_lines for item in matching if item.file_total_lines}
-    if len(totals) != 1:
-        return False
-    total_lines = totals.pop()
-    if not total_lines:
+    info = _lookup_total_lines_info(path, total_lines_index)
+    total_lines: int | None = None
+    if isinstance(info, dict):
+        selected_raw = info.get("total_lines_selected")
+        if isinstance(selected_raw, int):
+            total_lines = selected_raw
+    if total_lines is None or total_lines <= 0:
         return False
     segments: list[tuple[int, int]] = []
     for item in matching:
@@ -600,16 +800,25 @@ def reconcile_evidence_chain(
         (reconciled_gaps, evidence_chain_index)
     """
     evidence_items = parse_evidence_bundle(evidence_bundle)
+    total_lines_index = _parse_total_lines_index(evidence_bundle)
     requests = parse_evidence_requests(evidence_requests)
     gap_lines = _parse_gap_lines(evidence_gaps)
 
     chain_index: list[dict[str, object]] = []
     unsatisfied_requests: list[EvidenceRequest] = []
     for request in requests:
-        matches, match_scope = _match_request_to_evidence(request, evidence_items)
+        matches, match_scope, clip_meta = _match_request_to_evidence(
+            request,
+            evidence_items,
+            total_lines_index=total_lines_index,
+        )
         target_path, request_range = _resolve_request_target(request)
         if request_range is None and target_path:
-            full_covered = _is_full_file_covered(target_path, evidence_items)
+            full_covered = _is_full_file_covered(
+                target_path,
+                evidence_items,
+                total_lines_index=total_lines_index,
+            )
             if full_covered:
                 match_scope = "file_level_full"
             else:
@@ -633,6 +842,15 @@ def reconcile_evidence_chain(
                 "satisfied": satisfied,
                 "match_scope": match_scope,
                 "evidence_refs": refs,
+                **(
+                    clip_meta
+                    if isinstance(clip_meta, dict)
+                    and (
+                        bool(clip_meta.get("eof_clip_applied"))
+                        or bool(clip_meta.get("total_lines_conflict"))
+                    )
+                    else {}
+                ),
             }
         )
         if not satisfied:
@@ -651,14 +869,27 @@ def reconcile_evidence_chain(
         path, lines = _gap_target(line)
         target_range = _parse_line_range(lines)
         if path and target_range is not None:
+            target_range, _ = _clip_range_to_eof_if_possible(
+                target_path=path,
+                request_range=target_range,
+                total_lines_index=total_lines_index,
+            )
             ranges = [
                 item.line_range
                 for item in evidence_items
-                if _normalize_path(item.path) == path and item.line_range is not None
+                if _paths_equivalent(item.path, path) and item.line_range is not None
             ]
             if _range_is_fully_covered(target_range, ranges):
                 continue
-        if path and target_range is None and _is_full_file_covered(path, evidence_items):
+        if (
+            path
+            and target_range is None
+            and _is_full_file_covered(
+                path,
+                evidence_items,
+                total_lines_index=total_lines_index,
+            )
+        ):
             continue
         key = _gap_key(line)
         if key in seen_keys:

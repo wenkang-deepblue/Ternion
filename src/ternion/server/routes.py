@@ -4,12 +4,14 @@ API routes for Ternion gateway.
 Implements OpenAI-compatible endpoints for chat completions and models listing.
 """
 
+import contextlib
 import json
 import re
 import subprocess
-from functools import lru_cache
 from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, Request
@@ -44,7 +46,7 @@ from ternion.providers.manager import provider_manager
 from ternion.router.context import TernionContext
 from ternion.router.message_router import MessageRouter
 from ternion.utils.cursor_request_capture import schedule_cursor_request_capture
-from ternion.utils.cursor_safety import sanitize_for_cursor_display
+from ternion.utils.cursor_safety import sanitize_for_cursor_display, sanitize_for_preview
 from ternion.utils.i18n import MessageKey, get_web_base_url, t
 from ternion.utils.language_resources import (
     get_cursor_non_agent_mode_hints,
@@ -52,14 +54,17 @@ from ternion.utils.language_resources import (
 )
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import parse_structured_report
+from ternion.utils.secrets import redact_secrets
 from ternion.utils.shell_policy import evaluate_shell_command
-from ternion.utils.tool_policy import (
-    EXECUTION_ALLOWED_TOOL_CANONICAL as _EXECUTION_ALLOWED_TOOL_CANONICAL,
-    SHELL_TOOL_CANONICAL as _SHELL_TOOL_CANONICAL,
-)
 from ternion.utils.streaming import (
     create_sse_stream,
     create_sse_tool_calls_stream,
+)
+from ternion.utils.tool_policy import (
+    EXECUTION_ALLOWED_TOOL_CANONICAL as _EXECUTION_ALLOWED_TOOL_CANONICAL,
+)
+from ternion.utils.tool_policy import (
+    SHELL_TOOL_CANONICAL as _SHELL_TOOL_CANONICAL,
 )
 from ternion.workflow.streaming_events import StreamEventQueue
 
@@ -88,6 +93,11 @@ _SSE_HEADERS = {
 }
 
 _STREAM_SANITIZE_TAIL_KEEP = 32
+_RESUMABLE_PHASE_STAGE_MAP = {
+    "report_evidence": SessionStage.EXECUTION_IN_PROGRESS,
+    "execution": SessionStage.EXECUTION_IN_PROGRESS,
+    "optimizer": SessionStage.OPTIMIZER_IN_PROGRESS,
+}
 
 _REPORT_SECTION_TITLE_KEYS = {
     "root_cause": MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE,
@@ -177,7 +187,6 @@ def _request_contains_case_insensitive(request: ChatCompletionRequest, needle: s
         return False
     needle_lower = needle.lower()
     for msg in request.messages:
-
         if msg.role != MessageRole.USER:
             continue
         for text in _iter_message_content_text(msg.content):
@@ -286,16 +295,19 @@ def _phase_start_indicator_text(phase: str, *, session_id: str | None = None) ->
         if session_id_str:
             session = session_store.load_session(session_id_str)
             if session is not None:
-                if not getattr(session, "execution_phase_announced", False):
+                announced = bool(getattr(session, "execution_phase_announced", False))
+                previous_phase = str(getattr(session, "workflow_phase", "") or "").strip().lower()
+                resume_phase = (
+                    str(getattr(session, "report_evidence_resume_phase", "") or "").strip().lower()
+                )
+                if previous_phase == "report_evidence" and resume_phase == "execution":
+                    if not announced:
+                        session_store.update_session(session_id_str, execution_phase_announced=True)
+                    return t(MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE)
+                if not announced:
                     session_store.update_session(session_id_str, execution_phase_announced=True)
                     return t(MessageKey.EXECUTION_START)
-
-                previous_phase = str(getattr(session, "workflow_phase", "") or "").strip().lower()
-                resume_phase = str(getattr(session, "report_evidence_resume_phase", "") or "").strip().lower()
-                if previous_phase == "report_evidence" and resume_phase == "execution":
-                    return t(MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE)
                 return None
-
         return t(MessageKey.EXECUTION_START)
     if phase_lower == "optimizer":
         return t(MessageKey.OPTIMIZER_START)
@@ -361,9 +373,7 @@ def _rewrite_tool_call_ids(
     """
     phase = (workflow_phase or "").strip().lower()
     read_file_max_limit = (
-        _READ_FILE_EVIDENCE_MAX_LIMIT
-        if "evidence" in phase
-        else _READ_FILE_MAX_LIMIT
+        _READ_FILE_EVIDENCE_MAX_LIMIT if "evidence" in phase else _READ_FILE_MAX_LIMIT
     )
 
     rewritten: list[dict] = []
@@ -399,16 +409,71 @@ def _rewrite_tool_call_ids(
             arguments_str = _rewrite_tool_call_repo_paths(name, arguments_str)
 
         new_id = f"ternion_{session_id}_r{round_index:04d}_c{idx:02d}"
-        rewritten.append({
-            "id": new_id,
-            "type": "function",
-            "function": {
-                "name": name,
-                "arguments": arguments_str,
-            },
-        })
+        rewritten.append(
+            {
+                "id": new_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": arguments_str,
+                },
+            }
+        )
 
     return rewritten
+
+
+def _append_assistant_tool_call_message(
+    execution_messages: list[dict] | None,
+    tool_calls: list[dict] | None,
+) -> list[dict]:
+    """Append one assistant tool-call message to execution history."""
+    messages = list(execution_messages or [])
+    messages.append(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": list(tool_calls or []),
+        }
+    )
+    return messages
+
+
+def _resolve_followup_completion_stage(
+    *,
+    final_phase: str,
+    final_code: str,
+    errors: list[Any],
+    session_id: str,
+) -> SessionStage:
+    """Resolve session stage for follow-up workflow completion."""
+    if isinstance(final_code, str) and final_code.strip() and not errors:
+        return SessionStage.EXECUTED
+    if errors:
+        return SessionStage.EXECUTION_IN_PROGRESS
+
+    phase = str(final_phase or "").strip().lower()
+    resumable_stage = _RESUMABLE_PHASE_STAGE_MAP.get(phase)
+    if resumable_stage is not None:
+        log_manager.emit(
+            level="WARN",
+            category="WORKFLOW",
+            message=(
+                "followup_non_terminal_without_output | "
+                f"session_id={session_id} | "
+                f"phase={phase} | "
+                f"resolved_stage={resumable_stage.value}"
+            ),
+        )
+        logger.warning(
+            "followup_non_terminal_without_output",
+            session_id=session_id,
+            workflow_phase=phase,
+            resolved_stage=resumable_stage.value,
+        )
+        return resumable_stage
+
+    return SessionStage.RCA_COMPLETE
 
 
 def _is_safe_repo_relative_path(path_str: str) -> bool:
@@ -529,9 +594,7 @@ def _rewrite_tool_call_repo_paths(tool_name: str, arguments_json: str) -> str:
         rewrite_key("path")
         rewrite_key("target_file")
         rewrite_key("target_notebook")
-    elif canonical == "ls":
-        rewrite_key("target_directory")
-    elif canonical == "glob":
+    elif canonical == "ls" or canonical == "glob":
         rewrite_key("target_directory")
     elif canonical == "grep":
         rewrite_key("path")
@@ -582,6 +645,7 @@ _MUTATING_TOOL_NAMES = {
     # Legacy snake_case (older Cursor clients / some tests)
     "write",
     "writefile",
+    "strreplace",
     "searchreplace",
     "deletefile",
     "editnotebook",
@@ -614,12 +678,103 @@ def _extract_tool_name_and_arguments(tc: dict) -> tuple[str | None, str]:
     return name.strip(), json.dumps(arguments, ensure_ascii=False)
 
 
+_EXTERNAL_OUTPUT_WRITTEN_RE = re.compile(r"(?im)^\s*output\s+written\s+to:\s*(?P<path>.+?)\s*$")
+_FILE_TAG_RE = re.compile(r"(?i)\[file\](?P<path>.+?)\[/file\]")
+
+
+def _extract_external_output_paths(text: str) -> list[str]:
+    if not isinstance(text, str) or not text.strip():
+        return []
+    candidates: list[str] = []
+    for match in _EXTERNAL_OUTPUT_WRITTEN_RE.finditer(text):
+        path = match.group("path").strip().strip('"').strip("'").strip("`")
+        if path:
+            candidates.append(path)
+    for match in _FILE_TAG_RE.finditer(text):
+        path = match.group("path").strip().strip('"').strip("'").strip("`")
+        if path:
+            candidates.append(path)
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in candidates:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return unique
+
+
+def _build_redacted_preview(text: str, *, max_chars: int = 200) -> str:
+    raw = (text or "").strip().replace("\n", " ")
+    redacted = redact_secrets(raw)
+    if len(redacted) > max_chars:
+        redacted = redacted[:max_chars] + "..."
+    return sanitize_for_cursor_display(redacted)
+
+
+def _diff_tool_call_name_rewrites(before: list[dict], after: list[dict]) -> list[dict[str, str]]:
+    before_by_id: dict[str, str] = {}
+    for tc in before or []:
+        if not isinstance(tc, dict):
+            continue
+        tc_id = tc.get("id")
+        if not isinstance(tc_id, str) or not tc_id:
+            continue
+        name, _args = _extract_tool_name_and_arguments(tc)
+        if isinstance(name, str) and name:
+            before_by_id[tc_id] = name
+
+    rewrites: list[dict[str, str]] = []
+    for tc in after or []:
+        if not isinstance(tc, dict):
+            continue
+        tc_id = tc.get("id")
+        if not isinstance(tc_id, str) or not tc_id:
+            continue
+        name, _args = _extract_tool_name_and_arguments(tc)
+        before_name = before_by_id.get(tc_id)
+        if before_name and isinstance(name, str) and name and name != before_name:
+            rewrites.append({"id": tc_id, "from": before_name, "to": name})
+
+    return rewrites
+
+
+def _collect_execution_tool_policy_block_details(
+    tool_calls: list[dict],
+) -> tuple[list[str], list[dict[str, str]]]:
+    blocked_tools: list[str] = []
+    blocked_shell: list[dict[str, str]] = []
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        name, args_str = _extract_tool_name_and_arguments(tc)
+        canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+        if not canonical or canonical not in _EXECUTION_ALLOWED_TOOL_CANONICAL:
+            blocked_tools.append(name or t(MessageKey.TOOL_POLICY_UNKNOWN_TOOL))
+            continue
+
+        if canonical in _SHELL_TOOL_CANONICAL:
+            command = _extract_shell_command(args_str) or ""
+            decision = evaluate_shell_command(command)
+            if decision.allowed:
+                continue
+            blocked_shell.append(
+                {
+                    "tool": name or t(MessageKey.TOOL_POLICY_SHELL),
+                    "command_preview": _build_redacted_preview(command, max_chars=200),
+                    "reason": decision.reason,
+                }
+            )
+    return blocked_tools, blocked_shell
+
+
 def _normalize_file_path(path_str: str) -> str | None:
     if not isinstance(path_str, str) or not path_str.strip():
         return None
     p = Path(path_str).expanduser()
     if not p.is_absolute():
-        p = (Path.cwd() / p)
+        p = Path.cwd() / p
     try:
         return str(p.resolve())
     except Exception:
@@ -640,8 +795,8 @@ def _extract_mutation_target_path(tool_name: str, arguments_json: str) -> str | 
     canonical = re.sub(r"[^a-z0-9]+", "", (tool_name or "").strip().lower())
     args = _coerce_json_object(arguments_json)
 
-    # Legacy write/search_replace tools
-    if canonical in {"write", "writefile", "searchreplace"}:
+    # Legacy write/search_replace tools (and newer StrReplace)
+    if canonical in {"write", "writefile", "searchreplace", "strreplace"}:
         for key in ("file_path", "path", "target_file", "target_path"):
             value = args.get(key)
             if isinstance(value, str) and value.strip():
@@ -681,9 +836,9 @@ def _extract_apply_patch_target_path(patch_text: str) -> str | None:
     for line in patch_text.splitlines():
         s = line.strip()
         if s.startswith("*** Update File:"):
-            return s[len("*** Update File:"):].strip() or None
+            return s[len("*** Update File:") :].strip() or None
         if s.startswith("*** Add File:"):
-            return s[len("*** Add File:"):].strip() or None
+            return s[len("*** Add File:") :].strip() or None
     return None
 
 
@@ -767,6 +922,77 @@ def _extract_shell_result_metrics(raw_content: str) -> tuple[int | None, int | N
     return exit_code, elapsed_ms
 
 
+_PYTEST_NODEID_RE = re.compile(
+    r"^(?:FAILED|ERROR)\s+([^\s]+::[^\s]+)(?:\s+-\s+.*)?$",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+_PYTEST_ERROR_TYPE_RE = re.compile(r"^E\s+([A-Za-z_]\w+)(?::|\s|$)")
+_PYTEST_SUMMARY_RE = re.compile(
+    r"(?P<failed>\d+)\s+failed\b.*",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+
+
+def _is_pytest_command(command: str) -> bool:
+    s = (command or "").strip().lower()
+    return bool(s) and "pytest" in s
+
+
+def _extract_pytest_failure_details(raw_content: str) -> dict[str, object]:
+    """
+    Best-effort extraction of pytest failure details from a Shell tool result.
+
+    This is used to build deterministic failure handoff context for the Optimizer.
+    """
+    text = raw_content or ""
+    marker = "Command output:"
+    if marker in text:
+        _, text = text.split(marker, 1)
+    lines = [line.rstrip("\n") for line in (text or "").splitlines()]
+
+    failed_tests: list[str] = []
+    for line in lines:
+        m = _PYTEST_NODEID_RE.match((line or "").strip())
+        if not m:
+            continue
+        nodeid = (m.group(1) or "").strip()
+        if nodeid and nodeid not in failed_tests:
+            failed_tests.append(nodeid)
+
+    error_type = ""
+    for line in reversed(lines):
+        m = _PYTEST_ERROR_TYPE_RE.match((line or "").strip())
+        if not m:
+            continue
+        token = (m.group(1) or "").strip()
+        if token:
+            error_type = token
+            break
+
+    summary_line = ""
+    for line in reversed(lines[-80:]):
+        s = (line or "").strip()
+        if not s:
+            continue
+        if _PYTEST_SUMMARY_RE.search(s):
+            summary_line = s
+            break
+
+    # Include the tail to preserve the most actionable stack context.
+    non_empty = [ln for ln in lines if (ln or "").strip()]
+    tail_lines = non_empty[-30:] if non_empty else []
+    trace_tail = "\n".join(tail_lines).strip()
+    if len(trace_tail) > 1600:
+        trace_tail = trace_tail[-1600:]
+
+    return {
+        "pytest_failed_tests": failed_tests[:12],
+        "pytest_error_type": error_type,
+        "pytest_summary_line": summary_line,
+        "pytest_trace_tail": trace_tail,
+    }
+
+
 def _find_duplicate_shell_call(
     tool_results_meta: dict[str, dict],
     *,
@@ -784,6 +1010,149 @@ def _find_duplicate_shell_call(
         if isinstance(cmd, str) and _normalize_shell_command_for_dedup(cmd) == dedup_key:
             return tool_call_id
     return None
+
+
+def _extract_cursor_tool_names(cursor_tools: list[dict[str, Any]] | None) -> list[str]:
+    names: list[str] = []
+    for tool in cursor_tools or []:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return names
+
+
+def _canonical_tool_name(name: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+
+
+def _prefer_tool_name(available: list[str], *, preferred: list[str]) -> str:
+    available_set = {n for n in available if isinstance(n, str)}
+    for name in preferred:
+        if name in available_set:
+            return name
+    return available[0]
+
+
+def _normalize_and_validate_tool_calls_against_cursor_tools(
+    *,
+    workflow_phase: str,
+    tool_calls: list[dict],
+    cursor_tools: list[dict[str, Any]] | None,
+) -> tuple[list[dict], str | None]:
+    """
+    Normalize tool call names to match Cursor-provided tools (case-sensitive).
+
+    This is a defensive guardrail to prevent legacy alias drift (e.g., "run_terminal_cmd")
+    from producing non-executable tool calls in Cursor.
+    """
+    phase = str(workflow_phase or "").strip().lower()
+    if phase not in {"execution", "optimizer"}:
+        return list(tool_calls or []), None
+
+    available = _extract_cursor_tool_names(cursor_tools)
+    if not available:
+        return list(tool_calls or []), None
+
+    available_set = set(available)
+    canonical_to_available: dict[str, list[str]] = {}
+    for tool_name in available:
+        canonical_to_available.setdefault(_canonical_tool_name(tool_name), []).append(tool_name)
+
+    shell_available = [
+        name for name in available if _canonical_tool_name(name) in _SHELL_TOOL_CANONICAL
+    ]
+    write_available = [
+        name for name in available if _canonical_tool_name(name) in {"write", "writefile"}
+    ]
+    delete_available = [
+        name for name in available if _canonical_tool_name(name) in {"delete", "deletefile"}
+    ]
+
+    rewritten: list[dict] = []
+    rewrites: list[tuple[str, str]] = []
+    unknown: list[str] = []
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        name, args_str = _extract_tool_name_and_arguments(tc)
+        if not isinstance(name, str) or not name.strip():
+            unknown.append(t(MessageKey.TOOL_POLICY_UNKNOWN_TOOL))
+            continue
+
+        if name in available_set:
+            rewritten.append(tc)
+            continue
+
+        canonical = _canonical_tool_name(name)
+        mapped: str | None = None
+
+        exact_candidates = canonical_to_available.get(canonical) or []
+        unique_exact = list(dict.fromkeys(exact_candidates))
+        if len(unique_exact) == 1:
+            mapped = unique_exact[0]
+
+        if mapped is None and canonical in _SHELL_TOOL_CANONICAL and shell_available:
+            mapped = _prefer_tool_name(
+                shell_available,
+                preferred=["Shell", "RunTerminalCmd", "bash", "Bash"],
+            )
+
+        if mapped is None and canonical in {"write", "writefile"} and write_available:
+            mapped = _prefer_tool_name(
+                write_available,
+                preferred=["Write", "write_file", "write", "WriteFile"],
+            )
+
+        if mapped is None and canonical in {"delete", "deletefile"} and delete_available:
+            mapped = _prefer_tool_name(
+                delete_available,
+                preferred=["Delete", "delete_file", "delete", "DeleteFile"],
+            )
+
+        if mapped is None or mapped not in available_set:
+            unknown.append(name)
+            continue
+
+        if mapped != name:
+            rewrites.append((name, mapped))
+        rewritten.append(
+            {
+                **tc,
+                "function": {
+                    **(tc.get("function") if isinstance(tc.get("function"), dict) else {}),
+                    "name": mapped,
+                    "arguments": args_str,
+                },
+            }
+        )
+
+    if rewrites:
+        rendered = ", ".join(f"{src}->{dst}" for src, dst in rewrites[:8])
+        log_manager.emit(
+            level="INFO",
+            category="GUARDRAIL",
+            message=(
+                "tool_call_name_rewrite | "
+                f"phase={phase} | "
+                f"rewrites={rendered}" + (" | truncated=true" if len(rewrites) > 8 else "")
+            ),
+        )
+
+    if not unknown:
+        return rewritten, None
+
+    blocked_tools_text = "\n".join(f"- {item}" for item in sorted(set(unknown)))
+    none_placeholder = t(MessageKey.TOOL_POLICY_NONE)
+    return [], t(
+        MessageKey.EXECUTION_TOOL_POLICY_BLOCKED,
+        blocked_tools=blocked_tools_text,
+        blocked_shell=f"- {none_placeholder}",
+    )
 
 
 def _enforce_execution_tool_policy(
@@ -817,9 +1186,7 @@ def _enforce_execution_tool_policy(
                 preview = (command or "").strip().replace("\n", " ")
                 if len(preview) > 200:
                     preview = preview[:200] + "..."
-                blocked_shell.append(
-                    f"{name or shell_label} -> {preview or empty_command}"
-                )
+                blocked_shell.append(f"{name or shell_label} -> {preview or empty_command}")
 
     if not blocked_tools and not blocked_shell:
         return list(tool_calls or []), None
@@ -1055,6 +1422,33 @@ def _has_shell_tool_call(tool_calls: list[dict]) -> bool:
     return False
 
 
+def _split_tool_calls_for_transparent_batching(
+    tool_calls: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """
+    Split a mixed tool_calls list into (mutation_batch, shell_batch).
+
+    Step 2 policy (transparent batching):
+    - If the plan includes both mutation tools and shell commands, execute mutation first.
+    - Defer shell commands to the next tool round without re-calling the LLM.
+    """
+    shell_calls: list[dict] = []
+    mutation_calls: list[dict] = []
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        name, _args = _extract_tool_name_and_arguments(tc)
+        canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+        if canonical in _SHELL_TOOL_CANONICAL:
+            shell_calls.append(tc)
+        else:
+            mutation_calls.append(tc)
+
+    if shell_calls and mutation_calls:
+        return mutation_calls, shell_calls
+    return list(tool_calls or []), []
+
+
 def _capture_tool_loop_pre_git_status(
     tool_calls: list[dict],
     *,
@@ -1136,9 +1530,8 @@ def _collect_deliverable_policy_violations(
             violations.append(f"{name} -> {target_display}")
             continue
 
-        if deliverable_type == DeliverableType.DOC_ONLY:
-            if not _is_docs_relative_path(relative):
-                violations.append(f"{name} -> {target_display}")
+        if deliverable_type == DeliverableType.DOC_ONLY and not _is_docs_relative_path(relative):
+            violations.append(f"{name} -> {target_display}")
 
     return violations
 
@@ -1150,9 +1543,7 @@ def _deliverable_policy_violation_message(
 ) -> str:
     none_placeholder = t(MessageKey.TOOL_POLICY_NONE)
     blocked_targets = (
-        "\n".join(f"- {item}" for item in violations)
-        if violations
-        else f"- {none_placeholder}"
+        "\n".join(f"- {item}" for item in violations) if violations else f"- {none_placeholder}"
     )
     return t(
         MessageKey.DELIVERABLE_POLICY_BLOCKED,
@@ -1288,7 +1679,9 @@ def _extract_relevant_report_excerpt(
     # Extract simple multilingual keywords (ASCII tokens + CJK sequences)
     ascii_keywords = set(re.findall(r"[a-z0-9_]{4,}", normalized_question.lower()))
     cjk_keywords = set(re.findall(r"[\u4e00-\u9fff]{2,}", normalized_question))
-    keywords: list[tuple[str, bool]] = [(k, True) for k in ascii_keywords] + [(k, False) for k in cjk_keywords]
+    keywords: list[tuple[str, bool]] = [(k, True) for k in ascii_keywords] + [
+        (k, False) for k in cjk_keywords
+    ]
 
     scored: list[tuple[int, str]] = []
     for s in sections:
@@ -1454,6 +1847,7 @@ async def _run_discussion_streaming(
         # Send budget warning first if present
         if budget_warning:
             from ternion.core.budget import budget_manager
+
             warning_text = budget_manager.format_budget_warning(budget_warning)
             chunk = ChatCompletionChunk(
                 id=chunk_id,
@@ -1512,7 +1906,9 @@ async def _run_discussion_streaming(
                                         model=model,
                                         choices=[
                                             StreamChoice(
-                                                delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                                delta=ChoiceDelta(
+                                                    content="\n" + pending_phase_indicator
+                                                )
                                             )
                                         ],
                                     )
@@ -1535,7 +1931,9 @@ async def _run_discussion_streaming(
                                 created=created,
                                 model=model,
                                 choices=[
-                                    StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                                    StreamChoice(
+                                        delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                    )
                                 ],
                             )
                             yield f"data: {chunk.model_dump_json()}\n\n"
@@ -1565,7 +1963,9 @@ async def _run_discussion_streaming(
                                     choices=[StreamChoice(delta=ChoiceDelta(content=flushed))],
                                 )
                                 yield f"data: {chunk.model_dump_json()}\n\n"
-                        indicator = _phase_start_indicator_text(event.phase, session_id=getattr(context, "session_id", None))
+                        indicator = _phase_start_indicator_text(
+                            event.phase, session_id=getattr(context, "session_id", None)
+                        )
                         if indicator:
                             if phase_lower == "convergence":
                                 delta = ChoiceDelta(
@@ -1613,11 +2013,15 @@ async def _run_discussion_streaming(
 
             pending_tool_calls = final_state.get("pending_tool_calls") or []
             if pending_tool_calls:
-                cursor_prompt = context.cursor_system_prompt.content if (
-                    context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str)
-                ) else ""
+                cursor_prompt = (
+                    context.cursor_system_prompt.content
+                    if (
+                        context.cursor_system_prompt
+                        and isinstance(context.cursor_system_prompt.content, str)
+                    )
+                    else ""
+                )
                 workflow_phase = str(final_state.get("current_phase") or "execution")
-                execution_phase_announced = bool(show_phase_indicators) and workflow_phase in {"execution", "optimizer"}
                 session = session_store.create_session(
                     ternion_report=final_state.get("ternion_report", "") or "",
                     execution_mode=ExecutionMode.TERNION_FULL,
@@ -1627,14 +2031,12 @@ async def _run_discussion_streaming(
                     cursor_tool_choice=getattr(context, "cursor_tool_choice", None),
                     execution_messages=list(final_state.get("conversation_history", []) or []),
                     workflow_phase=workflow_phase,
-                    execution_phase_announced=execution_phase_announced,
+                    execution_phase_announced=False,
                     # Phase 1.5 evidence state (required for report_evidence follow-ups)
                     evidence_bundle=str(final_state.get("evidence_bundle", "") or ""),
                     evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
                     evidence_requests=str(final_state.get("evidence_requests", "") or ""),
-                    evidence_chain_index=list(
-                        final_state.get("evidence_chain_index", []) or []
-                    ),
+                    evidence_chain_index=list(final_state.get("evidence_chain_index", []) or []),
                     evidence_topup_round=int(final_state.get("evidence_topup_round", 0) or 0),
                     report_evidence_resume_phase=str(
                         final_state.get("report_evidence_resume_phase", "") or ""
@@ -1648,19 +2050,82 @@ async def _run_discussion_streaming(
                         session,
                         filtered_tool_calls,
                     )
-                filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-                    workflow_phase=workflow_phase,
-                    tool_calls=filtered_tool_calls,
+                guardrail_events_to_append: list[dict[str, Any]] = []
+                before_cursor_validate = list(filtered_tool_calls)
+                filtered_tool_calls, cursor_tools_error = (
+                    _normalize_and_validate_tool_calls_against_cursor_tools(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                        cursor_tools=list(getattr(session, "cursor_tools", []) or []),
+                    )
                 )
+                rewrites = _diff_tool_call_name_rewrites(
+                    before_cursor_validate, filtered_tool_calls
+                )
+                if rewrites:
+                    guardrail_events_to_append.append(
+                        {
+                            "type": "tool_call_name_rewrite",
+                            "role": "optimizer" if workflow_phase == "optimizer" else "writer",
+                            "rewrites": rewrites,
+                        }
+                    )
+
+                tool_policy_error = cursor_tools_error
+                role_label = "optimizer" if workflow_phase == "optimizer" else "writer"
+                if tool_policy_error:
+                    available = _extract_cursor_tool_names(
+                        getattr(session, "cursor_tools", []) or []
+                    )
+                    available_set = set(available)
+                    unknown: list[str] = []
+                    for tc in before_cursor_validate:
+                        name, _args = _extract_tool_name_and_arguments(tc)
+                        if isinstance(name, str) and name and name not in available_set:
+                            unknown.append(name)
+                    guardrail_events_to_append.append(
+                        {
+                            "type": "tool_calls_not_in_cursor_tools",
+                            "role": role_label,
+                            "blocked_tools": sorted(set(unknown)),
+                            "error_preview": sanitize_for_preview(
+                                redact_secrets(tool_policy_error),
+                                max_length=240,
+                            ),
+                        }
+                    )
+                else:
+                    before_exec_policy = list(filtered_tool_calls)
+                    filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                    )
+                    if tool_policy_error:
+                        blocked_tools, blocked_shell = _collect_execution_tool_policy_block_details(
+                            before_exec_policy
+                        )
+                        guardrail_events_to_append.append(
+                            {
+                                "type": "execution_tool_policy_blocked",
+                                "role": role_label,
+                                "blocked_tools": blocked_tools,
+                                "blocked_shell": blocked_shell,
+                                "error_preview": sanitize_for_preview(
+                                    redact_secrets(tool_policy_error),
+                                    max_length=240,
+                                ),
+                            }
+                        )
                 if tool_policy_error:
                     session_store.update_session(
                         session.session_id,
                         stage=SessionStage.AWAITING_CONFIRMATION,
                         confirmation_reason="tool_policy",
                         pending_tool_calls=[],
+                        append_guardrail_events=guardrail_events_to_append,
                     )
                     for i in range(0, len(tool_policy_error), 128):
-                        text = tool_policy_error[i:i + 128]
+                        text = tool_policy_error[i : i + 128]
                         if not text:
                             continue
                         chunk = ChatCompletionChunk(
@@ -1680,23 +2145,49 @@ async def _run_discussion_streaming(
                     yield f"data: {final_chunk.model_dump_json()}\n\n"
                     yield "data: [DONE]\n\n"
                     return
-                filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
-                    workflow_phase=workflow_phase,
-                    tool_calls=filtered_tool_calls,
-                    conversation_history=list(
-                        final_state.get("conversation_history", []) or []
-                    ),
-                    ternion_report=str(final_state.get("ternion_report", "") or ""),
+                before_deliverable_policy = list(filtered_tool_calls)
+                filtered_tool_calls, policy_error, deliverable_type, allowed_scope = (
+                    _enforce_deliverable_policy(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                        conversation_history=list(
+                            final_state.get("conversation_history", []) or []
+                        ),
+                        ternion_report=str(final_state.get("ternion_report", "") or ""),
+                    )
                 )
                 if policy_error:
+                    violations = (
+                        _collect_deliverable_policy_violations(
+                            before_deliverable_policy, deliverable_type
+                        )
+                        if deliverable_type is not None
+                        else []
+                    )
+                    guardrail_events_to_append.append(
+                        {
+                            "type": "deliverable_policy_blocked",
+                            "role": role_label,
+                            "deliverable_type": deliverable_type.value
+                            if deliverable_type is not None
+                            else "",
+                            "allowed_scope": allowed_scope or "",
+                            "violations": violations,
+                            "error_preview": sanitize_for_preview(
+                                redact_secrets(policy_error),
+                                max_length=240,
+                            ),
+                        }
+                    )
                     session_store.update_session(
                         session.session_id,
                         stage=SessionStage.AWAITING_CONFIRMATION,
                         confirmation_reason="deliverable_policy",
                         pending_tool_calls=[],
+                        append_guardrail_events=guardrail_events_to_append,
                     )
                     for i in range(0, len(policy_error), 128):
-                        text = policy_error[i:i + 128]
+                        text = policy_error[i : i + 128]
                         if not text:
                             continue
                         chunk = ChatCompletionChunk(
@@ -1716,6 +2207,11 @@ async def _run_discussion_streaming(
                     yield f"data: {final_chunk.model_dump_json()}\n\n"
                     yield "data: [DONE]\n\n"
                     return
+                deferred_tool_calls: list[dict] = []
+                if workflow_phase in {"execution", "optimizer"}:
+                    filtered_tool_calls, deferred_tool_calls = (
+                        _split_tool_calls_for_transparent_batching(filtered_tool_calls)
+                    )
                 baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
                     session,
                     filtered_tool_calls,
@@ -1726,16 +2222,15 @@ async def _run_discussion_streaming(
                     round_index=1,
                     workflow_phase=workflow_phase,
                 )
-                execution_messages = list(session.execution_messages or [])
-                execution_messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": rewritten_tool_calls,
-                })
+                execution_messages = _append_assistant_tool_call_message(
+                    session.execution_messages,
+                    rewritten_tool_calls,
+                )
                 session_store.update_session(
                     session.session_id,
                     execution_messages=execution_messages,
                     pending_tool_calls=rewritten_tool_calls,
+                    deferred_tool_calls=deferred_tool_calls,
                     round_index=1,
                     workflow_phase=workflow_phase,
                     tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
@@ -1751,6 +2246,7 @@ async def _run_discussion_streaming(
                         if workflow_phase == "optimizer"
                         else bool(getattr(session, "optimizer_todo_written", False))
                     ),
+                    append_guardrail_events=guardrail_events_to_append,
                 )
 
                 tool_chunk = ChatCompletionChunk(
@@ -1784,7 +2280,7 @@ async def _run_discussion_streaming(
                 suffix = sanitize_for_cursor_display(suffix)
                 if suffix:
                     for i in range(0, len(suffix), 128):
-                        text = suffix[i:i + 128]
+                        text = suffix[i : i + 128]
                         if not text:
                             continue
                         chunk = ChatCompletionChunk(
@@ -1797,7 +2293,9 @@ async def _run_discussion_streaming(
 
             # If workflow produced final_output but we didn't stream it
             # (e.g., non-streamable phases), send it now
-            workflow_final = final_state.get("final_output", "") or final_state.get("generated_code", "")
+            workflow_final = final_state.get("final_output", "") or final_state.get(
+                "generated_code", ""
+            )
             errors = final_state.get("errors", []) or []
             if workflow_final and not streamed_content:
                 if pending_phase_indicator:
@@ -1805,7 +2303,9 @@ async def _run_discussion_streaming(
                         id=chunk_id,
                         created=created,
                         model=model,
-                        choices=[StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))],
+                        choices=[
+                            StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                        ],
                     )
                     yield f"data: {chunk.model_dump_json()}\n\n"
                     pending_phase_indicator = None
@@ -1813,7 +2313,7 @@ async def _run_discussion_streaming(
                 # (e.g., divergence phase doesn't stream)
                 # Send the complete output
                 for i in range(0, len(workflow_final), 128):
-                    text = workflow_final[i:i + 128]
+                    text = workflow_final[i : i + 128]
                     chunk = ChatCompletionChunk(
                         id=chunk_id,
                         created=created,
@@ -1833,7 +2333,7 @@ async def _run_discussion_streaming(
                 error_output = "".join(output_parts)
                 error_output = sanitize_for_cursor_display(error_output)
                 for i in range(0, len(error_output), 128):
-                    text = error_output[i:i + 128]
+                    text = error_output[i : i + 128]
                     if not text:
                         continue
                     chunk = ChatCompletionChunk(
@@ -1865,13 +2365,21 @@ async def _run_discussion_streaming(
             yield f"data: {final_chunk.model_dump_json()}\n\n"
             yield "data: [DONE]\n\n"
 
+        except asyncio.CancelledError:
+            stream_queue.close()
+            workflow_task.cancel()
+            with contextlib.suppress(BaseException):
+                await workflow_task
+            raise
         except Exception as e:
             logger.exception("sse_generation_error", error=str(e))
             error_chunk = ChatCompletionChunk(
                 id=chunk_id,
                 created=created,
                 model=model,
-                choices=[StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))],
+                choices=[
+                    StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))
+                ],
             )
             yield f"data: {error_chunk.model_dump_json()}\n\n"
             yield "data: [DONE]\n\n"
@@ -1986,7 +2494,9 @@ async def _run_implementation_streaming(
                                 created=created,
                                 model=model,
                                 choices=[
-                                    StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                                    StreamChoice(
+                                        delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                    )
                                 ],
                             )
                             yield f"data: {chunk.model_dump_json()}\n\n"
@@ -2053,7 +2563,7 @@ async def _run_implementation_streaming(
                     message = _tool_loop_failsafe_message(session) if session is not None else ""
                     if message:
                         for i in range(0, len(message), 128):
-                            text = message[i:i + 128]
+                            text = message[i : i + 128]
                             if not text:
                                 continue
                             chunk = ChatCompletionChunk(
@@ -2086,10 +2596,72 @@ async def _run_implementation_streaming(
                         session,
                         filtered_tool_calls,
                     )
-                filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-                    workflow_phase=workflow_phase,
-                    tool_calls=filtered_tool_calls,
+                guardrail_events_to_append: list[dict[str, Any]] = []
+                before_cursor_validate = list(filtered_tool_calls)
+                filtered_tool_calls, cursor_tools_error = (
+                    _normalize_and_validate_tool_calls_against_cursor_tools(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                        cursor_tools=list(getattr(session, "cursor_tools", []) or []),
+                    )
                 )
+                rewrites = _diff_tool_call_name_rewrites(
+                    before_cursor_validate, filtered_tool_calls
+                )
+                if rewrites:
+                    guardrail_events_to_append.append(
+                        {
+                            "type": "tool_call_name_rewrite",
+                            "role": "optimizer" if workflow_phase == "optimizer" else "writer",
+                            "rewrites": rewrites,
+                        }
+                    )
+
+                tool_policy_error = cursor_tools_error
+                role_label = "optimizer" if workflow_phase == "optimizer" else "writer"
+                if tool_policy_error:
+                    available = _extract_cursor_tool_names(
+                        getattr(session, "cursor_tools", []) or []
+                    )
+                    available_set = set(available)
+                    unknown: list[str] = []
+                    for tc in before_cursor_validate:
+                        name, _args = _extract_tool_name_and_arguments(tc)
+                        if isinstance(name, str) and name and name not in available_set:
+                            unknown.append(name)
+                    guardrail_events_to_append.append(
+                        {
+                            "type": "tool_calls_not_in_cursor_tools",
+                            "role": role_label,
+                            "blocked_tools": sorted(set(unknown)),
+                            "error_preview": sanitize_for_preview(
+                                redact_secrets(tool_policy_error),
+                                max_length=240,
+                            ),
+                        }
+                    )
+                else:
+                    before_exec_policy = list(filtered_tool_calls)
+                    filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                    )
+                    if tool_policy_error:
+                        blocked_tools, blocked_shell = _collect_execution_tool_policy_block_details(
+                            before_exec_policy
+                        )
+                        guardrail_events_to_append.append(
+                            {
+                                "type": "execution_tool_policy_blocked",
+                                "role": role_label,
+                                "blocked_tools": blocked_tools,
+                                "blocked_shell": blocked_shell,
+                                "error_preview": sanitize_for_preview(
+                                    redact_secrets(tool_policy_error),
+                                    max_length=240,
+                                ),
+                            }
+                        )
                 if tool_policy_error:
                     if session is not None:
                         session_store.update_session(
@@ -2097,9 +2669,10 @@ async def _run_implementation_streaming(
                             stage=SessionStage.AWAITING_CONFIRMATION,
                             confirmation_reason="tool_policy",
                             pending_tool_calls=[],
+                            append_guardrail_events=guardrail_events_to_append,
                         )
                     for i in range(0, len(tool_policy_error), 128):
-                        text = tool_policy_error[i:i + 128]
+                        text = tool_policy_error[i : i + 128]
                         if not text:
                             continue
                         chunk = ChatCompletionChunk(
@@ -2119,30 +2692,56 @@ async def _run_implementation_streaming(
                     yield f"data: {final_chunk.model_dump_json()}\n\n"
                     yield "data: [DONE]\n\n"
                     return
-                filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
-                    workflow_phase=workflow_phase,
-                    tool_calls=filtered_tool_calls,
-                    conversation_history=list(
-                        final_state.get("conversation_history", [])
-                        or getattr(session, "execution_messages", [])
-                        or []
-                    ),
-                    ternion_report=str(
-                        final_state.get("ternion_report", "")
-                        or getattr(session, "ternion_report_raw", "")
-                        or ""
-                    ),
+                before_deliverable_policy = list(filtered_tool_calls)
+                filtered_tool_calls, policy_error, deliverable_type, allowed_scope = (
+                    _enforce_deliverable_policy(
+                        workflow_phase=workflow_phase,
+                        tool_calls=filtered_tool_calls,
+                        conversation_history=list(
+                            final_state.get("conversation_history", [])
+                            or getattr(session, "execution_messages", [])
+                            or []
+                        ),
+                        ternion_report=str(
+                            final_state.get("ternion_report", "")
+                            or getattr(session, "ternion_report_raw", "")
+                            or ""
+                        ),
+                    )
                 )
                 if policy_error:
                     if session is not None:
+                        violations = (
+                            _collect_deliverable_policy_violations(
+                                before_deliverable_policy, deliverable_type
+                            )
+                            if deliverable_type is not None
+                            else []
+                        )
+                        guardrail_events_to_append.append(
+                            {
+                                "type": "deliverable_policy_blocked",
+                                "role": role_label,
+                                "deliverable_type": deliverable_type.value
+                                if deliverable_type is not None
+                                else "",
+                                "allowed_scope": allowed_scope or "",
+                                "violations": violations,
+                                "error_preview": sanitize_for_preview(
+                                    redact_secrets(policy_error),
+                                    max_length=240,
+                                ),
+                            }
+                        )
                         session_store.update_session(
                             session_id,
                             stage=SessionStage.AWAITING_CONFIRMATION,
                             confirmation_reason="deliverable_policy",
                             pending_tool_calls=[],
+                            append_guardrail_events=guardrail_events_to_append,
                         )
                     for i in range(0, len(policy_error), 128):
-                        text = policy_error[i:i + 128]
+                        text = policy_error[i : i + 128]
                         if not text:
                             continue
                         chunk = ChatCompletionChunk(
@@ -2163,39 +2762,48 @@ async def _run_implementation_streaming(
                     yield "data: [DONE]\n\n"
                     return
 
-                baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
-                    session,
-                    filtered_tool_calls,
-                ) if session is not None else ({}, [])
+                baseline, modified_files = (
+                    _ensure_baseline_snapshots_for_tool_calls(
+                        session,
+                        filtered_tool_calls,
+                    )
+                    if session is not None
+                    else ({}, [])
+                )
                 rewritten_tool_calls = _rewrite_tool_call_ids(
                     filtered_tool_calls,
                     session_id=session_id,
                     round_index=next_round,
                     workflow_phase=workflow_phase,
                 )
-                execution_messages = list(getattr(session, "execution_messages", []) or []) if (
-                    session is not None
-                ) else []
+                execution_messages = (
+                    list(getattr(session, "execution_messages", []) or [])
+                    if (session is not None)
+                    else []
+                )
                 if not execution_messages:
                     execution_messages = list(
                         final_state.get("conversation_history", [])
                         or initial_state.get("conversation_history", [])
                         or []
                     )
-                execution_messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": rewritten_tool_calls,
-                })
+                execution_messages = _append_assistant_tool_call_message(
+                    execution_messages,
+                    rewritten_tool_calls,
+                )
                 session_store.update_session(
                     session_id,
                     stage=SessionStage.AWAITING_TOOL_RESULTS,
                     execution_messages=execution_messages,
                     pending_tool_calls=rewritten_tool_calls,
                     round_index=next_round,
-                    generated_code=final_state.get("generated_code") or getattr(session, "generated_code", ""),
-                    review_feedback=final_state.get("review_feedback") or getattr(session, "review_feedback", ""),
-                    revision_count=final_state.get("revision_count", getattr(session, "revision_count", 0)),
+                    generated_code=final_state.get("generated_code")
+                    or getattr(session, "generated_code", ""),
+                    review_feedback=final_state.get("review_feedback")
+                    or getattr(session, "review_feedback", ""),
+                    revision_count=final_state.get(
+                        "revision_count", getattr(session, "revision_count", 0)
+                    ),
                     workflow_phase=workflow_phase,
                     tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
                         rewritten_tool_calls,
@@ -2220,6 +2828,7 @@ async def _run_implementation_streaming(
                         if workflow_phase == "optimizer"
                         else bool(getattr(session, "optimizer_todo_written", False))
                     ),
+                    append_guardrail_events=guardrail_events_to_append,
                 )
 
                 tool_chunk = ChatCompletionChunk(
@@ -2249,19 +2858,23 @@ async def _run_implementation_streaming(
                 return
 
             # If no content was streamed but workflow produced output, send it
-            workflow_final = final_state.get("final_output", "") or final_state.get("generated_code", "")
+            workflow_final = final_state.get("final_output", "") or final_state.get(
+                "generated_code", ""
+            )
             if workflow_final and not streamed_content:
                 if pending_phase_indicator:
                     chunk = ChatCompletionChunk(
                         id=chunk_id,
                         created=created,
                         model=model,
-                        choices=[StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))],
+                        choices=[
+                            StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                        ],
                     )
                     yield f"data: {chunk.model_dump_json()}\n\n"
                     pending_phase_indicator = None
                 for i in range(0, len(workflow_final), 128):
-                    text = workflow_final[i:i + 128]
+                    text = workflow_final[i : i + 128]
                     chunk = ChatCompletionChunk(
                         id=chunk_id,
                         created=created,
@@ -2293,13 +2906,21 @@ async def _run_implementation_streaming(
             yield f"data: {final_chunk.model_dump_json()}\n\n"
             yield "data: [DONE]\n\n"
 
+        except asyncio.CancelledError:
+            stream_queue.close()
+            impl_task.cancel()
+            with contextlib.suppress(BaseException):
+                await impl_task
+            raise
         except Exception as e:
             logger.exception("sse_impl_generation_error", error=str(e))
             error_chunk = ChatCompletionChunk(
                 id=chunk_id,
                 created=created,
                 model=model,
-                choices=[StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))],
+                choices=[
+                    StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))
+                ],
             )
             yield f"data: {error_chunk.model_dump_json()}\n\n"
             yield "data: [DONE]\n\n"
@@ -2309,7 +2930,6 @@ async def _run_implementation_streaming(
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
-
 
 
 @router.get("/health")
@@ -2479,13 +3099,15 @@ async def chat_completions(
     messages_as_dicts = []
     for msg in request.messages:
         role = msg.role.value if hasattr(msg.role, "value") else msg.role
-        messages_as_dicts.append({
-            "role": role,
-            "content": msg.content,
-            "name": msg.name,
-            "tool_calls": msg.tool_calls,
-            "tool_call_id": msg.tool_call_id,
-        })
+        messages_as_dicts.append(
+            {
+                "role": role,
+                "content": msg.content,
+                "name": msg.name,
+                "tool_calls": msg.tool_calls,
+                "tool_call_id": msg.tool_call_id,
+            }
+        )
 
     # Check for execution follow-up session first (tool loop).
     execution_session_id = _parse_execution_session_id(messages_as_dicts)
@@ -2499,7 +3121,9 @@ async def chat_completions(
         ):
             workflow_phase = str(getattr(session, "workflow_phase", "") or "").lower()
             if workflow_phase == "report_evidence":
-                resume_phase = str(getattr(session, "report_evidence_resume_phase", "") or "").strip().lower()
+                resume_phase = (
+                    str(getattr(session, "report_evidence_resume_phase", "") or "").strip().lower()
+                )
                 if resume_phase in {"execution", "optimizer"}:
                     return await handle_execution_followup(session, request)
                 return await handle_report_evidence_followup(session, request)
@@ -2548,7 +3172,11 @@ async def chat_completions(
                     message_preview=latest_message[:50],
                     hash_verified=hash_verified,
                 )
-                hash_status = f"hash_verified={hash_verified}" if hash_verified is not None else "hash_not_checked"
+                hash_status = (
+                    f"hash_verified={hash_verified}"
+                    if hash_verified is not None
+                    else "hash_not_checked"
+                )
                 log_manager.emit(
                     level="INFO",
                     category="SESSION",
@@ -2697,7 +3325,11 @@ async def chat_completions(
             continue
         # Check if the provider for this role is enabled
         provider_config = user_config.providers.get(role_config.provider)
-        if not provider_config or not provider_config.api_keys or not provider_config.selected_key_id:
+        if (
+            not provider_config
+            or not provider_config.api_keys
+            or not provider_config.selected_key_id
+        ):
             missing_roles.append(f"{display_name} ({role_config.provider} not configured)")
 
     if missing_roles:
@@ -2705,7 +3337,9 @@ async def chat_completions(
             status_code=503,
             content={
                 "error": {
-                    "message": t(MessageKey.ROLE_CONFIG_INCOMPLETE, missing_roles=', '.join(missing_roles)),
+                    "message": t(
+                        MessageKey.ROLE_CONFIG_INCOMPLETE, missing_roles=", ".join(missing_roles)
+                    ),
                     "type": "configuration_error",
                 }
             },
@@ -2734,7 +3368,9 @@ async def chat_completions(
         log_manager.emit(
             level="WARN",
             category="BUDGET",
-            message=t(MessageKey.LOG_BUDGET_WARNING, usage_pct=str(usage_summary.get('usage_pct', 0))),
+            message=t(
+                MessageKey.LOG_BUDGET_WARNING, usage_pct=str(usage_summary.get("usage_pct", 0))
+            ),
         )
 
     # Run the Ternion discussion workflow
@@ -2753,9 +3389,14 @@ async def chat_completions(
         final_state = await run_discussion(context)
         pending_tool_calls = final_state.get("pending_tool_calls") or []
         if pending_tool_calls:
-            cursor_prompt = context.cursor_system_prompt.content if (
-                context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str)
-            ) else ""
+            cursor_prompt = (
+                context.cursor_system_prompt.content
+                if (
+                    context.cursor_system_prompt
+                    and isinstance(context.cursor_system_prompt.content, str)
+                )
+                else ""
+            )
             workflow_phase = str(final_state.get("current_phase") or "execution")
             session = session_store.create_session(
                 ternion_report=final_state.get("ternion_report", "") or "",
@@ -2785,16 +3426,76 @@ async def chat_completions(
                     session,
                     filtered_tool_calls,
                 )
-            filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-                workflow_phase=workflow_phase,
-                tool_calls=filtered_tool_calls,
+            guardrail_events_to_append: list[dict[str, Any]] = []
+            before_cursor_validate = list(filtered_tool_calls)
+            filtered_tool_calls, cursor_tools_error = (
+                _normalize_and_validate_tool_calls_against_cursor_tools(
+                    workflow_phase=workflow_phase,
+                    tool_calls=filtered_tool_calls,
+                    cursor_tools=list(getattr(session, "cursor_tools", []) or []),
+                )
             )
+            rewrites = _diff_tool_call_name_rewrites(before_cursor_validate, filtered_tool_calls)
+            if rewrites:
+                guardrail_events_to_append.append(
+                    {
+                        "type": "tool_call_name_rewrite",
+                        "role": "optimizer" if workflow_phase == "optimizer" else "writer",
+                        "rewrites": rewrites,
+                    }
+                )
+
+            tool_policy_error = cursor_tools_error
+            role_label = "optimizer" if workflow_phase == "optimizer" else "writer"
+            if tool_policy_error:
+                available = _extract_cursor_tool_names(getattr(session, "cursor_tools", []) or [])
+                available_set = set(available)
+                unknown: list[str] = []
+                for tc in before_cursor_validate:
+                    name, _args = _extract_tool_name_and_arguments(tc)
+                    if isinstance(name, str) and name and name not in available_set:
+                        unknown.append(name)
+                guardrail_events_to_append.append(
+                    {
+                        "type": "tool_calls_not_in_cursor_tools",
+                        "role": role_label,
+                        "blocked_tools": sorted(set(unknown)),
+                        "error_preview": sanitize_for_preview(
+                            redact_secrets(tool_policy_error),
+                            max_length=240,
+                        ),
+                    }
+                )
+            else:
+                before_exec_policy = list(filtered_tool_calls)
+                filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                    workflow_phase=workflow_phase,
+                    tool_calls=filtered_tool_calls,
+                )
+                if tool_policy_error:
+                    blocked_tools, blocked_shell = _collect_execution_tool_policy_block_details(
+                        before_exec_policy
+                    )
+                    guardrail_events_to_append.append(
+                        {
+                            "type": "execution_tool_policy_blocked",
+                            "role": role_label,
+                            "blocked_tools": blocked_tools,
+                            "blocked_shell": blocked_shell,
+                            "error_preview": sanitize_for_preview(
+                                redact_secrets(tool_policy_error),
+                                max_length=240,
+                            ),
+                        }
+                    )
+
             if tool_policy_error:
                 session_store.update_session(
                     session.session_id,
                     stage=SessionStage.AWAITING_CONFIRMATION,
                     confirmation_reason="tool_policy",
                     pending_tool_calls=[],
+                    append_guardrail_events=guardrail_events_to_append,
                 )
                 return JSONResponse(
                     content=ChatCompletionResponse(
@@ -2809,20 +3510,44 @@ async def chat_completions(
                         ],
                     ).model_dump()
                 )
-            filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
-                workflow_phase=workflow_phase,
-                tool_calls=filtered_tool_calls,
-                conversation_history=list(
-                    final_state.get("conversation_history", []) or []
-                ),
-                ternion_report=str(final_state.get("ternion_report", "") or ""),
+            before_deliverable_policy = list(filtered_tool_calls)
+            filtered_tool_calls, policy_error, deliverable_type, allowed_scope = (
+                _enforce_deliverable_policy(
+                    workflow_phase=workflow_phase,
+                    tool_calls=filtered_tool_calls,
+                    conversation_history=list(final_state.get("conversation_history", []) or []),
+                    ternion_report=str(final_state.get("ternion_report", "") or ""),
+                )
             )
             if policy_error:
+                violations = (
+                    _collect_deliverable_policy_violations(
+                        before_deliverable_policy, deliverable_type
+                    )
+                    if deliverable_type is not None
+                    else []
+                )
+                guardrail_events_to_append.append(
+                    {
+                        "type": "deliverable_policy_blocked",
+                        "role": role_label,
+                        "deliverable_type": deliverable_type.value
+                        if deliverable_type is not None
+                        else "",
+                        "allowed_scope": allowed_scope or "",
+                        "violations": violations,
+                        "error_preview": sanitize_for_preview(
+                            redact_secrets(policy_error),
+                            max_length=240,
+                        ),
+                    }
+                )
                 session_store.update_session(
                     session.session_id,
                     stage=SessionStage.AWAITING_CONFIRMATION,
                     confirmation_reason="deliverable_policy",
                     pending_tool_calls=[],
+                    append_guardrail_events=guardrail_events_to_append,
                 )
                 return JSONResponse(
                     content=ChatCompletionResponse(
@@ -2837,6 +3562,11 @@ async def chat_completions(
                         ],
                     ).model_dump()
                 )
+            deferred_tool_calls: list[dict] = []
+            if workflow_phase in {"execution", "optimizer"}:
+                filtered_tool_calls, deferred_tool_calls = (
+                    _split_tool_calls_for_transparent_batching(filtered_tool_calls)
+                )
             baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
                 session,
                 filtered_tool_calls,
@@ -2847,16 +3577,15 @@ async def chat_completions(
                 round_index=1,
                 workflow_phase=workflow_phase,
             )
-            execution_messages = list(session.execution_messages or [])
-            execution_messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": rewritten_tool_calls,
-            })
+            execution_messages = _append_assistant_tool_call_message(
+                session.execution_messages,
+                rewritten_tool_calls,
+            )
             session_store.update_session(
                 session.session_id,
                 execution_messages=execution_messages,
                 pending_tool_calls=rewritten_tool_calls,
+                deferred_tool_calls=deferred_tool_calls,
                 round_index=1,
                 workflow_phase=workflow_phase,
                 tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
@@ -2872,6 +3601,7 @@ async def chat_completions(
                     if workflow_phase == "optimizer"
                     else bool(getattr(session, "optimizer_todo_written", False))
                 ),
+                append_guardrail_events=guardrail_events_to_append,
             )
             return JSONResponse(
                 content=ChatCompletionResponse(
@@ -2928,25 +3658,25 @@ async def chat_completions(
         output = "".join(output_parts)
 
         return JSONResponse(
-                content=ChatCompletionResponse(
-                    model=request.model,
-                    choices=[
-                        Choice(
-                            message=ChatMessage(
-                                role=MessageRole.ASSISTANT,
-                                content=output,
-                            )
+            content=ChatCompletionResponse(
+                model=request.model,
+                choices=[
+                    Choice(
+                        message=ChatMessage(
+                            role=MessageRole.ASSISTANT,
+                            content=output,
                         )
-                    ],
-                ).model_dump()
-            )
+                    )
+                ],
+            ).model_dump()
+        )
     except Exception as e:
         logger.exception("discussion_error", error=str(e))
         return JSONResponse(
             status_code=500,
             content={
                 "error": {
-                    "message": f"Discussion workflow error: {str(e)}",
+                    "message": t(MessageKey.DISCUSSION_WORKFLOW_ERROR, error=str(e)),
                     "type": "workflow_error",
                 }
             },
@@ -2966,7 +3696,9 @@ async def handle_report_evidence_followup(
     from ternion.workflow.graph import resume_report_evidence
 
     cursor_tools = list(request.tools or []) or list(session.cursor_tools or [])
-    cursor_tool_choice = request.tool_choice if request.tool_choice is not None else session.cursor_tool_choice
+    cursor_tool_choice = (
+        request.tool_choice if request.tool_choice is not None else session.cursor_tool_choice
+    )
 
     context = message_router.extract_context(request.messages)
     cursor_system_prompt = session.cursor_system_prompt
@@ -2977,25 +3709,33 @@ async def handle_report_evidence_followup(
     existing_tool_ids = {
         m.get("tool_call_id")
         for m in (session.execution_messages or [])
-        if isinstance(m, dict) and m.get("role") == "tool" and isinstance(m.get("tool_call_id"), str)
+        if isinstance(m, dict)
+        and m.get("role") == "tool"
+        and isinstance(m.get("tool_call_id"), str)
     }
-    for msg in request.messages:
-        if msg.role != MessageRole.TOOL:
+    for tool_result_msg in request.messages:
+        if tool_result_msg.role != MessageRole.TOOL:
             continue
-        if not isinstance(msg.tool_call_id, str):
+        if not isinstance(tool_result_msg.tool_call_id, str):
             continue
-        if msg.tool_call_id in existing_tool_ids:
+        if tool_result_msg.tool_call_id in existing_tool_ids:
             continue
-        match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(msg.tool_call_id)
+        match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(tool_result_msg.tool_call_id)
         if not match or match.group(1).lower() != session.session_id.lower():
             continue
-        raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
-        updated_execution_messages.append({
-            "role": "tool",
-            "content": raw_content,
-            "tool_call_id": msg.tool_call_id,
-        })
-        existing_tool_ids.add(msg.tool_call_id)
+        raw_content = (
+            tool_result_msg.content
+            if isinstance(tool_result_msg.content, str)
+            else str(tool_result_msg.content)
+        )
+        updated_execution_messages.append(
+            {
+                "role": "tool",
+                "content": raw_content,
+                "tool_call_id": tool_result_msg.tool_call_id,
+            }
+        )
+        existing_tool_ids.add(tool_result_msg.tool_call_id)
 
     # Update session for Phase 1.5
     session_store.update_session(
@@ -3069,8 +3809,8 @@ async def handle_report_evidence_followup(
         else None
     )
     conversation_history: list[ChatMessage] = []
-    for msg in updated_execution_messages:
-        role_value = msg.get("role")
+    for execution_msg in updated_execution_messages:
+        role_value = execution_msg.get("role")
         if not isinstance(role_value, str):
             continue
         try:
@@ -3080,17 +3820,20 @@ async def handle_report_evidence_followup(
         conversation_history.append(
             ChatMessage(
                 role=role,
-                content=msg.get("content"),
-                name=msg.get("name"),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id"),
+                content=execution_msg.get("content"),
+                name=execution_msg.get("name"),
+                tool_calls=execution_msg.get("tool_calls"),
+                tool_call_id=execution_msg.get("tool_call_id"),
             )
         )
 
     # Diagnostic log for tool_call_id mismatch debugging (Phase 1.5)
     assistant_with_tools_count = sum(
-        1 for m in updated_execution_messages
-        if m.get("role") == "assistant" and isinstance(m.get("tool_calls"), list) and m.get("tool_calls")
+        1
+        for m in updated_execution_messages
+        if m.get("role") == "assistant"
+        and isinstance(m.get("tool_calls"), list)
+        and m.get("tool_calls")
     )
     tool_msg_count = sum(1 for m in updated_execution_messages if m.get("role") == "tool")
     if tool_msg_count > 0:
@@ -3164,6 +3907,13 @@ async def handle_report_evidence_followup(
                         evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
                         evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
                         ternion_analyses=list(getattr(session, "ternion_analyses", []) or []),
+                        evidence_chain_index=list(
+                            getattr(session, "evidence_chain_index", []) or []
+                        ),
+                        evidence_topup_round=int(getattr(session, "evidence_topup_round", 0) or 0),
+                        report_evidence_resume_phase=str(
+                            getattr(session, "report_evidence_resume_phase", "") or ""
+                        ),
                     )
                 except Exception as e:
                     logger.exception(
@@ -3202,9 +3952,11 @@ async def handle_report_evidence_followup(
                         if event.delta:
                             phase_lower = str(event.phase or "").strip().lower()
                             if phase_lower == "convergence":
-                                safe_text, convergence_pending_raw = _append_stream_safe_cursor_text(
-                                    convergence_pending_raw,
-                                    event.delta,
+                                safe_text, convergence_pending_raw = (
+                                    _append_stream_safe_cursor_text(
+                                        convergence_pending_raw,
+                                        event.delta,
+                                    )
                                 )
                                 if safe_text:
                                     if pending_phase_indicator:
@@ -3214,7 +3966,9 @@ async def handle_report_evidence_followup(
                                             model=request.model,
                                             choices=[
                                                 StreamChoice(
-                                                    delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                                    delta=ChoiceDelta(
+                                                        content="\n" + pending_phase_indicator
+                                                    )
                                                 )
                                             ],
                                         )
@@ -3226,7 +3980,9 @@ async def handle_report_evidence_followup(
                                         id=chunk_id,
                                         created=created,
                                         model=request.model,
-                                        choices=[StreamChoice(delta=ChoiceDelta(content=safe_text))],
+                                        choices=[
+                                            StreamChoice(delta=ChoiceDelta(content=safe_text))
+                                        ],
                                     )
                                     yield f"data: {chunk.model_dump_json()}\n\n"
                                 continue
@@ -3237,7 +3993,11 @@ async def handle_report_evidence_followup(
                                     created=created,
                                     model=request.model,
                                     choices=[
-                                        StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                                        StreamChoice(
+                                            delta=ChoiceDelta(
+                                                content="\n" + pending_phase_indicator
+                                            )
+                                        )
                                     ],
                                 )
                                 yield f"data: {chunk.model_dump_json()}\n\n"
@@ -3267,7 +4027,9 @@ async def handle_report_evidence_followup(
                                         choices=[StreamChoice(delta=ChoiceDelta(content=flushed))],
                                     )
                                     yield f"data: {chunk.model_dump_json()}\n\n"
-                            indicator = _phase_start_indicator_text(event.phase, session_id=session.session_id)
+                            indicator = _phase_start_indicator_text(
+                                event.phase, session_id=session.session_id
+                            )
                             if indicator:
                                 if phase_lower == "convergence":
                                     delta = ChoiceDelta(
@@ -3333,10 +4095,14 @@ async def handle_report_evidence_followup(
                                 session_id=session.session_id,
                             ),
                         )
-                        message = _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+                        message = (
+                            _tool_loop_failsafe_message(current_session)
+                            if current_session is not None
+                            else ""
+                        )
                         if message:
                             for i in range(0, len(message), 128):
-                                text = message[i:i + 128]
+                                text = message[i : i + 128]
                                 if not text:
                                     continue
                                 chunk = ChatCompletionChunk(
@@ -3364,10 +4130,18 @@ async def handle_report_evidence_followup(
                             current_session,
                             filtered_tool_calls,
                         )
-                    filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-                        workflow_phase=workflow_phase,
-                        tool_calls=filtered_tool_calls,
+                    filtered_tool_calls, tool_policy_error = (
+                        _normalize_and_validate_tool_calls_against_cursor_tools(
+                            workflow_phase=workflow_phase,
+                            tool_calls=filtered_tool_calls,
+                            cursor_tools=list(getattr(current_session, "cursor_tools", []) or []),
+                        )
                     )
+                    if not tool_policy_error:
+                        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                            workflow_phase=workflow_phase,
+                            tool_calls=filtered_tool_calls,
+                        )
                     if tool_policy_error:
                         if current_session is not None:
                             session_store.update_session(
@@ -3377,7 +4151,7 @@ async def handle_report_evidence_followup(
                                 pending_tool_calls=[],
                             )
                         for i in range(0, len(tool_policy_error), 128):
-                            text = tool_policy_error[i:i + 128]
+                            text = tool_policy_error[i : i + 128]
                             if not text:
                                 continue
                             chunk = ChatCompletionChunk(
@@ -3418,7 +4192,7 @@ async def handle_report_evidence_followup(
                                 pending_tool_calls=[],
                             )
                         for i in range(0, len(policy_error), 128):
-                            text = policy_error[i:i + 128]
+                            text = policy_error[i : i + 128]
                             if not text:
                                 continue
                             chunk = ChatCompletionChunk(
@@ -3452,19 +4226,39 @@ async def handle_report_evidence_followup(
                         round_index=next_round,
                         workflow_phase=workflow_phase,
                     )
-                    execution_messages = list(final_state.get("conversation_history", []) or [])
-                    execution_messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": rewritten_tool_calls,
-                    })
+                    execution_messages = _append_assistant_tool_call_message(
+                        updated_execution_messages,
+                        rewritten_tool_calls,
+                    )
                     optimizer_todo_written = todo_written_now
                     if current_session is not None:
                         optimizer_todo_written = (
-                            bool(getattr(current_session, "optimizer_todo_written", False)) or todo_written_now
+                            bool(getattr(current_session, "optimizer_todo_written", False))
+                            or todo_written_now
                             if workflow_phase == "optimizer"
                             else bool(getattr(current_session, "optimizer_todo_written", False))
                         )
+
+                    resume_meta_source = current_session if current_session is not None else session
+                    topup_round_value = final_state.get("evidence_topup_round")
+                    try:
+                        evidence_topup_round = (
+                            int(topup_round_value) if topup_round_value is not None else 0
+                        )
+                    except Exception:
+                        evidence_topup_round = 0
+                    if evidence_topup_round <= 0:
+                        evidence_topup_round = int(
+                            getattr(resume_meta_source, "evidence_topup_round", 0) or 0
+                        )
+
+                    resume_phase = str(
+                        final_state.get("report_evidence_resume_phase") or ""
+                    ).strip()
+                    if not resume_phase:
+                        resume_phase = str(
+                            getattr(resume_meta_source, "report_evidence_resume_phase", "") or ""
+                        ).strip()
 
                     session_store.update_session(
                         session.session_id,
@@ -3483,17 +4277,36 @@ async def handle_report_evidence_followup(
                         ),
                         modified_files=modified_files,
                         baseline_file_snapshots=baseline,
-                        todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
+                        todo_written=bool(getattr(current_session, "todo_written", False))
+                        or todo_written_now,
                         optimizer_todo_written=optimizer_todo_written,
-                        evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
-                        evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
-                        evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+                        evidence_bundle=str(
+                            final_state.get("evidence_bundle")
+                            or getattr(session, "evidence_bundle", "")
+                            or ""
+                        ),
+                        evidence_gaps=str(
+                            final_state.get("evidence_gaps")
+                            or getattr(session, "evidence_gaps", "")
+                            or ""
+                        ),
+                        evidence_requests=str(
+                            final_state.get("evidence_requests")
+                            or getattr(session, "evidence_requests", "")
+                            or ""
+                        ),
                         evidence_chain_index=list(
                             final_state.get("evidence_chain_index")
                             or getattr(session, "evidence_chain_index", [])
                             or []
                         ),
-                        ternion_analyses=list(final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []),
+                        evidence_topup_round=int(evidence_topup_round or 0),
+                        report_evidence_resume_phase=str(resume_phase or ""),
+                        ternion_analyses=list(
+                            final_state.get("ternion_analyses")
+                            or getattr(session, "ternion_analyses", [])
+                            or []
+                        ),
                     )
 
                     tool_chunk = ChatCompletionChunk(
@@ -3527,7 +4340,7 @@ async def handle_report_evidence_followup(
                     suffix = sanitize_for_cursor_display(suffix)
                     if suffix:
                         for i in range(0, len(suffix), 128):
-                            text = suffix[i:i + 128]
+                            text = suffix[i : i + 128]
                             if not text:
                                 continue
                             chunk = ChatCompletionChunk(
@@ -3538,19 +4351,25 @@ async def handle_report_evidence_followup(
                             )
                             yield f"data: {chunk.model_dump_json()}\n\n"
 
-                workflow_final = final_state.get("final_output", "") or final_state.get("generated_code", "")
+                workflow_final = final_state.get("final_output", "") or final_state.get(
+                    "generated_code", ""
+                )
                 if workflow_final and not streamed_content:
                     if pending_phase_indicator:
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
                             created=created,
                             model=request.model,
-                            choices=[StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))],
+                            choices=[
+                                StreamChoice(
+                                    delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                )
+                            ],
                         )
                         yield f"data: {chunk.model_dump_json()}\n\n"
                         pending_phase_indicator = None
                     for i in range(0, len(workflow_final), 128):
-                        text = workflow_final[i:i + 128]
+                        text = workflow_final[i : i + 128]
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
                             created=created,
@@ -3570,14 +4389,16 @@ async def handle_report_evidence_followup(
 
                 try:
                     errors = final_state.get("errors", []) or []
-                    final_code = final_state.get("final_output", "") or final_state.get("generated_code", "")
+                    final_code = final_state.get("final_output", "") or final_state.get(
+                        "generated_code", ""
+                    )
                     final_phase = str(final_state.get("current_phase") or "report_evidence")
-                    if isinstance(final_code, str) and final_code.strip() and not errors:
-                        new_stage = SessionStage.EXECUTED
-                    elif errors:
-                        new_stage = SessionStage.EXECUTION_IN_PROGRESS
-                    else:
-                        new_stage = SessionStage.RCA_COMPLETE
+                    new_stage = _resolve_followup_completion_stage(
+                        final_phase=final_phase,
+                        final_code=str(final_code or ""),
+                        errors=list(errors),
+                        session_id=session.session_id,
+                    )
 
                     session_store.update_session(
                         session.session_id,
@@ -3666,13 +4487,23 @@ async def handle_report_evidence_followup(
                 yield f"data: {final_chunk.model_dump_json()}\n\n"
                 yield "data: [DONE]\n\n"
 
+            except asyncio.CancelledError:
+                stream_queue.close()
+                workflow_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await workflow_task
+                raise
             except Exception as e:
                 logger.exception("sse_report_evidence_followup_generation_error", error=str(e))
                 error_chunk = ChatCompletionChunk(
                     id=chunk_id,
                     created=created,
                     model=request.model,
-                    choices=[StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))],
+                    choices=[
+                        StreamChoice(
+                            delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED))
+                        )
+                    ],
                 )
                 yield f"data: {error_chunk.model_dump_json()}\n\n"
                 yield "data: [DONE]\n\n"
@@ -3690,6 +4521,11 @@ async def handle_report_evidence_followup(
         evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
         evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
         ternion_analyses=list(getattr(session, "ternion_analyses", []) or []),
+        evidence_chain_index=list(getattr(session, "evidence_chain_index", []) or []),
+        evidence_topup_round=int(getattr(session, "evidence_topup_round", 0) or 0),
+        report_evidence_resume_phase=str(
+            getattr(session, "report_evidence_resume_phase", "") or ""
+        ),
     )
 
     pending_tool_calls = final_state.get("pending_tool_calls") or []
@@ -3714,7 +4550,9 @@ async def handle_report_evidence_followup(
                     session_id=session.session_id,
                 ),
             )
-            message = _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+            message = (
+                _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+            )
             return _respond_with_text(request, message)
 
         filtered_tool_calls = list(pending_tool_calls or [])
@@ -3724,10 +4562,18 @@ async def handle_report_evidence_followup(
                 current_session,
                 filtered_tool_calls,
             )
-        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-            workflow_phase=workflow_phase,
-            tool_calls=filtered_tool_calls,
+        filtered_tool_calls, tool_policy_error = (
+            _normalize_and_validate_tool_calls_against_cursor_tools(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+                cursor_tools=list(getattr(current_session, "cursor_tools", []) or []),
+            )
         )
+        if not tool_policy_error:
+            filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+            )
         if tool_policy_error:
             if current_session is not None:
                 session_store.update_session(
@@ -3740,9 +4586,7 @@ async def handle_report_evidence_followup(
         filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
             workflow_phase=workflow_phase,
             tool_calls=filtered_tool_calls,
-            conversation_history=list(
-                final_state.get("conversation_history", []) or []
-            ),
+            conversation_history=list(final_state.get("conversation_history", []) or []),
             ternion_report=str(
                 final_state.get("ternion_report", "")
                 or getattr(session, "ternion_report_raw", "")
@@ -3772,12 +4616,10 @@ async def handle_report_evidence_followup(
             round_index=next_round,
             workflow_phase=workflow_phase,
         )
-        execution_messages = list(final_state.get("conversation_history", []) or [])
-        execution_messages.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": rewritten_tool_calls,
-        })
+        execution_messages = _append_assistant_tool_call_message(
+            updated_execution_messages,
+            rewritten_tool_calls,
+        )
         optimizer_todo_written = todo_written_now
         if current_session is not None:
             optimizer_todo_written = (
@@ -3785,6 +4627,21 @@ async def handle_report_evidence_followup(
                 if workflow_phase == "optimizer"
                 else bool(getattr(current_session, "optimizer_todo_written", False))
             )
+
+        resume_meta_source = current_session if current_session is not None else session
+        topup_round_value = final_state.get("evidence_topup_round")
+        try:
+            evidence_topup_round = int(topup_round_value) if topup_round_value is not None else 0
+        except Exception:
+            evidence_topup_round = 0
+        if evidence_topup_round <= 0:
+            evidence_topup_round = int(getattr(resume_meta_source, "evidence_topup_round", 0) or 0)
+
+        resume_phase = str(final_state.get("report_evidence_resume_phase") or "").strip()
+        if not resume_phase:
+            resume_phase = str(
+                getattr(resume_meta_source, "report_evidence_resume_phase", "") or ""
+            ).strip()
 
         session_store.update_session(
             session.session_id,
@@ -3805,15 +4662,29 @@ async def handle_report_evidence_followup(
             baseline_file_snapshots=baseline,
             todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
             optimizer_todo_written=optimizer_todo_written,
-            evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
-            evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
-            evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+            evidence_bundle=str(
+                final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""
+            ),
+            evidence_gaps=str(
+                final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""
+            ),
+            evidence_requests=str(
+                final_state.get("evidence_requests")
+                or getattr(session, "evidence_requests", "")
+                or ""
+            ),
             evidence_chain_index=list(
                 final_state.get("evidence_chain_index")
                 or getattr(session, "evidence_chain_index", [])
                 or []
             ),
-            ternion_analyses=list(final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []),
+            evidence_topup_round=int(evidence_topup_round or 0),
+            report_evidence_resume_phase=str(resume_phase or ""),
+            ternion_analyses=list(
+                final_state.get("ternion_analyses")
+                or getattr(session, "ternion_analyses", [])
+                or []
+            ),
         )
 
         return JSONResponse(
@@ -3837,31 +4708,62 @@ async def handle_report_evidence_followup(
     final_code = final_state.get("final_output", "") or final_state.get("generated_code", "")
     try:
         final_phase = str(final_state.get("current_phase") or "report_evidence")
-        if isinstance(final_code, str) and final_code.strip() and not errors:
-            new_stage = SessionStage.EXECUTED
-        elif errors:
-            new_stage = SessionStage.EXECUTION_IN_PROGRESS
-        else:
-            new_stage = SessionStage.RCA_COMPLETE
+        new_stage = _resolve_followup_completion_stage(
+            final_phase=final_phase,
+            final_code=str(final_code or ""),
+            errors=list(errors),
+            session_id=session.session_id,
+        )
 
         session_store.update_session(
             session.session_id,
             stage=new_stage,
             workflow_phase=final_phase,
             pending_tool_calls=[],
-            ternion_report_raw=str(final_state.get("ternion_report") or session.ternion_report_raw or ""),
+            ternion_report_raw=str(
+                final_state.get("ternion_report") or session.ternion_report_raw or ""
+            ),
             generated_code=str(final_state.get("generated_code") or session.generated_code or ""),
-            review_feedback=str(final_state.get("review_feedback") or session.review_feedback or ""),
+            review_feedback=str(
+                final_state.get("review_feedback") or session.review_feedback or ""
+            ),
             revision_count=int(final_state.get("revision_count", session.revision_count) or 0),
-            writer_output_files=dict(final_state.get("writer_output_files") or session.writer_output_files or {}),
-            optimizer_review_report=str(final_state.get("optimizer_review_report") or session.optimizer_review_report or ""),
-            evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
-            evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
-            evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
-            evidence_chain_index=list(final_state.get("evidence_chain_index") or getattr(session, "evidence_chain_index", []) or []),
-            evidence_topup_round=int(final_state.get("evidence_topup_round", getattr(session, "evidence_topup_round", 0)) or 0),
-            report_evidence_resume_phase=str(final_state.get("report_evidence_resume_phase") or getattr(session, "report_evidence_resume_phase", "") or ""),
-            ternion_analyses=list(final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []),
+            writer_output_files=dict(
+                final_state.get("writer_output_files") or session.writer_output_files or {}
+            ),
+            optimizer_review_report=str(
+                final_state.get("optimizer_review_report") or session.optimizer_review_report or ""
+            ),
+            evidence_bundle=str(
+                final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""
+            ),
+            evidence_gaps=str(
+                final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""
+            ),
+            evidence_requests=str(
+                final_state.get("evidence_requests")
+                or getattr(session, "evidence_requests", "")
+                or ""
+            ),
+            evidence_chain_index=list(
+                final_state.get("evidence_chain_index")
+                or getattr(session, "evidence_chain_index", [])
+                or []
+            ),
+            evidence_topup_round=int(
+                final_state.get("evidence_topup_round", getattr(session, "evidence_topup_round", 0))
+                or 0
+            ),
+            report_evidence_resume_phase=str(
+                final_state.get("report_evidence_resume_phase")
+                or getattr(session, "report_evidence_resume_phase", "")
+                or ""
+            ),
+            ternion_analyses=list(
+                final_state.get("ternion_analyses")
+                or getattr(session, "ternion_analyses", [])
+                or []
+            ),
         )
     except Exception:
         pass
@@ -3905,7 +4807,9 @@ async def handle_evidence_followup(
     from ternion.workflow.graph import run_discussion
 
     cursor_tools = list(request.tools or []) or list(session.cursor_tools or [])
-    cursor_tool_choice = request.tool_choice if request.tool_choice is not None else session.cursor_tool_choice
+    cursor_tool_choice = (
+        request.tool_choice if request.tool_choice is not None else session.cursor_tool_choice
+    )
 
     context = message_router.extract_context(request.messages)
     cursor_system_prompt = session.cursor_system_prompt
@@ -3916,25 +4820,33 @@ async def handle_evidence_followup(
     existing_tool_ids = {
         m.get("tool_call_id")
         for m in (session.execution_messages or [])
-        if isinstance(m, dict) and m.get("role") == "tool" and isinstance(m.get("tool_call_id"), str)
+        if isinstance(m, dict)
+        and m.get("role") == "tool"
+        and isinstance(m.get("tool_call_id"), str)
     }
-    for msg in request.messages:
-        if msg.role != MessageRole.TOOL:
+    for tool_result_msg in request.messages:
+        if tool_result_msg.role != MessageRole.TOOL:
             continue
-        if not isinstance(msg.tool_call_id, str):
+        if not isinstance(tool_result_msg.tool_call_id, str):
             continue
-        if msg.tool_call_id in existing_tool_ids:
+        if tool_result_msg.tool_call_id in existing_tool_ids:
             continue
-        match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(msg.tool_call_id)
+        match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(tool_result_msg.tool_call_id)
         if not match or match.group(1).lower() != session.session_id.lower():
             continue
-        raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
-        updated_execution_messages.append({
-            "role": "tool",
-            "content": raw_content,
-            "tool_call_id": msg.tool_call_id,
-        })
-        existing_tool_ids.add(msg.tool_call_id)
+        raw_content = (
+            tool_result_msg.content
+            if isinstance(tool_result_msg.content, str)
+            else str(tool_result_msg.content)
+        )
+        updated_execution_messages.append(
+            {
+                "role": "tool",
+                "content": raw_content,
+                "tool_call_id": tool_result_msg.tool_call_id,
+            }
+        )
+        existing_tool_ids.add(tool_result_msg.tool_call_id)
 
     # Preserve the original workflow_phase (critical for P0-1 fix)
     original_workflow_phase = str(getattr(session, "workflow_phase", "") or "evidence")
@@ -4003,8 +4915,8 @@ async def handle_evidence_followup(
         else None
     )
     conversation_history: list[ChatMessage] = []
-    for msg in updated_execution_messages:
-        role_value = msg.get("role")
+    for execution_msg in updated_execution_messages:
+        role_value = execution_msg.get("role")
         if not isinstance(role_value, str):
             continue
         try:
@@ -4014,17 +4926,20 @@ async def handle_evidence_followup(
         conversation_history.append(
             ChatMessage(
                 role=role,
-                content=msg.get("content"),
-                name=msg.get("name"),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id"),
+                content=execution_msg.get("content"),
+                name=execution_msg.get("name"),
+                tool_calls=execution_msg.get("tool_calls"),
+                tool_call_id=execution_msg.get("tool_call_id"),
             )
         )
 
     # Diagnostic log for tool_call_id mismatch debugging (Phase 0)
     assistant_with_tools_count = sum(
-        1 for m in updated_execution_messages
-        if m.get("role") == "assistant" and isinstance(m.get("tool_calls"), list) and m.get("tool_calls")
+        1
+        for m in updated_execution_messages
+        if m.get("role") == "assistant"
+        and isinstance(m.get("tool_calls"), list)
+        and m.get("tool_calls")
     )
     tool_msg_count = sum(1 for m in updated_execution_messages if m.get("role") == "tool")
     if tool_msg_count > 0:
@@ -4130,9 +5045,11 @@ async def handle_evidence_followup(
                         if event.delta:
                             phase_lower = str(event.phase or "").strip().lower()
                             if phase_lower == "convergence":
-                                safe_text, convergence_pending_raw = _append_stream_safe_cursor_text(
-                                    convergence_pending_raw,
-                                    event.delta,
+                                safe_text, convergence_pending_raw = (
+                                    _append_stream_safe_cursor_text(
+                                        convergence_pending_raw,
+                                        event.delta,
+                                    )
                                 )
                                 if safe_text:
                                     if pending_phase_indicator:
@@ -4142,7 +5059,9 @@ async def handle_evidence_followup(
                                             model=request.model,
                                             choices=[
                                                 StreamChoice(
-                                                    delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                                    delta=ChoiceDelta(
+                                                        content="\n" + pending_phase_indicator
+                                                    )
                                                 )
                                             ],
                                         )
@@ -4154,7 +5073,9 @@ async def handle_evidence_followup(
                                         id=chunk_id,
                                         created=created,
                                         model=request.model,
-                                        choices=[StreamChoice(delta=ChoiceDelta(content=safe_text))],
+                                        choices=[
+                                            StreamChoice(delta=ChoiceDelta(content=safe_text))
+                                        ],
                                     )
                                     yield f"data: {chunk.model_dump_json()}\n\n"
                                 continue
@@ -4165,7 +5086,11 @@ async def handle_evidence_followup(
                                     created=created,
                                     model=request.model,
                                     choices=[
-                                        StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                                        StreamChoice(
+                                            delta=ChoiceDelta(
+                                                content="\n" + pending_phase_indicator
+                                            )
+                                        )
                                     ],
                                 )
                                 yield f"data: {chunk.model_dump_json()}\n\n"
@@ -4195,7 +5120,9 @@ async def handle_evidence_followup(
                                         choices=[StreamChoice(delta=ChoiceDelta(content=flushed))],
                                     )
                                     yield f"data: {chunk.model_dump_json()}\n\n"
-                            indicator = _phase_start_indicator_text(event.phase, session_id=session.session_id)
+                            indicator = _phase_start_indicator_text(
+                                event.phase, session_id=session.session_id
+                            )
                             if indicator:
                                 if phase_lower == "convergence":
                                     delta = ChoiceDelta(
@@ -4260,10 +5187,14 @@ async def handle_evidence_followup(
                                 session_id=session.session_id,
                             ),
                         )
-                        message = _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+                        message = (
+                            _tool_loop_failsafe_message(current_session)
+                            if current_session is not None
+                            else ""
+                        )
                         if message:
                             for i in range(0, len(message), 128):
-                                text = message[i:i + 128]
+                                text = message[i : i + 128]
                                 if not text:
                                     continue
                                 chunk = ChatCompletionChunk(
@@ -4291,10 +5222,18 @@ async def handle_evidence_followup(
                             current_session,
                             filtered_tool_calls,
                         )
-                    filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-                        workflow_phase=workflow_phase,
-                        tool_calls=filtered_tool_calls,
+                    filtered_tool_calls, tool_policy_error = (
+                        _normalize_and_validate_tool_calls_against_cursor_tools(
+                            workflow_phase=workflow_phase,
+                            tool_calls=filtered_tool_calls,
+                            cursor_tools=list(getattr(current_session, "cursor_tools", []) or []),
+                        )
                     )
+                    if not tool_policy_error:
+                        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                            workflow_phase=workflow_phase,
+                            tool_calls=filtered_tool_calls,
+                        )
                     if tool_policy_error:
                         if current_session is not None:
                             session_store.update_session(
@@ -4304,7 +5243,7 @@ async def handle_evidence_followup(
                                 pending_tool_calls=[],
                             )
                         for i in range(0, len(tool_policy_error), 128):
-                            text = tool_policy_error[i:i + 128]
+                            text = tool_policy_error[i : i + 128]
                             if not text:
                                 continue
                             chunk = ChatCompletionChunk(
@@ -4345,7 +5284,7 @@ async def handle_evidence_followup(
                                 pending_tool_calls=[],
                             )
                         for i in range(0, len(policy_error), 128):
-                            text = policy_error[i:i + 128]
+                            text = policy_error[i : i + 128]
                             if not text:
                                 continue
                             chunk = ChatCompletionChunk(
@@ -4380,16 +5319,15 @@ async def handle_evidence_followup(
                         round_index=next_round,
                         workflow_phase=workflow_phase,
                     )
-                    execution_messages = list(final_state.get("conversation_history", []) or [])
-                    execution_messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": rewritten_tool_calls,
-                    })
+                    execution_messages = _append_assistant_tool_call_message(
+                        updated_execution_messages,
+                        rewritten_tool_calls,
+                    )
                     optimizer_todo_written = todo_written_now
                     if current_session is not None:
                         optimizer_todo_written = (
-                            bool(getattr(current_session, "optimizer_todo_written", False)) or todo_written_now
+                            bool(getattr(current_session, "optimizer_todo_written", False))
+                            or todo_written_now
                             if workflow_phase == "optimizer"
                             else bool(getattr(current_session, "optimizer_todo_written", False))
                         )
@@ -4411,17 +5349,34 @@ async def handle_evidence_followup(
                         ),
                         modified_files=modified_files,
                         baseline_file_snapshots=baseline,
-                        todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
+                        todo_written=bool(getattr(current_session, "todo_written", False))
+                        or todo_written_now,
                         optimizer_todo_written=optimizer_todo_written,
-                        evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
-                        evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
-                        evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+                        evidence_bundle=str(
+                            final_state.get("evidence_bundle")
+                            or getattr(session, "evidence_bundle", "")
+                            or ""
+                        ),
+                        evidence_gaps=str(
+                            final_state.get("evidence_gaps")
+                            or getattr(session, "evidence_gaps", "")
+                            or ""
+                        ),
+                        evidence_requests=str(
+                            final_state.get("evidence_requests")
+                            or getattr(session, "evidence_requests", "")
+                            or ""
+                        ),
                         evidence_chain_index=list(
                             final_state.get("evidence_chain_index")
                             or getattr(session, "evidence_chain_index", [])
                             or []
                         ),
-                        ternion_analyses=list(final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []),
+                        ternion_analyses=list(
+                            final_state.get("ternion_analyses")
+                            or getattr(session, "ternion_analyses", [])
+                            or []
+                        ),
                     )
 
                     tool_chunk = ChatCompletionChunk(
@@ -4455,7 +5410,7 @@ async def handle_evidence_followup(
                     suffix = sanitize_for_cursor_display(suffix)
                     if suffix:
                         for i in range(0, len(suffix), 128):
-                            text = suffix[i:i + 128]
+                            text = suffix[i : i + 128]
                             if not text:
                                 continue
                             chunk = ChatCompletionChunk(
@@ -4466,19 +5421,25 @@ async def handle_evidence_followup(
                             )
                             yield f"data: {chunk.model_dump_json()}\n\n"
 
-                workflow_final = final_state.get("final_output", "") or final_state.get("generated_code", "")
+                workflow_final = final_state.get("final_output", "") or final_state.get(
+                    "generated_code", ""
+                )
                 if workflow_final and not streamed_content:
                     if pending_phase_indicator:
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
                             created=created,
                             model=request.model,
-                            choices=[StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))],
+                            choices=[
+                                StreamChoice(
+                                    delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                )
+                            ],
                         )
                         yield f"data: {chunk.model_dump_json()}\n\n"
                         pending_phase_indicator = None
                     for i in range(0, len(workflow_final), 128):
-                        text = workflow_final[i:i + 128]
+                        text = workflow_final[i : i + 128]
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
                             created=created,
@@ -4505,13 +5466,23 @@ async def handle_evidence_followup(
                 yield f"data: {final_chunk.model_dump_json()}\n\n"
                 yield "data: [DONE]\n\n"
 
+            except asyncio.CancelledError:
+                stream_queue.close()
+                workflow_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await workflow_task
+                raise
             except Exception as e:
                 logger.exception("sse_evidence_followup_generation_error", error=str(e))
                 error_chunk = ChatCompletionChunk(
                     id=chunk_id,
                     created=created,
                     model=request.model,
-                    choices=[StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))],
+                    choices=[
+                        StreamChoice(
+                            delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED))
+                        )
+                    ],
                 )
                 yield f"data: {error_chunk.model_dump_json()}\n\n"
                 yield "data: [DONE]\n\n"
@@ -4546,7 +5517,9 @@ async def handle_evidence_followup(
                     session_id=session.session_id,
                 ),
             )
-            message = _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+            message = (
+                _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+            )
             return _respond_with_text(request, message)
 
         filtered_tool_calls = list(pending_tool_calls or [])
@@ -4556,10 +5529,18 @@ async def handle_evidence_followup(
                 current_session,
                 filtered_tool_calls,
             )
-        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-            workflow_phase=workflow_phase,
-            tool_calls=filtered_tool_calls,
+        filtered_tool_calls, tool_policy_error = (
+            _normalize_and_validate_tool_calls_against_cursor_tools(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+                cursor_tools=list(getattr(current_session, "cursor_tools", []) or []),
+            )
         )
+        if not tool_policy_error:
+            filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+            )
         if tool_policy_error:
             if current_session is not None:
                 session_store.update_session(
@@ -4572,9 +5553,7 @@ async def handle_evidence_followup(
         filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
             workflow_phase=workflow_phase,
             tool_calls=filtered_tool_calls,
-            conversation_history=list(
-                final_state.get("conversation_history", []) or []
-            ),
+            conversation_history=list(final_state.get("conversation_history", []) or []),
             ternion_report=str(
                 final_state.get("ternion_report", "")
                 or getattr(session, "ternion_report_raw", "")
@@ -4605,12 +5584,10 @@ async def handle_evidence_followup(
             round_index=next_round,
             workflow_phase=workflow_phase,
         )
-        execution_messages = list(final_state.get("conversation_history", []) or [])
-        execution_messages.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": rewritten_tool_calls,
-        })
+        execution_messages = _append_assistant_tool_call_message(
+            updated_execution_messages,
+            rewritten_tool_calls,
+        )
         optimizer_todo_written = todo_written_now
         if current_session is not None:
             optimizer_todo_written = (
@@ -4638,15 +5615,27 @@ async def handle_evidence_followup(
             baseline_file_snapshots=baseline,
             todo_written=bool(getattr(current_session, "todo_written", False)) or todo_written_now,
             optimizer_todo_written=optimizer_todo_written,
-            evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
-            evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
-            evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
+            evidence_bundle=str(
+                final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""
+            ),
+            evidence_gaps=str(
+                final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""
+            ),
+            evidence_requests=str(
+                final_state.get("evidence_requests")
+                or getattr(session, "evidence_requests", "")
+                or ""
+            ),
             evidence_chain_index=list(
                 final_state.get("evidence_chain_index")
                 or getattr(session, "evidence_chain_index", [])
                 or []
             ),
-            ternion_analyses=list(final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []),
+            ternion_analyses=list(
+                final_state.get("ternion_analyses")
+                or getattr(session, "ternion_analyses", [])
+                or []
+            ),
         )
 
         return JSONResponse(
@@ -4711,7 +5700,9 @@ async def handle_execution_followup(
 
     # Refresh tool definitions on every request if present.
     cursor_tools = list(request.tools or []) or list(session.cursor_tools or [])
-    cursor_tool_choice = request.tool_choice if request.tool_choice is not None else session.cursor_tool_choice
+    cursor_tool_choice = (
+        request.tool_choice if request.tool_choice is not None else session.cursor_tool_choice
+    )
 
     context = message_router.extract_context(request.messages)
     cursor_system_prompt = session.cursor_system_prompt
@@ -4727,12 +5718,16 @@ async def handle_execution_followup(
     existing_tool_ids = {
         m.get("tool_call_id")
         for m in (session.execution_messages or [])
-        if isinstance(m, dict) and m.get("role") == "tool" and isinstance(m.get("tool_call_id"), str)
+        if isinstance(m, dict)
+        and m.get("role") == "tool"
+        and isinstance(m.get("tool_call_id"), str)
     }
     updated_execution_messages = list(session.execution_messages or [])
     tool_results_raw = dict(getattr(session, "tool_results_raw", {}) or {})
     tool_results_meta = dict(getattr(session, "tool_results_meta", {}) or {})
     tool_call_index = dict(getattr(session, "tool_call_index", {}) or {})
+    guardrail_events_to_append: list[dict[str, Any]] = []
+    external_outputs_to_append: list[dict[str, Any]] = []
 
     baseline = dict(getattr(session, "baseline_file_snapshots", {}) or {})
     modified_files = list(getattr(session, "modified_files", []) or [])
@@ -4740,21 +5735,17 @@ async def handle_execution_followup(
 
     git_cursor = dict(getattr(session, "tool_loop_pre_git_status", {}) or {})
     git_cursor_modified = {
-        p
-        for p in (git_cursor.get("modified") or [])
-        if isinstance(p, str) and p.strip()
+        p for p in (git_cursor.get("modified") or []) if isinstance(p, str) and p.strip()
     }
     git_cursor_untracked = {
-        p
-        for p in (git_cursor.get("untracked") or [])
-        if isinstance(p, str) and p.strip()
+        p for p in (git_cursor.get("untracked") or []) if isinstance(p, str) and p.strip()
     }
 
     history_tool_calls_by_id: dict[str, dict] = {}
-    for msg in (session.execution_messages or []):
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+    for history_msg in session.execution_messages or []:
+        if not isinstance(history_msg, dict) or history_msg.get("role") != "assistant":
             continue
-        tool_calls = msg.get("tool_calls")
+        tool_calls = history_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             continue
         for tc in tool_calls:
@@ -4764,23 +5755,31 @@ async def handle_execution_followup(
             if isinstance(tc_id, str) and tc_id:
                 history_tool_calls_by_id[tc_id] = tc
 
-    for msg in request.messages:
-        if msg.role != MessageRole.TOOL:
+    for tool_result_msg in request.messages:
+        if tool_result_msg.role != MessageRole.TOOL:
             continue
-        if not isinstance(msg.tool_call_id, str):
+        if not isinstance(tool_result_msg.tool_call_id, str):
             continue
-        if msg.tool_call_id in existing_tool_ids:
+        if tool_result_msg.tool_call_id in existing_tool_ids:
             continue
-        match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(msg.tool_call_id)
+        match = _TERNION_TOOL_CALL_ID_SESSION_RE.search(tool_result_msg.tool_call_id)
         if not match or match.group(1).lower() != session.session_id.lower():
             continue
-        raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
-        tool_call = pending_by_id.get(msg.tool_call_id) or history_tool_calls_by_id.get(msg.tool_call_id) or {}
+        raw_content = (
+            tool_result_msg.content
+            if isinstance(tool_result_msg.content, str)
+            else str(tool_result_msg.content)
+        )
+        tool_call = (
+            pending_by_id.get(tool_result_msg.tool_call_id)
+            or history_tool_calls_by_id.get(tool_result_msg.tool_call_id)
+            or {}
+        )
         fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
         tool_name = fn.get("name") if isinstance(fn.get("name"), str) else None
         tool_args = fn.get("arguments") if isinstance(fn.get("arguments"), str) else None
         if not tool_name:
-            indexed = tool_call_index.get(msg.tool_call_id)
+            indexed = tool_call_index.get(tool_result_msg.tool_call_id)
             if isinstance(indexed, dict):
                 indexed_name = indexed.get("tool_name")
                 if isinstance(indexed_name, str) and indexed_name.strip():
@@ -4794,7 +5793,7 @@ async def handle_execution_followup(
             content=raw_content,
             tool_arguments=tool_args,
         )
-        meta["source_ref"] = msg.tool_call_id
+        meta["source_ref"] = tool_result_msg.tool_call_id
         canonical_tool = re.sub(r"[^a-z0-9]+", "", (tool_name or "").strip().lower())
         if canonical_tool in _MUTATING_TOOL_NAMES:
             target = _extract_mutation_target_path(tool_name or "", tool_args or "{}")
@@ -4808,7 +5807,11 @@ async def handle_execution_followup(
             dedup_key = _normalize_shell_command_for_dedup(shell_command)
             duplicate_of = _find_duplicate_shell_call(tool_results_meta, dedup_key=dedup_key)
             exit_code, elapsed_ms = _extract_shell_result_metrics(raw_content)
-            indexed = tool_call_index.get(msg.tool_call_id) if isinstance(tool_call_index, dict) else None
+            indexed = (
+                tool_call_index.get(tool_result_msg.tool_call_id)
+                if isinstance(tool_call_index, dict)
+                else None
+            )
             phase = (
                 str(indexed.get("workflow_phase"))
                 if isinstance(indexed, dict) and isinstance(indexed.get("workflow_phase"), str)
@@ -4884,26 +5887,54 @@ async def handle_execution_followup(
                     git_cursor["modified"] = sorted(post_modified)
                     git_cursor["untracked"] = sorted(post_untracked)
 
-            meta.update({
-                "shell_command": shell_command,
-                "shell_purpose": shell_purpose or "",
-                "shell_working_directory": shell_workdir or "",
-                "shell_exit_code": exit_code,
-                "shell_elapsed_ms": elapsed_ms,
-                "shell_dedup_key": dedup_key,
-                "shell_is_duplicate": bool(duplicate_of),
-                "shell_duplicate_of": duplicate_of or "",
-                "shell_phase": phase,
-                "shell_role": role,
-                "shell_may_write": bool(shell_may_write),
-                "shell_dirty_before_count": int(dirty_before_count),
-                "shell_dirty_after_count": int(dirty_after_count),
-                "shell_dirty_added_count": int(delta_added_count),
-                "shell_dirty_removed_count": int(delta_removed_count),
-                "shell_dirty_added_paths": delta_added_paths,
-                "shell_dirty_removed_paths": delta_removed_paths,
-                "shell_dirty_paths_truncated": bool(delta_truncated),
-            })
+            meta.update(
+                {
+                    "shell_command": shell_command,
+                    "shell_purpose": shell_purpose or "",
+                    "shell_working_directory": shell_workdir or "",
+                    "shell_exit_code": exit_code,
+                    "shell_elapsed_ms": elapsed_ms,
+                    "shell_dedup_key": dedup_key,
+                    "shell_is_duplicate": bool(duplicate_of),
+                    "shell_duplicate_of": duplicate_of or "",
+                    "shell_phase": phase,
+                    "shell_role": role,
+                    "shell_may_write": bool(shell_may_write),
+                    "shell_dirty_before_count": int(dirty_before_count),
+                    "shell_dirty_after_count": int(dirty_after_count),
+                    "shell_dirty_added_count": int(delta_added_count),
+                    "shell_dirty_removed_count": int(delta_removed_count),
+                    "shell_dirty_added_paths": delta_added_paths,
+                    "shell_dirty_removed_paths": delta_removed_paths,
+                    "shell_dirty_paths_truncated": bool(delta_truncated),
+                }
+            )
+            if _is_pytest_command(shell_command) and (exit_code is None or exit_code != 0):
+                meta.update(_extract_pytest_failure_details(raw_content))
+
+            external_paths = _extract_external_output_paths(raw_content)
+            if external_paths:
+                meta["shell_output_external_path"] = external_paths[0]
+                meta["shell_output_external_paths"] = list(external_paths)
+                tail_lines = "\n".join((raw_content or "").splitlines()[-20:])
+                preview_tail = sanitize_for_cursor_display(redact_secrets(tail_lines))
+                if len(preview_tail) > 1200:
+                    preview_tail = preview_tail[-1200:]
+                meta["shell_output_preview_tail"] = preview_tail
+
+                cmd_preview = _build_redacted_preview(shell_command, max_chars=200)
+                for path in external_paths:
+                    external_outputs_to_append.append(
+                        {
+                            "kind": "shell_output",
+                            "tool_call_id": tool_result_msg.tool_call_id,
+                            "tool_name": tool_name or "Shell",
+                            "path": path,
+                            "command_preview": cmd_preview,
+                            "exit_code": exit_code,
+                            "elapsed_ms": elapsed_ms,
+                        }
+                    )
             preview = shell_command.strip().replace("\n", " ")
             if len(preview) > 200:
                 preview = preview[:200] + "..."
@@ -4913,7 +5944,7 @@ async def handle_execution_followup(
                 message=(
                     "shell_tool_result | "
                     f"session_id={session.session_id} | "
-                    f"tool_call_id={msg.tool_call_id} | "
+                    f"tool_call_id={tool_result_msg.tool_call_id} | "
                     f"phase={phase or '(unknown)'} | "
                     f"role={role} | "
                     f"exit_code={exit_code if exit_code is not None else '(unknown)'} | "
@@ -4926,19 +5957,237 @@ async def handle_execution_followup(
                     f"command={preview}"
                 ),
             )
-        tool_results_meta[msg.tool_call_id] = meta
+        tool_results_meta[tool_result_msg.tool_call_id] = meta
         if meta.get("compacted") is True:
-            tool_results_raw[msg.tool_call_id] = raw_content
-        updated_execution_messages.append({
-            "role": "tool",
-            "content": compacted_content,
-            "tool_call_id": msg.tool_call_id,
-        })
-        existing_tool_ids.add(msg.tool_call_id)
+            tool_results_raw[tool_result_msg.tool_call_id] = raw_content
+        updated_execution_messages.append(
+            {
+                "role": "tool",
+                "content": compacted_content,
+                "tool_call_id": tool_result_msg.tool_call_id,
+            }
+        )
+        existing_tool_ids.add(tool_result_msg.tool_call_id)
 
     if isinstance(git_cursor, dict) and "repo_root" in git_cursor:
         git_cursor["modified"] = sorted(git_cursor_modified)
         git_cursor["untracked"] = sorted(git_cursor_untracked)
+
+    deferred_plan = list(getattr(session, "deferred_tool_calls", []) or [])
+    if deferred_plan:
+        workflow_phase = str(getattr(session, "workflow_phase", "") or "execution").strip().lower()
+        next_round = (session.round_index or 0) + 1
+
+        filtered_tool_calls = list(deferred_plan)
+        before_cursor_validate = list(filtered_tool_calls)
+        filtered_tool_calls, cursor_tools_error = (
+            _normalize_and_validate_tool_calls_against_cursor_tools(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+                cursor_tools=list(cursor_tools or []),
+            )
+        )
+        rewrites = _diff_tool_call_name_rewrites(before_cursor_validate, filtered_tool_calls)
+        if rewrites:
+            guardrail_events_to_append.append(
+                {
+                    "type": "tool_call_name_rewrite",
+                    "role": "optimizer" if workflow_phase == "optimizer" else "writer",
+                    "rewrites": rewrites,
+                }
+            )
+        tool_policy_error = cursor_tools_error
+        role_label = "optimizer" if workflow_phase == "optimizer" else "writer"
+        if tool_policy_error:
+            available = _extract_cursor_tool_names(cursor_tools)
+            available_set = set(available)
+            unknown: list[str] = []
+            for tc in before_cursor_validate:
+                name, _args = _extract_tool_name_and_arguments(tc)
+                if isinstance(name, str) and name and name not in available_set:
+                    unknown.append(name)
+            guardrail_events_to_append.append(
+                {
+                    "type": "tool_calls_not_in_cursor_tools",
+                    "role": role_label,
+                    "blocked_tools": sorted(set(unknown)),
+                    "error_preview": sanitize_for_preview(
+                        redact_secrets(tool_policy_error),
+                        max_length=240,
+                    ),
+                }
+            )
+        else:
+            before_exec_policy = list(filtered_tool_calls)
+            filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+            )
+            if tool_policy_error:
+                blocked_tools, blocked_shell = _collect_execution_tool_policy_block_details(
+                    before_exec_policy
+                )
+                guardrail_events_to_append.append(
+                    {
+                        "type": "execution_tool_policy_blocked",
+                        "role": role_label,
+                        "blocked_tools": blocked_tools,
+                        "blocked_shell": blocked_shell,
+                        "error_preview": sanitize_for_preview(
+                            redact_secrets(tool_policy_error),
+                            max_length=240,
+                        ),
+                    }
+                )
+
+        if tool_policy_error:
+            session_store.update_session(
+                session.session_id,
+                stage=SessionStage.AWAITING_CONFIRMATION,
+                confirmation_reason="tool_policy",
+                pending_tool_calls=[],
+                deferred_tool_calls=[],
+                execution_messages=updated_execution_messages,
+                tool_results_raw=tool_results_raw,
+                tool_results_meta=tool_results_meta,
+                tool_loop_pre_git_status=git_cursor,
+                modified_files=modified_files,
+                baseline_file_snapshots=baseline,
+                evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
+                evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
+                evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
+                evidence_chain_index=list(getattr(session, "evidence_chain_index", []) or []),
+                evidence_topup_round=int(getattr(session, "evidence_topup_round", 0) or 0),
+                report_evidence_resume_phase=str(
+                    getattr(session, "report_evidence_resume_phase", "") or ""
+                ),
+                append_guardrail_events=guardrail_events_to_append,
+                append_external_outputs_index=external_outputs_to_append,
+            )
+            return _respond_with_text(request, tool_policy_error)
+
+        before_deliverable_policy = list(filtered_tool_calls)
+        filtered_tool_calls, policy_error, deliverable_type, allowed_scope = (
+            _enforce_deliverable_policy(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+                conversation_history=updated_execution_messages,
+                ternion_report=str(getattr(session, "ternion_report_raw", "") or ""),
+            )
+        )
+        if policy_error:
+            violations = (
+                _collect_deliverable_policy_violations(before_deliverable_policy, deliverable_type)
+                if deliverable_type is not None
+                else []
+            )
+            guardrail_events_to_append.append(
+                {
+                    "type": "deliverable_policy_blocked",
+                    "role": "optimizer" if workflow_phase == "optimizer" else "writer",
+                    "deliverable_type": deliverable_type.value
+                    if deliverable_type is not None
+                    else "",
+                    "allowed_scope": allowed_scope or "",
+                    "violations": violations,
+                    "error_preview": sanitize_for_preview(
+                        redact_secrets(policy_error),
+                        max_length=240,
+                    ),
+                }
+            )
+            session_store.update_session(
+                session.session_id,
+                stage=SessionStage.AWAITING_CONFIRMATION,
+                confirmation_reason="deliverable_policy",
+                pending_tool_calls=[],
+                deferred_tool_calls=[],
+                execution_messages=updated_execution_messages,
+                tool_results_raw=tool_results_raw,
+                tool_results_meta=tool_results_meta,
+                tool_loop_pre_git_status=git_cursor,
+                modified_files=modified_files,
+                baseline_file_snapshots=baseline,
+                evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
+                evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
+                evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
+                evidence_chain_index=list(getattr(session, "evidence_chain_index", []) or []),
+                evidence_topup_round=int(getattr(session, "evidence_topup_round", 0) or 0),
+                report_evidence_resume_phase=str(
+                    getattr(session, "report_evidence_resume_phase", "") or ""
+                ),
+                append_guardrail_events=guardrail_events_to_append,
+                append_external_outputs_index=external_outputs_to_append,
+            )
+            return _respond_with_text(request, policy_error)
+
+        rewritten_tool_calls = _rewrite_tool_call_ids(
+            filtered_tool_calls,
+            session_id=session.session_id,
+            round_index=next_round,
+            workflow_phase=workflow_phase,
+        )
+        execution_messages = _append_assistant_tool_call_message(
+            updated_execution_messages,
+            rewritten_tool_calls,
+        )
+        session_store.update_session(
+            session.session_id,
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            cursor_system_prompt=cursor_system_prompt,
+            cursor_tools=list(cursor_tools or []),
+            cursor_tool_choice=cursor_tool_choice,
+            execution_messages=execution_messages,
+            pending_tool_calls=rewritten_tool_calls,
+            deferred_tool_calls=[],
+            tool_results_raw=tool_results_raw,
+            tool_results_meta=tool_results_meta,
+            tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
+                rewritten_tool_calls,
+                round_index=next_round,
+                workflow_phase=workflow_phase,
+            ),
+            round_index=next_round,
+            workflow_phase=workflow_phase,
+            modified_files=modified_files,
+            baseline_file_snapshots=baseline,
+            evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
+            evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
+            evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
+            evidence_chain_index=list(getattr(session, "evidence_chain_index", []) or []),
+            evidence_topup_round=int(getattr(session, "evidence_topup_round", 0) or 0),
+            report_evidence_resume_phase=str(
+                getattr(session, "report_evidence_resume_phase", "") or ""
+            ),
+            append_guardrail_events=guardrail_events_to_append,
+            append_external_outputs_index=external_outputs_to_append,
+        )
+
+        if request.stream:
+            return StreamingResponse(
+                create_sse_tool_calls_stream(
+                    model=request.model,
+                    tool_calls=rewritten_tool_calls,
+                    content=None,
+                ),
+                media_type="text/event-stream",
+                headers=_SSE_HEADERS,
+            )
+        return JSONResponse(
+            content=ChatCompletionResponse(
+                model=request.model,
+                choices=[
+                    Choice(
+                        finish_reason="tool_calls",
+                        message=ChatMessage(
+                            role=MessageRole.ASSISTANT,
+                            content=None,
+                            tool_calls=rewritten_tool_calls,
+                        ),
+                    )
+                ],
+            ).model_dump()
+        )
 
     resume_phase = str(getattr(session, "workflow_phase", "") or "execution")
     resume_stage = (
@@ -4967,6 +6216,8 @@ async def handle_execution_followup(
         report_evidence_resume_phase=str(
             getattr(session, "report_evidence_resume_phase", "") or ""
         ),
+        append_guardrail_events=guardrail_events_to_append,
+        append_external_outputs_index=external_outputs_to_append,
     )
 
     if not skip_budget_confirm:
@@ -5027,6 +6278,7 @@ async def handle_execution_followup(
         "optimizer_review_report": str(getattr(session, "optimizer_review_report", "") or ""),
         "cursor_tools": cursor_tools,
         "cursor_tool_choice": cursor_tool_choice,
+        "tool_results_meta": tool_results_meta,
     }
 
     if request.stream:
@@ -5053,6 +6305,8 @@ async def handle_execution_followup(
             final_state: dict = {}
             streamed_content = ""
             pending_phase_indicator: str | None = None
+            last_phase_start_emitted: str | None = None
+            first_stream_delta_logged = False
 
             async def run_impl() -> None:
                 nonlocal final_state
@@ -5093,6 +6347,19 @@ async def handle_execution_followup(
 
                     if event.event_type == StreamEventType.TOKEN_DELTA:
                         if event.delta:
+                            if not first_stream_delta_logged:
+                                log_manager.emit(
+                                    level="INFO",
+                                    category="WORKFLOW",
+                                    message=(
+                                        "execution_followup_stream_first_delta | "
+                                        f"session_id={session.session_id} | "
+                                        f"phase={str(event.phase or '')} | "
+                                        f"delta_chars={len(event.delta)} | "
+                                        f"streamed_chars_before={len(streamed_content)}"
+                                    ),
+                                )
+                                first_stream_delta_logged = True
                             if pending_phase_indicator:
                                 chunk = ChatCompletionChunk(
                                     id=chunk_id,
@@ -5100,7 +6367,9 @@ async def handle_execution_followup(
                                     model=request.model,
                                     choices=[
                                         StreamChoice(
-                                            delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                            delta=ChoiceDelta(
+                                                content="\n" + pending_phase_indicator
+                                            )
                                         )
                                     ],
                                 )
@@ -5116,20 +6385,27 @@ async def handle_execution_followup(
                             yield f"data: {chunk.model_dump_json()}\n\n"
                     elif event.event_type == StreamEventType.PHASE_START:
                         if show_phase_indicators and event.phase:
-                            indicator = _phase_start_indicator_text(event.phase, session_id=session.session_id)
+                            phase_lower = str(event.phase or "").strip().lower()
+                            should_emit_phase = phase_lower != last_phase_start_emitted
+                            indicator = _phase_start_indicator_text(
+                                event.phase, session_id=session.session_id
+                            )
                             if indicator:
-                                chunk = ChatCompletionChunk(
-                                    id=chunk_id,
-                                    created=created,
-                                    model=request.model,
-                                    choices=[
-                                        StreamChoice(
-                                            delta=ChoiceDelta(content="\n" + indicator),
-                                        )
-                                    ],
-                                )
-                                yield f"data: {chunk.model_dump_json()}\n\n"
+                                if should_emit_phase:
+                                    chunk = ChatCompletionChunk(
+                                        id=chunk_id,
+                                        created=created,
+                                        model=request.model,
+                                        choices=[
+                                            StreamChoice(
+                                                delta=ChoiceDelta(content="\n" + indicator),
+                                            )
+                                        ],
+                                    )
+                                    yield f"data: {chunk.model_dump_json()}\n\n"
                                 pending_phase_indicator = None
+                            if phase_lower:
+                                last_phase_start_emitted = phase_lower
                     elif event.event_type == StreamEventType.ERROR:
                         error_text = t(MessageKey.STREAM_ERROR_GENERIC)
                         chunk = ChatCompletionChunk(
@@ -5163,7 +6439,7 @@ async def handle_execution_followup(
                         )
                         message = _tool_loop_failsafe_message(session)
                         for i in range(0, len(message), 128):
-                            text = message[i:i + 128]
+                            text = message[i : i + 128]
                             if not text:
                                 continue
                             chunk = ChatCompletionChunk(
@@ -5195,10 +6471,18 @@ async def handle_execution_followup(
                             session,
                             filtered_tool_calls,
                         )
-                    filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-                        workflow_phase=workflow_phase,
-                        tool_calls=filtered_tool_calls,
+                    filtered_tool_calls, tool_policy_error = (
+                        _normalize_and_validate_tool_calls_against_cursor_tools(
+                            workflow_phase=workflow_phase,
+                            tool_calls=filtered_tool_calls,
+                            cursor_tools=list(cursor_tools or []),
+                        )
                     )
+                    if not tool_policy_error:
+                        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                            workflow_phase=workflow_phase,
+                            tool_calls=filtered_tool_calls,
+                        )
                     if tool_policy_error:
                         session_store.update_session(
                             session.session_id,
@@ -5207,7 +6491,7 @@ async def handle_execution_followup(
                             pending_tool_calls=[],
                         )
                         for i in range(0, len(tool_policy_error), 128):
-                            text = tool_policy_error[i:i + 128]
+                            text = tool_policy_error[i : i + 128]
                             if not text:
                                 continue
                             chunk = ChatCompletionChunk(
@@ -5249,7 +6533,7 @@ async def handle_execution_followup(
                             pending_tool_calls=[],
                         )
                         for i in range(0, len(policy_error), 128):
-                            text = policy_error[i:i + 128]
+                            text = policy_error[i : i + 128]
                             if not text:
                                 continue
                             chunk = ChatCompletionChunk(
@@ -5270,6 +6554,11 @@ async def handle_execution_followup(
                         yield "data: [DONE]\n\n"
                         return
 
+                    deferred_tool_calls: list[dict] = []
+                    if workflow_phase in {"execution", "optimizer"}:
+                        filtered_tool_calls, deferred_tool_calls = (
+                            _split_tool_calls_for_transparent_batching(filtered_tool_calls)
+                        )
                     baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
                         session,
                         filtered_tool_calls,
@@ -5280,19 +6569,20 @@ async def handle_execution_followup(
                         round_index=next_round,
                         workflow_phase=workflow_phase,
                     )
-                    updated_execution_messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": rewritten_tool_calls,
-                    })
+                    execution_messages = _append_assistant_tool_call_message(
+                        updated_execution_messages,
+                        rewritten_tool_calls,
+                    )
                     session_store.update_session(
                         session.session_id,
                         stage=SessionStage.AWAITING_TOOL_RESULTS,
-                        execution_messages=updated_execution_messages,
+                        execution_messages=execution_messages,
                         pending_tool_calls=rewritten_tool_calls,
+                        deferred_tool_calls=deferred_tool_calls,
                         round_index=next_round,
                         generated_code=final_state.get("generated_code") or session.generated_code,
-                        review_feedback=final_state.get("review_feedback") or session.review_feedback,
+                        review_feedback=final_state.get("review_feedback")
+                        or session.review_feedback,
                         revision_count=final_state.get("revision_count", session.revision_count),
                         workflow_phase=workflow_phase,
                         tool_loop_pre_git_status=_capture_tool_loop_pre_git_status(
@@ -5344,9 +6634,11 @@ async def handle_execution_followup(
                             or getattr(session, "report_evidence_resume_phase", "")
                             or ""
                         ),
-                        todo_written=bool(getattr(session, "todo_written", False)) or todo_written_now,
+                        todo_written=bool(getattr(session, "todo_written", False))
+                        or todo_written_now,
                         optimizer_todo_written=(
-                            bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now
+                            bool(getattr(session, "optimizer_todo_written", False))
+                            or todo_written_now
                             if workflow_phase == "optimizer"
                             else bool(getattr(session, "optimizer_todo_written", False))
                         ),
@@ -5378,9 +6670,16 @@ async def handle_execution_followup(
                     yield "data: [DONE]\n\n"
                     return
 
-                final_output = final_state.get("final_output", "") or final_state.get("generated_code", "")
+                final_output = final_state.get("final_output", "") or final_state.get(
+                    "generated_code", ""
+                )
                 errors = final_state.get("errors", []) or []
-                new_stage = SessionStage.EXECUTED if not errors else SessionStage.EXECUTION_IN_PROGRESS
+                error_backfill = ""
+                if not final_output and not streamed_content and errors:
+                    error_backfill = sanitize_for_cursor_display(str(errors[0] or ""))
+                new_stage = (
+                    SessionStage.EXECUTED if not errors else SessionStage.EXECUTION_IN_PROGRESS
+                )
                 session_store.update_session(
                     session.session_id,
                     stage=new_stage,
@@ -5394,7 +6693,9 @@ async def handle_execution_followup(
                         or "execution"
                     ),
                     modified_files=list(
-                        final_state.get("modified_files") or getattr(session, "modified_files", []) or []
+                        final_state.get("modified_files")
+                        or getattr(session, "modified_files", [])
+                        or []
                     ),
                     baseline_file_snapshots=dict(
                         final_state.get("baseline_file_snapshots")
@@ -5402,7 +6703,9 @@ async def handle_execution_followup(
                         or {}
                     ),
                     writer_output_files=dict(
-                        final_state.get("writer_output_files") or getattr(session, "writer_output_files", {}) or {}
+                        final_state.get("writer_output_files")
+                        or getattr(session, "writer_output_files", {})
+                        or {}
                     ),
                     optimizer_review_report=str(
                         final_state.get("optimizer_review_report")
@@ -5443,6 +6746,20 @@ async def handle_execution_followup(
                     ),
                 )
 
+                log_manager.emit(
+                    level="INFO",
+                    category="WORKFLOW",
+                    message=(
+                        "execution_followup_stream_backfill_decision | "
+                        f"session_id={session.session_id} | "
+                        f"final_output_chars={len(final_output or '')} | "
+                        f"streamed_chars={len(streamed_content)} | "
+                        f"first_delta_logged={first_stream_delta_logged} | "
+                        f"will_backfill={bool(final_output and not streamed_content)} | "
+                        f"will_error_backfill={bool(error_backfill)}"
+                    ),
+                )
+
                 if final_output and not streamed_content:
                     if pending_phase_indicator:
                         chunk = ChatCompletionChunk(
@@ -5458,7 +6775,32 @@ async def handle_execution_followup(
                         yield f"data: {chunk.model_dump_json()}\n\n"
                         pending_phase_indicator = None
                     for i in range(0, len(final_output), 128):
-                        text = final_output[i:i + 128]
+                        text = final_output[i : i + 128]
+                        if not text:
+                            continue
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+                elif error_backfill:
+                    if pending_phase_indicator:
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[
+                                StreamChoice(
+                                    delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                )
+                            ],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        pending_phase_indicator = None
+                    for i in range(0, len(error_backfill), 128):
+                        text = error_backfill[i : i + 128]
                         if not text:
                             continue
                         chunk = ChatCompletionChunk(
@@ -5477,6 +6819,12 @@ async def handle_execution_followup(
                 )
                 yield f"data: {final_chunk.model_dump_json()}\n\n"
                 yield "data: [DONE]\n\n"
+            except asyncio.CancelledError:
+                stream_queue.close()
+                impl_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await impl_task
+                raise
             except Exception as e:
                 logger.exception("sse_execution_followup_generation_error", error=str(e))
                 error_chunk = ChatCompletionChunk(
@@ -5484,7 +6832,9 @@ async def handle_execution_followup(
                     created=created,
                     model=request.model,
                     choices=[
-                        StreamChoice(delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED)))
+                        StreamChoice(
+                            delta=ChoiceDelta(content=t(MessageKey.STREAM_ERROR_INTERRUPTED))
+                        )
                     ],
                 )
                 yield f"data: {error_chunk.model_dump_json()}\n\n"
@@ -5518,7 +6868,11 @@ async def handle_execution_followup(
                 ),
             )
             return _respond_with_text(request, _tool_loop_failsafe_message(session))
-        workflow_phase = str(final_state.get("current_phase") or getattr(session, "workflow_phase", "execution") or "execution")
+        workflow_phase = str(
+            final_state.get("current_phase")
+            or getattr(session, "workflow_phase", "execution")
+            or "execution"
+        )
         filtered_tool_calls = list(pending_tool_calls or [])
         todo_written_now = False
         if workflow_phase in {"execution", "optimizer"}:
@@ -5526,41 +6880,129 @@ async def handle_execution_followup(
                 session,
                 filtered_tool_calls,
             )
-        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-            workflow_phase=workflow_phase,
-            tool_calls=filtered_tool_calls,
+        guardrail_events_to_append = []
+        before_cursor_validate = list(filtered_tool_calls)
+        filtered_tool_calls, cursor_tools_error = (
+            _normalize_and_validate_tool_calls_against_cursor_tools(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+                cursor_tools=list(cursor_tools or []),
+            )
         )
+        rewrites = _diff_tool_call_name_rewrites(before_cursor_validate, filtered_tool_calls)
+        if rewrites:
+            guardrail_events_to_append.append(
+                {
+                    "type": "tool_call_name_rewrite",
+                    "role": "optimizer" if workflow_phase == "optimizer" else "writer",
+                    "rewrites": rewrites,
+                }
+            )
+
+        tool_policy_error = cursor_tools_error
+        role_label = "optimizer" if workflow_phase == "optimizer" else "writer"
+        if tool_policy_error:
+            available = _extract_cursor_tool_names(cursor_tools)
+            available_set = set(available)
+            unknown_tool_names: list[str] = []
+            for tc in before_cursor_validate:
+                name, _args = _extract_tool_name_and_arguments(tc)
+                if isinstance(name, str) and name and name not in available_set:
+                    unknown_tool_names.append(name)
+            guardrail_events_to_append.append(
+                {
+                    "type": "tool_calls_not_in_cursor_tools",
+                    "role": role_label,
+                    "blocked_tools": sorted(set(unknown_tool_names)),
+                    "error_preview": sanitize_for_preview(
+                        redact_secrets(tool_policy_error),
+                        max_length=240,
+                    ),
+                }
+            )
+        else:
+            before_exec_policy = list(filtered_tool_calls)
+            filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+            )
+            if tool_policy_error:
+                blocked_tools, blocked_shell = _collect_execution_tool_policy_block_details(
+                    before_exec_policy
+                )
+                guardrail_events_to_append.append(
+                    {
+                        "type": "execution_tool_policy_blocked",
+                        "role": role_label,
+                        "blocked_tools": blocked_tools,
+                        "blocked_shell": blocked_shell,
+                        "error_preview": sanitize_for_preview(
+                            redact_secrets(tool_policy_error),
+                            max_length=240,
+                        ),
+                    }
+                )
         if tool_policy_error:
             session_store.update_session(
                 session.session_id,
                 stage=SessionStage.AWAITING_CONFIRMATION,
                 confirmation_reason="tool_policy",
                 pending_tool_calls=[],
+                append_guardrail_events=guardrail_events_to_append,
             )
             return _respond_with_text(request, tool_policy_error)
-        filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
-            workflow_phase=workflow_phase,
-            tool_calls=filtered_tool_calls,
-            conversation_history=list(
-                final_state.get("conversation_history", [])
-                or getattr(session, "execution_messages", [])
-                or []
-            ),
-            ternion_report=str(
-                final_state.get("ternion_report", "")
-                or getattr(session, "ternion_report_raw", "")
-                or ""
-            ),
+        before_deliverable_policy = list(filtered_tool_calls)
+        filtered_tool_calls, policy_error, deliverable_type, allowed_scope = (
+            _enforce_deliverable_policy(
+                workflow_phase=workflow_phase,
+                tool_calls=filtered_tool_calls,
+                conversation_history=list(
+                    final_state.get("conversation_history", [])
+                    or getattr(session, "execution_messages", [])
+                    or []
+                ),
+                ternion_report=str(
+                    final_state.get("ternion_report", "")
+                    or getattr(session, "ternion_report_raw", "")
+                    or ""
+                ),
+            )
         )
         if policy_error:
+            violations = (
+                _collect_deliverable_policy_violations(before_deliverable_policy, deliverable_type)
+                if deliverable_type is not None
+                else []
+            )
+            guardrail_events_to_append.append(
+                {
+                    "type": "deliverable_policy_blocked",
+                    "role": role_label,
+                    "deliverable_type": deliverable_type.value
+                    if deliverable_type is not None
+                    else "",
+                    "allowed_scope": allowed_scope or "",
+                    "violations": violations,
+                    "error_preview": sanitize_for_preview(
+                        redact_secrets(policy_error),
+                        max_length=240,
+                    ),
+                }
+            )
             session_store.update_session(
                 session.session_id,
                 stage=SessionStage.AWAITING_CONFIRMATION,
                 confirmation_reason="deliverable_policy",
                 pending_tool_calls=[],
+                append_guardrail_events=guardrail_events_to_append,
             )
             return _respond_with_text(request, policy_error)
 
+        deferred_tool_calls: list[dict] = []
+        if workflow_phase in {"execution", "optimizer"}:
+            filtered_tool_calls, deferred_tool_calls = _split_tool_calls_for_transparent_batching(
+                filtered_tool_calls
+            )
         baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
             session,
             filtered_tool_calls,
@@ -5571,16 +7013,16 @@ async def handle_execution_followup(
             round_index=next_round,
             workflow_phase=workflow_phase,
         )
-        updated_execution_messages.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": rewritten_tool_calls,
-        })
+        updated_execution_messages = _append_assistant_tool_call_message(
+            updated_execution_messages,
+            rewritten_tool_calls,
+        )
         session_store.update_session(
             session.session_id,
             stage=SessionStage.AWAITING_TOOL_RESULTS,
             execution_messages=updated_execution_messages,
             pending_tool_calls=rewritten_tool_calls,
+            deferred_tool_calls=deferred_tool_calls,
             round_index=next_round,
             generated_code=final_state.get("generated_code") or session.generated_code,
             review_feedback=final_state.get("review_feedback") or session.review_feedback,
@@ -5593,20 +7035,48 @@ async def handle_execution_followup(
             ),
             modified_files=modified_files,
             baseline_file_snapshots=baseline,
-            writer_output_files=dict(final_state.get("writer_output_files") or getattr(session, "writer_output_files", {}) or {}),
-            optimizer_review_report=str(final_state.get("optimizer_review_report") or getattr(session, "optimizer_review_report", "") or ""),
-            evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
-            evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
-            evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
-            evidence_chain_index=list(final_state.get("evidence_chain_index") or getattr(session, "evidence_chain_index", []) or []),
-            evidence_topup_round=int(final_state.get("evidence_topup_round", getattr(session, "evidence_topup_round", 0)) or 0),
-            report_evidence_resume_phase=str(final_state.get("report_evidence_resume_phase") or getattr(session, "report_evidence_resume_phase", "") or ""),
+            writer_output_files=dict(
+                final_state.get("writer_output_files")
+                or getattr(session, "writer_output_files", {})
+                or {}
+            ),
+            optimizer_review_report=str(
+                final_state.get("optimizer_review_report")
+                or getattr(session, "optimizer_review_report", "")
+                or ""
+            ),
+            evidence_bundle=str(
+                final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""
+            ),
+            evidence_gaps=str(
+                final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""
+            ),
+            evidence_requests=str(
+                final_state.get("evidence_requests")
+                or getattr(session, "evidence_requests", "")
+                or ""
+            ),
+            evidence_chain_index=list(
+                final_state.get("evidence_chain_index")
+                or getattr(session, "evidence_chain_index", [])
+                or []
+            ),
+            evidence_topup_round=int(
+                final_state.get("evidence_topup_round", getattr(session, "evidence_topup_round", 0))
+                or 0
+            ),
+            report_evidence_resume_phase=str(
+                final_state.get("report_evidence_resume_phase")
+                or getattr(session, "report_evidence_resume_phase", "")
+                or ""
+            ),
             todo_written=bool(getattr(session, "todo_written", False)) or todo_written_now,
             optimizer_todo_written=(
                 bool(getattr(session, "optimizer_todo_written", False)) or todo_written_now
                 if workflow_phase == "optimizer"
                 else bool(getattr(session, "optimizer_todo_written", False))
             ),
+            append_guardrail_events=guardrail_events_to_append,
         )
 
         if request.stream:
@@ -5645,17 +7115,52 @@ async def handle_execution_followup(
         generated_code=final_state.get("generated_code") or session.generated_code,
         review_feedback=final_state.get("review_feedback") or session.review_feedback,
         revision_count=final_state.get("revision_count", session.revision_count),
-        workflow_phase=str(final_state.get("current_phase") or getattr(session, "workflow_phase", "execution") or "execution"),
-        modified_files=list(final_state.get("modified_files") or getattr(session, "modified_files", []) or []),
-        baseline_file_snapshots=dict(final_state.get("baseline_file_snapshots") or getattr(session, "baseline_file_snapshots", {}) or {}),
-        writer_output_files=dict(final_state.get("writer_output_files") or getattr(session, "writer_output_files", {}) or {}),
-        optimizer_review_report=str(final_state.get("optimizer_review_report") or getattr(session, "optimizer_review_report", "") or ""),
-        evidence_bundle=str(final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""),
-        evidence_gaps=str(final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""),
-        evidence_requests=str(final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""),
-        evidence_chain_index=list(final_state.get("evidence_chain_index") or getattr(session, "evidence_chain_index", []) or []),
-        evidence_topup_round=int(final_state.get("evidence_topup_round", getattr(session, "evidence_topup_round", 0)) or 0),
-        report_evidence_resume_phase=str(final_state.get("report_evidence_resume_phase") or getattr(session, "report_evidence_resume_phase", "") or ""),
+        workflow_phase=str(
+            final_state.get("current_phase")
+            or getattr(session, "workflow_phase", "execution")
+            or "execution"
+        ),
+        modified_files=list(
+            final_state.get("modified_files") or getattr(session, "modified_files", []) or []
+        ),
+        baseline_file_snapshots=dict(
+            final_state.get("baseline_file_snapshots")
+            or getattr(session, "baseline_file_snapshots", {})
+            or {}
+        ),
+        writer_output_files=dict(
+            final_state.get("writer_output_files")
+            or getattr(session, "writer_output_files", {})
+            or {}
+        ),
+        optimizer_review_report=str(
+            final_state.get("optimizer_review_report")
+            or getattr(session, "optimizer_review_report", "")
+            or ""
+        ),
+        evidence_bundle=str(
+            final_state.get("evidence_bundle") or getattr(session, "evidence_bundle", "") or ""
+        ),
+        evidence_gaps=str(
+            final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""
+        ),
+        evidence_requests=str(
+            final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""
+        ),
+        evidence_chain_index=list(
+            final_state.get("evidence_chain_index")
+            or getattr(session, "evidence_chain_index", [])
+            or []
+        ),
+        evidence_topup_round=int(
+            final_state.get("evidence_topup_round", getattr(session, "evidence_topup_round", 0))
+            or 0
+        ),
+        report_evidence_resume_phase=str(
+            final_state.get("report_evidence_resume_phase")
+            or getattr(session, "report_evidence_resume_phase", "")
+            or ""
+        ),
     )
 
     if request.stream:
@@ -5882,7 +7387,11 @@ async def handle_confirmed_session(
                 return JSONResponse(
                     content=ChatCompletionResponse(
                         model=request.model,
-                        choices=[Choice(message=ChatMessage(role=MessageRole.ASSISTANT, content=error_msg))],
+                        choices=[
+                            Choice(
+                                message=ChatMessage(role=MessageRole.ASSISTANT, content=error_msg)
+                            )
+                        ],
                     ).model_dump()
                 )
         if budget_warning == "BUDGET_WARNING":
@@ -5890,7 +7399,9 @@ async def handle_confirmed_session(
             log_manager.emit(
                 level="WARN",
                 category="BUDGET",
-                message=t(MessageKey.LOG_BUDGET_WARNING, usage_pct=str(usage_summary.get('usage_pct', 0))),
+                message=t(
+                    MessageKey.LOG_BUDGET_WARNING, usage_pct=str(usage_summary.get("usage_pct", 0))
+                ),
             )
             impl_budget_prefix = budget_manager.format_budget_warning(budget_warning)
 
@@ -5900,12 +7411,10 @@ async def handle_confirmed_session(
         # Restore original context from session if available (for better Writer context)
         original_ctx = session.original_context or {}
         conversation_history = original_ctx.get(
-            "conversation_history",
-            context.conversation_history
+            "conversation_history", context.conversation_history
         )
         cursor_system_prompt = original_ctx.get(
-            "cursor_system_prompt",
-            context.cursor_system_prompt
+            "cursor_system_prompt", context.cursor_system_prompt
         )
 
         initial_state = {
@@ -5976,18 +7485,18 @@ async def handle_confirmed_session(
         session_store.update_session(session.session_id, stage=SessionStage.EXECUTED)
 
         return JSONResponse(
-                content=ChatCompletionResponse(
-                    model=request.model,
-                    choices=[
-                        Choice(
-                            message=ChatMessage(
-                                role=MessageRole.ASSISTANT,
-                                content=output,
-                            )
+            content=ChatCompletionResponse(
+                model=request.model,
+                choices=[
+                    Choice(
+                        message=ChatMessage(
+                            role=MessageRole.ASSISTANT,
+                            content=output,
                         )
-                    ],
-                ).model_dump()
-            )
+                    )
+                ],
+            ).model_dump()
+        )
 
 
 async def handle_rejected_session(
@@ -6213,6 +7722,7 @@ TERNION_EXECUTION_MODE={session.execution_mode.value}"""
         # Use ternion_report_safe for user-visible output
         handoff_output = generate_handoff_package(session.ternion_report_safe)
 
+        # User-visible reminder message (CURSOR_HANDOFF).
         reminder = f"""## 📋 Reminder: Please Switch to a Non-Ternion Model
 
 This session has already been confirmed. To proceed with code implementation, please:
@@ -6259,7 +7769,7 @@ If you need to make additional changes or start a new analysis, please send a ne
 
 **Previous Session Summary**:
 - Session ID: `{session.session_id}`
-- Status: {session.stage.value.replace('_', ' ').title()}
+- Status: {session.stage.value.replace("_", " ").title()}
 - Mode: Ternion Full (code generated by Ternion)
 {session_markers}"""
 
@@ -6318,7 +7828,7 @@ TERNION_EXECUTION_MODE={session.execution_mode.value}"""
     if session.last_user_feedback:
         feedback_section = f"""
 **Your Previous Feedback**:
-> {session.last_user_feedback[:200]}{'...' if len(session.last_user_feedback) > 200 else ''}
+> {session.last_user_feedback[:200]}{"..." if len(session.last_user_feedback) > 200 else ""}
 """
 
     guidance = f"""## ⚠️ Session Previously Rejected
@@ -6337,7 +7847,7 @@ If you'd like to explain what was wrong with the previous analysis, please descr
 
 **Previous Session Info**:
 - Session ID: `{session.session_id}`
-- Original Mode: {session.execution_mode.value.replace('_', ' ').title()}
+- Original Mode: {session.execution_mode.value.replace("_", " ").title()}
 - Status: Rejected
 {session_markers}"""
 

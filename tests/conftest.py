@@ -2,7 +2,6 @@
 Test configuration and fixtures.
 """
 
-
 import pytest
 
 from ternion.core.models import ChatMessage, MessageRole

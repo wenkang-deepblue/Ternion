@@ -75,10 +75,13 @@ class MessageKey(str, Enum):
     EVIDENCE_TOPUP_LIMIT_REACHED = "evidence_topup_limit_reached"
     EVIDENCE_TOPUP_REQUESTS_EMPTY = "evidence_topup_requests_empty"
     EVIDENCE_TOPUP_PURPOSE_REQUIRED = "evidence_topup_purpose_required"
+    EVIDENCE_TOPUP_COLLECTING = "evidence_topup_collecting"
+    EVIDENCE_TOPUP_COLLECTING_SECOND_ROUND = "evidence_topup_collecting_second_round"
 
     # Discussion Output (Cursor-facing UI text)
     DISCUSSION_NO_OUTPUT = "discussion_no_output"
     DISCUSSION_ERRORS_HEADER = "discussion_errors_header"
+    DISCUSSION_WORKFLOW_ERROR = "discussion_workflow_error"
 
     # Workflow Errors (Cursor-facing UI text)
     ARBITER_FALLBACKS_FAILED = "arbiter_fallbacks_failed"
@@ -121,7 +124,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Evidence Stage Errors
         MessageKey.EVIDENCE_COLLECTION_FAILED: "Evidence collection failed: {error}",
         MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "Report evidence collection failed: {error}",
-
         MessageKey.DIVERGENCE_START: "> **[Arbiter]**: Starting parallel problem analysis...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: Analysis failed ({provider}): {error}\n",
@@ -130,7 +132,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[Arbiter]**: Error during convergence: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "All Arbiters failed; using raw analysis.",
         MessageKey.EXECUTION_START: "> **[Writer]**: Generating code from analysis report...\n",
-        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Evidence collected. Continuing deliverable generation...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Continuing deliverable generation...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Writer]**: Code generation complete\n",
         MessageKey.EXECUTION_ERROR: "> **[Writer]**: Error during execution: {error}\n",
         MessageKey.OPTIMIZER_START: (
@@ -144,7 +146,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.REVIEW_APPROVED: "> **[Reviewer]**: Review passed\n",
         MessageKey.REVIEW_REVISION: "> **[Reviewer]**: Revision needed, returning to Writer...\n",
         MessageKey.FINAL_CHECK_ERROR: "> **[Reviewer]**: Error during review: {error}\n",
-
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
             "> **Note**: This report was generated using a single analysis (fallback mode) "
@@ -154,7 +155,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Please review the analysis above. If correct, reply with your confirmation to proceed with implementation handoff to Cursor.\n"
             "If you disagree or need adjustments, describe the issues and I will re-analyze."
         ),
-
         # Validation Errors
         MessageKey.EXECUTION_MODE_MISSING: (
             "Execution mode not configured. Please open Web Control Panel to configure: "
@@ -171,7 +171,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
             "[Ternion] Implementation stage cannot proceed: missing required fields: {missing_fields}"
         ),
-
         # Provider Manager Errors
         MessageKey.NO_PROVIDERS_CONFIGURED: "Please add API keys in the Web Control Panel at {web_url}",
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
@@ -180,12 +179,11 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.UNSUPPORTED_MODEL: (
             "Unsupported model: '{model}'. This Ternion gateway only supports 'ternion-team'. "
             "If you intended to use Cursor's subscription-included GPT/Claude/Gemini models, please disable "
-            "\"OpenAI API Key\" and \"Override OpenAI Base URL\" in Cursor Settings "
-            "(Settings --> Models --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
+            '"OpenAI API Key" and "Override OpenAI Base URL" in Cursor Settings '
+            '(Settings --> Models --> "OpenAI API Key" & "Override OpenAI Base URL"). '
             "If you intended to use Ternion, switch the model to 'ternion-team'."
         ),
         MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "No ternion analyses available.",
-
         # Budget Alerts
         MessageKey.BUDGET_WARNING: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
@@ -199,14 +197,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.BUDGET_CONFIRM_REQUIRED: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
-            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            'Reply with "continue" to proceed with the tool loop, or adjust budget settings '
             "in Control Panel -> Config page.\n"
         ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
         MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
-
         # Tool Loop Guardrails
         MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
             "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
@@ -243,11 +240,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "[Ternion] Evidence top-up request rejected: every request must include a PURPOSE line.\n"
             "Missing PURPOSE for:\n{missing_items}\n"
         ),
-
+        MessageKey.EVIDENCE_TOPUP_COLLECTING: (
+            "> **[{role}]**: Still generating deliverables...\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_COLLECTING_SECOND_ROUND: (
+            "> **[{role}]**: Still generating deliverables...\n"
+        ),
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] Discussion completed but no output was generated.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Errors:\n",
-
+        MessageKey.DISCUSSION_WORKFLOW_ERROR: "Discussion workflow error: {error}",
         # Workflow Errors (Cursor-facing UI text)
         MessageKey.ARBITER_FALLBACKS_FAILED: "All Arbiter fallbacks failed: {error}",
         MessageKey.EXECUTION_FAILED: "Execution failed: {error}",
@@ -256,17 +258,14 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.REVIEW_SKIPPED: "Review skipped due to error: {error}",
         MessageKey.REVIEW_MAX_REVISIONS_REACHED: "Max revisions reached; proceeding with current code.",
         MessageKey.OPTIMIZER_FAILED: "[Ternion Error] Optimizer failed: {error}",
-
         # Tool Policy Placeholders (Cursor-facing UI text)
         MessageKey.TOOL_POLICY_NONE: "(none)",
         MessageKey.TOOL_POLICY_UNKNOWN_TOOL: "(unknown tool)",
         MessageKey.TOOL_POLICY_UNKNOWN_TARGET: "(unknown target)",
         MessageKey.TOOL_POLICY_SHELL: "(shell)",
         MessageKey.TOOL_POLICY_EMPTY_COMMAND: "(empty command)",
-
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Streaming error occurred. Please retry.\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] Streaming interrupted. Please retry.\n",
-
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Root Cause",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "Evidence / Logs",
@@ -284,8 +283,8 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "If you disagree or need adjustments, describe the issues and I will re-analyze."
         ),
         MessageKey.REPORT_CONFIRM_PROMPT_CURSOR_HANDOFF: (
-            "You are using \"Ternion Root Cause Analysis + Cursor Implementation\" mode. "
-            "Please review the analysis above. If correct, go to Cursor Settings, disable the \"OpenAI API Key\" switch, "
+            'You are using "Ternion Root Cause Analysis + Cursor Implementation" mode. '
+            'Please review the analysis above. If correct, go to Cursor Settings, disable the "OpenAI API Key" switch, '
             "select a Cursor native model (Gemini, Claude, or GPT series), then reply with your confirmation to proceed "
             "with implementation handoff to Cursor.\n"
             "If you disagree or need adjustments, describe the issues and I will re-analyze."
@@ -295,7 +294,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Evidence Stage Errors
         MessageKey.EVIDENCE_COLLECTION_FAILED: "证据采集失败：{error}",
         MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "报告阶段证据补齐失败：{error}",
-
         MessageKey.DIVERGENCE_START: "> **[Arbiter]**: 开始并发问题分析...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: 分析失败（{provider}）：{error}\n",
@@ -304,7 +302,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[Arbiter]**: 综合分析错误: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "所有 Arbiter 失败，使用原始分析作为回退。",
         MessageKey.EXECUTION_START: "> **[Writer]**: 基于分析报告生成代码中...\n",
-        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> 证据补齐完成，继续生成交付内容...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> 正在继续生成交付内容...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Writer]**: 代码生成完成\n",
         MessageKey.EXECUTION_ERROR: "> **[Writer]**: 代码生成错误: {error}\n",
         MessageKey.OPTIMIZER_START: "> **[Optimizer]**: 基于Ternion Report的验收标准校验并改进代码中...\n",
@@ -316,7 +314,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.REVIEW_APPROVED: "> **[Reviewer]**: 审查通过\n",
         MessageKey.REVIEW_REVISION: "> **[Reviewer]**: 需要修订，返回 Writer 重写...\n",
         MessageKey.FINAL_CHECK_ERROR: "> **[Reviewer]**: 审查错误: {error}\n",
-
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
             "> **注意**: 此报告由单个分析生成（降级模式），因为 Arbiter 综合分析失败。"
@@ -326,15 +323,12 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "请审阅以上分析。如确认无误，请回复确认以继续将实现任务交接给 Cursor。\n"
             "如有异议或需要调整，请描述问题，我将重新分析。"
         ),
-
         # Validation Errors
         MessageKey.EXECUTION_MODE_MISSING: (
-            "执行模式未配置。请打开 Web 控制面板配置："
-            "{web_url}（配置 -> 推理方案 -> 保存）"
+            "执行模式未配置。请打开 Web 控制面板配置：{web_url}（配置 -> 推理方案 -> 保存）"
         ),
         MessageKey.ROLE_CONFIG_INCOMPLETE: (
-            "角色模型配置不完整，缺少：{missing_roles}。"
-            "请打开 Web 控制面板：{web_url}"
+            "角色模型配置不完整，缺少：{missing_roles}。请打开 Web 控制面板：{web_url}"
         ),
         MessageKey.EXECUTION_REQUIRES_AGENT_MODE: (
             "当前处于 Cursor 的非 Agent 模式（Ask/Plan/Debug）。执行/改代码需要 Cursor Agent 模式。"
@@ -343,7 +337,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
             "[Ternion] 实现阶段无法继续：缺少必需字段：{missing_fields}"
         ),
-
         # Provider Manager Errors
         MessageKey.NO_PROVIDERS_CONFIGURED: "请在 Web 控制面板添加 API Key：{web_url}",
         MessageKey.ROLE_NOT_CONFIGURED: "角色 '{role}' 未配置。请在 Web 控制面板配置：{web_url}",
@@ -352,12 +345,11 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.UNSUPPORTED_MODEL: (
             "不支持的模型：'{model}'。当前 Ternion 网关仅支持 'ternion-team'。"
             "如果你想使用 Cursor 订阅内置的 GPT/Claude/Gemini 模型，请在 Cursor 设置中关闭 "
-            "\"OpenAI API Key\" 以及 \"Override OpenAI Base URL\" "
-            "(设置 --> Models --> \"OpenAI API Key\" & \"Override OpenAI Base URL\")。"
+            '"OpenAI API Key" 以及 "Override OpenAI Base URL" '
+            '(设置 --> Models --> "OpenAI API Key" & "Override OpenAI Base URL")。'
             "如果你想使用 Ternion，请将模型切换为 'ternion-team'。"
         ),
         MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "没有可用的 Ternion 分析结果。",
-
         # Budget Alerts
         MessageKey.BUDGET_WARNING: (
             "\n> **[Ternion 预算警报]**：当前月度用量已达 **{usage_pct}%**，"
@@ -377,7 +369,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.LOG_BUDGET_EXCEEDED: "预算超限 | 请求已拦截 | 月度上限已达",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "预算超限 | 实现阶段已阻止 | session_id={session_id}",
         MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "预算警告 | 需要确认继续 | 用量={usage_pct}%",
-
         # Tool Loop Guardrails
         MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
             "\n> **[Ternion]**：工具循环已达到 failsafe 上限（{max_rounds}）。"
@@ -414,10 +405,14 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "[Ternion] 证据补齐请求被拒绝：每条请求都必须包含 PURPOSE 行。\n"
             "缺失 PURPOSE 的请求：\n{missing_items}\n"
         ),
-
+        MessageKey.EVIDENCE_TOPUP_COLLECTING: ("> **[{role}]**: 仍在生成交付内容...\n"),
+        MessageKey.EVIDENCE_TOPUP_COLLECTING_SECOND_ROUND: (
+            "> **[{role}]**: 仍在生成交付内容...\n"
+        ),
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] 流程已完成，但未生成任何输出。",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] 错误：\n",
+        MessageKey.DISCUSSION_WORKFLOW_ERROR: "讨论工作流错误：{error}",
         MessageKey.ARBITER_FALLBACKS_FAILED: "所有 Arbiter 回退均失败：{error}",
         MessageKey.EXECUTION_FAILED: "执行失败：{error}",
         MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] 执行已完成，但未生成任何输出。",
@@ -432,7 +427,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.TOOL_POLICY_EMPTY_COMMAND: "（空命令）",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] 流式输出发生错误，请重试。\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] 流式输出中断，请重试。\n",
-
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "根因",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "证据/日志",
@@ -460,7 +454,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Evidence Stage Errors
         MessageKey.EVIDENCE_COLLECTION_FAILED: "La recopilación de evidencias falló: {error}",
         MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "La verificación de evidencias del informe falló: {error}",
-
         MessageKey.DIVERGENCE_START: "> **[Árbitro]**: Iniciando análisis paralelo del problema...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: El análisis falló ({provider}): {error}\n",
@@ -469,7 +462,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[Árbitro]**: Error durante convergencia: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "Todos los Árbitros fallaron; usando el análisis en bruto.",
         MessageKey.EXECUTION_START: "> **[Escritor]**: Generando código del informe de análisis...\n",
-        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Evidencia recopilada. Continuando la generación del entregable...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Continuando la generación del entregable...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Escritor]**: Generación de código completa\n",
         MessageKey.EXECUTION_ERROR: "> **[Escritor]**: Error durante ejecución: {error}\n",
         MessageKey.OPTIMIZER_START: "> **[Optimizador]**: Validando y mejorando la implementación...\n",
@@ -481,7 +474,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.REVIEW_APPROVED: "> **[Revisor]**: Revisión aprobada\n",
         MessageKey.REVIEW_REVISION: "> **[Revisor]**: Revisión necesaria, regresando a Escritor...\n",
         MessageKey.FINAL_CHECK_ERROR: "> **[Revisor]**: Error durante revisión: {error}\n",
-
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
             "> **Nota**: Este informe fue generado usando un solo análisis (modo de respaldo) "
@@ -491,7 +483,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Por favor revise el análisis anterior. Si es correcto, responda con su confirmación para proceder con la entrega de implementación a Cursor.\n"
             "Si no está de acuerdo o necesita ajustes, describa los problemas y volveré a analizar."
         ),
-
         # Validation Errors
         MessageKey.EXECUTION_MODE_MISSING: (
             "Modo de ejecución no configurado. Por favor abra el Panel de Control Web: "
@@ -508,7 +499,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
             "[Ternion] La etapa de implementación no puede continuar: faltan campos obligatorios: {missing_fields}"
         ),
-
         # Provider Manager Errors (Fallback to English)
         MessageKey.NO_PROVIDERS_CONFIGURED: "Please add API keys in the Web Control Panel at {web_url}",
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
@@ -517,12 +507,11 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.UNSUPPORTED_MODEL: (
             "Modelo no compatible: '{model}'. Esta puerta de enlace Ternion solo admite 'ternion-team'. "
             "Si desea usar los modelos GPT/Claude/Gemini incluidos en la suscripción de Cursor, desactive "
-            "\"OpenAI API Key\" y \"Override OpenAI Base URL\" en Configuración de Cursor "
-            "(Configuración --> Modelos --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
+            '"OpenAI API Key" y "Override OpenAI Base URL" en Configuración de Cursor '
+            '(Configuración --> Modelos --> "OpenAI API Key" & "Override OpenAI Base URL"). '
             "Si desea usar Ternion, cambie el modelo a 'ternion-team'."
         ),
         MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "No hay análisis de Ternion disponibles.",
-
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
@@ -536,14 +525,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.BUDGET_CONFIRM_REQUIRED: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
-            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            'Reply with "continue" to proceed with the tool loop, or adjust budget settings '
             "in Control Panel -> Config page.\n"
         ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
         MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
-
         # Tool Loop Guardrails
         MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
             "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
@@ -552,7 +540,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
-
         MessageKey.DELIVERABLE_POLICY_BLOCKED: (
             "[Ternion] La política de entregables bloqueó las llamadas de herramientas de escritura.\n"
             "Tipo de entregable: {deliverable_type}\n"
@@ -581,10 +568,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "[Ternion] Solicitud de ampliación de evidencias rechazada: cada solicitud debe incluir una línea PURPOSE.\n"
             "Falta PURPOSE para:\n{missing_items}\n"
         ),
-
+        MessageKey.EVIDENCE_TOPUP_COLLECTING: (
+            "> **[{role}]**: Seguimos generando el entregable...\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_COLLECTING_SECOND_ROUND: (
+            "> **[{role}]**: Seguimos generando el entregable...\n"
+        ),
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] La discusión finalizó pero no se generó ninguna salida.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Errores:\n",
+        MessageKey.DISCUSSION_WORKFLOW_ERROR: "Error del flujo de discusión: {error}",
         MessageKey.ARBITER_FALLBACKS_FAILED: "Todos los fallbacks del Árbitro fallaron: {error}",
         MessageKey.EXECUTION_FAILED: "Ejecución falló: {error}",
         MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] La ejecución se completó pero no se generó ninguna salida.",
@@ -599,7 +592,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.TOOL_POLICY_EMPTY_COMMAND: "(comando vacío)",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Se produjo un error de streaming. Por favor, inténtalo de nuevo.\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] El streaming se interrumpió. Por favor, inténtalo de nuevo.\n",
-
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Causa raíz",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "Evidencia / Registros",
@@ -617,8 +609,8 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Si no está de acuerdo o necesita ajustes, describa los problemas y volveré a analizar."
         ),
         MessageKey.REPORT_CONFIRM_PROMPT_CURSOR_HANDOFF: (
-            "Está utilizando el modo \"Análisis de Causa Raíz de Ternion + Implementación de Cursor\". "
-            "Por favor revise el análisis anterior. Si es correcto, vaya a Configuración de Cursor, desactive el interruptor \"OpenAI API Key\", "
+            'Está utilizando el modo "Análisis de Causa Raíz de Ternion + Implementación de Cursor". '
+            'Por favor revise el análisis anterior. Si es correcto, vaya a Configuración de Cursor, desactive el interruptor "OpenAI API Key", '
             "seleccione un modelo nativo de Cursor (Gemini, Claude o serie GPT), luego responda con su confirmación para proceder "
             "con la entrega de implementación a Cursor.\n"
             "Si no está de acuerdo o necesita ajustes, describa los problemas y volveré a analizar."
@@ -628,7 +620,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Evidence Stage Errors
         MessageKey.EVIDENCE_COLLECTION_FAILED: "La collecte de preuves a échoué : {error}",
         MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "La collecte de preuves pour le rapport a échoué : {error}",
-
         MessageKey.DIVERGENCE_START: "> **[Arbitre]**: Démarrage de l'analyse parallèle du problème...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: L'analyse a échoué ({provider}) : {error}\n",
@@ -637,7 +628,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[Arbitre]**: Erreur pendant la convergence : {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "Tous les Arbitres ont échoué ; utilisation de l'analyse brute.",
         MessageKey.EXECUTION_START: "> **[Rédacteur]**: Génération du code à partir du rapport d'analyse...\n",
-        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Preuves collectées. Reprise de la génération des livrables...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Reprise de la génération des livrables...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Rédacteur]**: Génération de code terminée\n",
         MessageKey.EXECUTION_ERROR: "> **[Rédacteur]**: Erreur pendant l'exécution : {error}\n",
         MessageKey.OPTIMIZER_START: "> **[Optimiseur]**: Validation et amélioration de l’implémentation...\n",
@@ -649,7 +640,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.REVIEW_APPROVED: "> **[Réviseur]**: Révision approuvée\n",
         MessageKey.REVIEW_REVISION: "> **[Réviseur]**: Révision nécessaire, retour à Rédacteur...\n",
         MessageKey.FINAL_CHECK_ERROR: "> **[Réviseur]**: Erreur pendant la révision : {error}\n",
-
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
             "> **Note**: Ce rapport a été généré en utilisant une seule analyse (mode de repli) "
@@ -659,7 +649,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Veuillez examiner l'analyse ci-dessus. Si elle est correcte, répondez avec votre confirmation pour procéder au transfert d'implémentation vers Cursor.\n"
             "Si vous n'êtes pas d'accord ou avez besoin d'ajustements, décrivez les problèmes et je réanalyserai."
         ),
-
         # Validation Errors
         MessageKey.EXECUTION_MODE_MISSING: (
             "Mode d'exécution non configuré. Veuillez ouvrir le Panneau de Contrôle Web : "
@@ -676,7 +665,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
             "[Ternion] L’étape d’implémentation ne peut pas continuer : champs requis manquants : {missing_fields}"
         ),
-
         # Provider Manager Errors (Fallback to English)
         MessageKey.NO_PROVIDERS_CONFIGURED: "Please add API keys in the Web Control Panel at {web_url}",
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
@@ -685,12 +673,11 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.UNSUPPORTED_MODEL: (
             "Modèle non pris en charge : '{model}'. Cette passerelle Ternion ne prend en charge que 'ternion-team'. "
             "Si vous souhaitez utiliser les modèles GPT/Claude/Gemini inclus dans l'abonnement Cursor, veuillez désactiver "
-            "\"OpenAI API Key\" et \"Override OpenAI Base URL\" dans les paramètres de Cursor "
-            "(Paramètres --> Modèles --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
+            '"OpenAI API Key" et "Override OpenAI Base URL" dans les paramètres de Cursor '
+            '(Paramètres --> Modèles --> "OpenAI API Key" & "Override OpenAI Base URL"). '
             "Si vous souhaitez utiliser Ternion, basculez vers le modèle 'ternion-team'."
         ),
         MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "Aucune analyse Ternion disponible.",
-
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
@@ -704,14 +691,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.BUDGET_CONFIRM_REQUIRED: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
-            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            'Reply with "continue" to proceed with the tool loop, or adjust budget settings '
             "in Control Panel -> Config page.\n"
         ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
         MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
-
         # Tool Loop Guardrails
         MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
             "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
@@ -720,7 +706,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
-
         MessageKey.DELIVERABLE_POLICY_BLOCKED: (
             "[Ternion] La politique de livrables a bloqué les appels d’outils de modification.\n"
             "Type de livrable : {deliverable_type}\n"
@@ -749,10 +734,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "[Ternion] Demande de complément de preuves rejetée : chaque demande doit inclure une ligne PURPOSE.\n"
             "PURPOSE manquant pour :\n{missing_items}\n"
         ),
-
+        MessageKey.EVIDENCE_TOPUP_COLLECTING: (
+            "> **[{role}]**: Génération du livrable en cours...\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_COLLECTING_SECOND_ROUND: (
+            "> **[{role}]**: Génération du livrable en cours...\n"
+        ),
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] La discussion est terminée mais aucune sortie n’a été générée.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Erreurs :\n",
+        MessageKey.DISCUSSION_WORKFLOW_ERROR: "Erreur du flux de discussion : {error}",
         MessageKey.ARBITER_FALLBACKS_FAILED: "Tous les basculements de l’Arbitre ont échoué : {error}",
         MessageKey.EXECUTION_FAILED: "Échec de l’exécution : {error}",
         MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] L’exécution est terminée mais aucune sortie n’a été générée.",
@@ -767,7 +758,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.TOOL_POLICY_EMPTY_COMMAND: "(commande vide)",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Une erreur de streaming s’est produite. Veuillez réessayer.\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] Le streaming a été interrompu. Veuillez réessayer.\n",
-
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Cause racine",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "Preuves / Logs",
@@ -785,7 +775,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Si vous n’êtes pas d’accord ou avez besoin d’ajustements, décrivez les problèmes et je réanalyserai."
         ),
         MessageKey.REPORT_CONFIRM_PROMPT_CURSOR_HANDOFF: (
-            "Vous utilisez le mode \"Analyse de Cause Racine Ternion + Implémentation Cursor\". "
+            'Vous utilisez le mode "Analyse de Cause Racine Ternion + Implémentation Cursor". '
             "Veuillez examiner l'analyse ci-dessus. Si elle est correcte, allez dans Paramètres Cursor, désactivez l'option \"OpenAI API Key\", "
             "sélectionnez un modèle natif Cursor (Gemini, Claude ou série GPT), puis répondez avec votre confirmation pour procéder "
             "au transfert d'implémentation vers Cursor.\n"
@@ -796,7 +786,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Evidence Stage Errors
         MessageKey.EVIDENCE_COLLECTION_FAILED: "Beweissammlung fehlgeschlagen: {error}",
         MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "Beweissammlung für den Bericht fehlgeschlagen: {error}",
-
         MessageKey.DIVERGENCE_START: "> **[Schiedsrichter]**: Starte parallele Problemanalyse...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: Analyse fehlgeschlagen ({provider}): {error}\n",
@@ -805,7 +794,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[Schiedsrichter]**: Fehler bei der Konvergenz: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "Alle Arbiter sind fehlgeschlagen; es wird die Roh-Analyse verwendet.",
         MessageKey.EXECUTION_START: "> **[Verfasser]**: Code aus Analysebericht generieren...\n",
-        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Belege gesammelt. Generierung der Ergebnisse wird fortgesetzt...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> Generierung der Ergebnisse wird fortgesetzt...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[Verfasser]**: Code-Generierung abgeschlossen\n",
         MessageKey.EXECUTION_ERROR: "> **[Verfasser]**: Fehler bei der Ausführung: {error}\n",
         MessageKey.OPTIMIZER_START: "> **[Optimierer]**: Implementierung prüfen und verbessern...\n",
@@ -817,7 +806,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.REVIEW_APPROVED: "> **[Prüfer]**: Überprüfung bestanden\n",
         MessageKey.REVIEW_REVISION: "> **[Prüfer]**: Revision erforderlich, zurück zu Verfasser...\n",
         MessageKey.FINAL_CHECK_ERROR: "> **[Prüfer]**: Fehler bei der Überprüfung: {error}\n",
-
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
             "> **Hinweis**: Dieser Bericht wurde mit einer einzelnen Analyse (Fallback-Modus) erstellt, "
@@ -827,7 +815,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Bitte überprüfen Sie die obige Analyse. Wenn sie korrekt ist, antworten Sie mit Ihrer Bestätigung, um mit der Implementierungsübergabe an Cursor fortzufahren.\n"
             "Wenn Sie nicht einverstanden sind oder Anpassungen benötigen, beschreiben Sie die Probleme und ich werde neu analysieren."
         ),
-
         # Validation Errors
         MessageKey.EXECUTION_MODE_MISSING: (
             "Ausführungsmodus nicht konfiguriert. Bitte öffnen Sie das Web-Kontrollfeld: "
@@ -844,7 +831,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
             "[Ternion] Implementierungsphase kann nicht fortfahren: erforderliche Felder fehlen: {missing_fields}"
         ),
-
         # Provider Manager Errors (Fallback to English)
         MessageKey.NO_PROVIDERS_CONFIGURED: "Please add API keys in the Web Control Panel at {web_url}",
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
@@ -853,12 +839,11 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.UNSUPPORTED_MODEL: (
             "Nicht unterstütztes Modell: '{model}'. Dieses Ternion-Gateway unterstützt nur 'ternion-team'. "
             "Wenn Sie die in Cursor enthaltenen GPT/Claude/Gemini-Modelle verwenden möchten, deaktivieren Sie bitte "
-            "\"OpenAI API Key\" und \"Override OpenAI Base URL\" in den Cursor-Einstellungen "
-            "(Einstellungen --> Modelle --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
+            '"OpenAI API Key" und "Override OpenAI Base URL" in den Cursor-Einstellungen '
+            '(Einstellungen --> Modelle --> "OpenAI API Key" & "Override OpenAI Base URL"). '
             "Wenn Sie Ternion verwenden möchten, wechseln Sie zum Modell 'ternion-team'."
         ),
         MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "Keine Ternion-Analysen verfügbar.",
-
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
@@ -872,14 +857,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.BUDGET_CONFIRM_REQUIRED: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
-            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            'Reply with "continue" to proceed with the tool loop, or adjust budget settings '
             "in Control Panel -> Config page.\n"
         ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
         MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
-
         # Tool Loop Guardrails
         MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
             "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
@@ -888,7 +872,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
-
         MessageKey.DELIVERABLE_POLICY_BLOCKED: (
             "[Ternion] Die Deliverable-Policy hat Schreib-Tool-Aufrufe blockiert.\n"
             "Lieferobjekt-Typ: {deliverable_type}\n"
@@ -917,10 +900,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "[Ternion] Beweis-Nachforderung abgelehnt: Jede Anfrage muss eine PURPOSE-Zeile enthalten.\n"
             "Fehlendes PURPOSE für:\n{missing_items}\n"
         ),
-
+        MessageKey.EVIDENCE_TOPUP_COLLECTING: (
+            "> **[{role}]**: Erstellung der Ergebnisse läuft noch...\n"
+        ),
+        MessageKey.EVIDENCE_TOPUP_COLLECTING_SECOND_ROUND: (
+            "> **[{role}]**: Erstellung der Ergebnisse läuft noch...\n"
+        ),
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] Die Diskussion ist abgeschlossen, aber es wurde keine Ausgabe erzeugt.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] Fehler:\n",
+        MessageKey.DISCUSSION_WORKFLOW_ERROR: "Diskussions-Workflow-Fehler: {error}",
         MessageKey.ARBITER_FALLBACKS_FAILED: "Alle Arbiter-Fallbacks sind fehlgeschlagen: {error}",
         MessageKey.EXECUTION_FAILED: "Ausführung fehlgeschlagen: {error}",
         MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] Ausführung abgeschlossen, aber keine Ausgabe wurde erzeugt.",
@@ -935,7 +924,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.TOOL_POLICY_EMPTY_COMMAND: "(leerer Befehl)",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] Beim Streaming ist ein Fehler aufgetreten. Bitte erneut versuchen.\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] Das Streaming wurde unterbrochen. Bitte erneut versuchen.\n",
-
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "Ursache",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "Evidenz / Logs",
@@ -953,8 +941,8 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Wenn Sie nicht einverstanden sind oder Anpassungen benötigen, beschreiben Sie die Probleme und ich werde neu analysieren."
         ),
         MessageKey.REPORT_CONFIRM_PROMPT_CURSOR_HANDOFF: (
-            "Sie verwenden den Modus \"Ternion Ursachenanalyse + Cursor Implementierung\". "
-            "Bitte prüfen Sie die Analyse oben. Wenn sie korrekt ist, gehen Sie zu Cursor-Einstellungen, deaktivieren Sie den \"OpenAI API Key\"-Schalter, "
+            'Sie verwenden den Modus "Ternion Ursachenanalyse + Cursor Implementierung". '
+            'Bitte prüfen Sie die Analyse oben. Wenn sie korrekt ist, gehen Sie zu Cursor-Einstellungen, deaktivieren Sie den "OpenAI API Key"-Schalter, '
             "wählen Sie ein natives Cursor-Modell (Gemini, Claude oder GPT-Serie), dann antworten Sie mit Ihrer Bestätigung, um mit der "
             "Übergabe der Implementierung an Cursor fortzufahren.\n"
             "Wenn Sie nicht einverstanden sind oder Anpassungen benötigen, beschreiben Sie die Probleme und ich werde neu analysieren."
@@ -964,7 +952,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Evidence Stage Errors
         MessageKey.EVIDENCE_COLLECTION_FAILED: "証拠収集に失敗しました: {error}",
         MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "レポート段階の証拠補完に失敗しました: {error}",
-
         MessageKey.DIVERGENCE_START: "> **[調停者]**: 並列問題分析を開始...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: 分析に失敗しました（{provider}）：{error}\n",
@@ -973,7 +960,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[調停者]**: 収束中にエラー: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "すべてのアービターが失敗したため、生の分析を使用します。",
         MessageKey.EXECUTION_START: "> **[執筆者]**: 分析レポートからコードを生成中...\n",
-        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> 証拠の補完が完了しました。成果物の生成を続行します...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> 成果物の生成を続行しています...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[執筆者]**: コード生成完了\n",
         MessageKey.EXECUTION_ERROR: "> **[執筆者]**: 実行中にエラー: {error}\n",
         MessageKey.OPTIMIZER_START: "> **[最適化担当]**: 受け入れ基準に基づき実装を検証・改善中...\n",
@@ -985,7 +972,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.REVIEW_APPROVED: "> **[審査者]**: レビュー通過\n",
         MessageKey.REVIEW_REVISION: "> **[審査者]**: 修正が必要、執筆者に戻ります...\n",
         MessageKey.FINAL_CHECK_ERROR: "> **[審査者]**: レビュー中にエラー: {error}\n",
-
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
             "> **注意**: このレポートは、調停者の統合が失敗したため、単一の分析（フォールバックモード）を使用して生成されました。"
@@ -995,7 +981,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "上記の分析を確認してください。正しければ、確認の返信をしてCursorへの実装引き継ぎに進んでください。\n"
             "同意できない場合や調整が必要な場合は、問題を記述してください。再分析します。"
         ),
-
         # Validation Errors
         MessageKey.EXECUTION_MODE_MISSING: (
             "実行モードが設定されていません。Webコントロールパネルを開いて設定してください："
@@ -1012,7 +997,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
             "[Ternion] 実装ステージを続行できません：必須フィールドが不足しています：{missing_fields}"
         ),
-
         # Provider Manager Errors (Fallback to English)
         MessageKey.NO_PROVIDERS_CONFIGURED: "Please add API keys in the Web Control Panel at {web_url}",
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
@@ -1021,12 +1005,11 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.UNSUPPORTED_MODEL: (
             "サポートされていないモデル: '{model}'。このTernionゲートウェイは 'ternion-team' のみをサポートしています。"
             "Cursorサブスクリプションに含まれるGPT/Claude/Geminiモデルを使用する場合は、Cursor設定で "
-            "\"OpenAI API Key\" と \"Override OpenAI Base URL\" を無効にしてください "
-            "(設定 --> モデル --> \"OpenAI API Key\" & \"Override OpenAI Base URL\")。"
+            '"OpenAI API Key" と "Override OpenAI Base URL" を無効にしてください '
+            '(設定 --> モデル --> "OpenAI API Key" & "Override OpenAI Base URL")。'
             "Ternionを使用する場合は、モデルを 'ternion-team' に切り替えてください。"
         ),
         MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "利用可能なTernion分析がありません。",
-
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
@@ -1040,14 +1023,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.BUDGET_CONFIRM_REQUIRED: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
-            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            'Reply with "continue" to proceed with the tool loop, or adjust budget settings '
             "in Control Panel -> Config page.\n"
         ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
         MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
-
         # Tool Loop Guardrails
         MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
             "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
@@ -1056,7 +1038,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
-
         MessageKey.DELIVERABLE_POLICY_BLOCKED: (
             "[Ternion] 交付物ポリシーにより書き込みツール呼び出しがブロックされました。\n"
             "交付物タイプ: {deliverable_type}\n"
@@ -1085,10 +1066,14 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "[Ternion] 証拠補完リクエストは拒否されました：各リクエストには PURPOSE 行が必要です。\n"
             "PURPOSE が欠落しているリクエスト:\n{missing_items}\n"
         ),
-
+        MessageKey.EVIDENCE_TOPUP_COLLECTING: ("> **[{role}]**: まだ成果物を生成しています...\n"),
+        MessageKey.EVIDENCE_TOPUP_COLLECTING_SECOND_ROUND: (
+            "> **[{role}]**: まだ成果物を生成しています...\n"
+        ),
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] ディスカッションは完了しましたが、出力が生成されませんでした。",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] エラー:\n",
+        MessageKey.DISCUSSION_WORKFLOW_ERROR: "ディスカッションのワークフローエラー: {error}",
         MessageKey.ARBITER_FALLBACKS_FAILED: "すべてのアービターのフォールバックが失敗しました: {error}",
         MessageKey.EXECUTION_FAILED: "実行に失敗しました: {error}",
         MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] 実行は完了しましたが、出力が生成されませんでした。",
@@ -1103,7 +1088,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.TOOL_POLICY_EMPTY_COMMAND: "（空のコマンド）",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] ストリーミング中にエラーが発生しました。もう一度お試しください。\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] ストリーミングが中断されました。もう一度お試しください。\n",
-
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "根本原因",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "証拠 / ログ",
@@ -1132,7 +1116,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         # Evidence Stage Errors
         MessageKey.EVIDENCE_COLLECTION_FAILED: "증거 수집에 실패했습니다: {error}",
         MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED: "보고서 단계 증거 보완에 실패했습니다: {error}",
-
         MessageKey.DIVERGENCE_START: "> **[중재자]**: 병렬 문제 분석 시작...\n",
         MessageKey.DIVERGENCE_ANALYSIS: "> **[{ternion_id}]**: {preview}\n",
         MessageKey.DIVERGENCE_ANALYSIS_FAILED: "> **[{ternion_id}]**: 분석 실패({provider}): {error}\n",
@@ -1141,7 +1124,7 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.CONVERGENCE_ERROR: "> **[중재자]**: 수렴 중 오류: {error}\n",
         MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED: "모든 Arbiter가 실패하여 원본 분석을 사용합니다.",
         MessageKey.EXECUTION_START: "> **[작성자]**: 분석 보고서에서 코드 생성 중...\n",
-        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> 증거 보완 완료. 산출물 생성을 계속합니다...\n",
+        MessageKey.EXECUTION_CONTINUE_AFTER_EVIDENCE: "> 산출물 생성을 계속합니다...\n",
         MessageKey.EXECUTION_COMPLETE: "> **[작성자]**: 코드 생성 완료\n",
         MessageKey.EXECUTION_ERROR: "> **[작성자]**: 실행 중 오류: {error}\n",
         MessageKey.OPTIMIZER_START: "> **[최적화 담당]**: 수용 기준에 따라 구현을 검증·개선 중...\n",
@@ -1153,7 +1136,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.REVIEW_APPROVED: "> **[검토자]**: 검토 통과\n",
         MessageKey.REVIEW_REVISION: "> **[검토자]**: 수정 필요, 작성자에게 돌아갑니다...\n",
         MessageKey.FINAL_CHECK_ERROR: "> **[검토자]**: 검토 중 오류: {error}\n",
-
         # Convergence Fallback
         MessageKey.CONVERGENCE_FALLBACK_WARNING: (
             "> **주의**: 이 보고서는 중재자 합성이 실패하여 단일 분석(폴백 모드)을 사용하여 생성되었습니다. "
@@ -1163,7 +1145,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "위의 분석을 검토해 주세요. 올바르다면 확인 응답을 보내 Cursor로의 구현 인계를 진행하세요.\n"
             "동의하지 않거나 조정이 필요하면 문제를 설명해 주세요. 다시 분석하겠습니다."
         ),
-
         # Validation Errors
         MessageKey.EXECUTION_MODE_MISSING: (
             "실행 모드가 구성되지 않았습니다. 웹 제어판을 열어 구성하세요: "
@@ -1180,7 +1161,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.IMPLEMENTATION_STAGE_MISSING_FIELDS: (
             "[Ternion] 구현 단계를 진행할 수 없습니다: 필수 필드가 누락되었습니다: {missing_fields}"
         ),
-
         # Provider Manager Errors (Fallback to English)
         MessageKey.NO_PROVIDERS_CONFIGURED: "Please add API keys in the Web Control Panel at {web_url}",
         MessageKey.ROLE_NOT_CONFIGURED: "Role '{role}' is not configured. Please configure it in the Web Control Panel at {web_url}",
@@ -1189,12 +1169,11 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.UNSUPPORTED_MODEL: (
             "지원되지 않는 모델: '{model}'. 이 Ternion 게이트웨이는 'ternion-team'만 지원합니다. "
             "Cursor 구독에 포함된 GPT/Claude/Gemini 모델을 사용하려면 Cursor 설정에서 "
-            "\"OpenAI API Key\" 및 \"Override OpenAI Base URL\"을 비활성화하세요 "
-            "(설정 --> 모델 --> \"OpenAI API Key\" & \"Override OpenAI Base URL\"). "
+            '"OpenAI API Key" 및 "Override OpenAI Base URL"을 비활성화하세요 '
+            '(설정 --> 모델 --> "OpenAI API Key" & "Override OpenAI Base URL"). '
             "Ternion을 사용하려면 모델을 'ternion-team'으로 전환하세요."
         ),
         MessageKey.NO_TERNION_ANALYSES_AVAILABLE: "사용 가능한 Ternion 분석이 없습니다.",
-
         # Budget Alerts (Fallback to English)
         MessageKey.BUDGET_WARNING: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**, "
@@ -1208,14 +1187,13 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.BUDGET_EXCEEDED_ERROR: "Monthly budget exhausted. Adjust budget in Control Panel -> Config page.",
         MessageKey.BUDGET_CONFIRM_REQUIRED: (
             "\n> **[Ternion Budget Alert]**: Monthly usage has reached **{usage_pct}%**. "
-            "Reply with \"continue\" to proceed with the tool loop, or adjust budget settings "
+            'Reply with "continue" to proceed with the tool loop, or adjust budget settings '
             "in Control Panel -> Config page.\n"
         ),
         MessageKey.LOG_BUDGET_WARNING: "Budget warning | usage={usage_pct}% | Approaching monthly limit",
         MessageKey.LOG_BUDGET_EXCEEDED: "Budget exceeded | Request blocked | Monthly limit reached",
         MessageKey.LOG_BUDGET_IMPL_BLOCKED: "Budget exceeded | Implementation blocked | session_id={session_id}",
         MessageKey.LOG_BUDGET_CONFIRM_REQUIRED: "Budget warning | confirmation required | usage={usage_pct}%",
-
         # Tool Loop Guardrails
         MessageKey.TOOL_LOOP_FAILSAFE_REACHED: (
             "\n> **[Ternion]**: Tool loop reached the failsafe limit ({max_rounds}). "
@@ -1224,7 +1202,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.LOG_TOOL_LOOP_FAILSAFE_REACHED: (
             "Tool loop failsafe reached | max_rounds={max_rounds} | session_id={session_id}"
         ),
-
         MessageKey.DELIVERABLE_POLICY_BLOCKED: (
             "[Ternion] 전달물 정책으로 인해 쓰기 도구 호출이 차단되었습니다.\n"
             "전달물 유형: {deliverable_type}\n"
@@ -1253,10 +1230,14 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "[Ternion] 증거 보완 요청이 거부되었습니다: 모든 요청에는 PURPOSE 라인이 필요합니다.\n"
             "PURPOSE 누락 항목:\n{missing_items}\n"
         ),
-
+        MessageKey.EVIDENCE_TOPUP_COLLECTING: ("> **[{role}]**: 산출물을 계속 생성 중입니다...\n"),
+        MessageKey.EVIDENCE_TOPUP_COLLECTING_SECOND_ROUND: (
+            "> **[{role}]**: 산출물을 계속 생성 중입니다...\n"
+        ),
         # Discussion Output (Cursor-facing UI text)
         MessageKey.DISCUSSION_NO_OUTPUT: "[Ternion] 토론이 완료되었지만 출력이 생성되지 않았습니다.",
         MessageKey.DISCUSSION_ERRORS_HEADER: "[Ternion] 오류:\n",
+        MessageKey.DISCUSSION_WORKFLOW_ERROR: "토론 워크플로 오류: {error}",
         MessageKey.ARBITER_FALLBACKS_FAILED: "모든 중재자 폴백이 실패했습니다: {error}",
         MessageKey.EXECUTION_FAILED: "실행 실패: {error}",
         MessageKey.EXECUTION_NO_OUTPUT: "[Ternion] 실행은 완료되었지만 출력이 생성되지 않았습니다.",
@@ -1271,7 +1252,6 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         MessageKey.TOOL_POLICY_EMPTY_COMMAND: "(빈 명령)",
         MessageKey.STREAM_ERROR_GENERIC: "\n\n[Ternion] 스트리밍 중 오류가 발생했습니다. 다시 시도해 주세요.\n",
         MessageKey.STREAM_ERROR_INTERRUPTED: "\n\n[Ternion] 스트리밍이 중단되었습니다. 다시 시도해 주세요.\n",
-
         # Report Display (Cursor-facing UI text)
         MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE: "근본 원인",
         MessageKey.REPORT_SECTION_EVIDENCE_TITLE: "증거 / 로그",
@@ -1289,8 +1269,8 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "동의하지 않거나 조정이 필요하면 문제를 설명해 주세요. 다시 분석하겠습니다."
         ),
         MessageKey.REPORT_CONFIRM_PROMPT_CURSOR_HANDOFF: (
-            "\"Ternion 근본 원인 분석 + Cursor 구현\" 모드를 사용 중입니다. "
-            "위의 분석을 검토해 주세요. 올바르다면 Cursor 설정에서 \"OpenAI API Key\" 스위치를 끄고, "
+            '"Ternion 근본 원인 분석 + Cursor 구현" 모드를 사용 중입니다. '
+            '위의 분석을 검토해 주세요. 올바르다면 Cursor 설정에서 "OpenAI API Key" 스위치를 끄고, '
             "Cursor 네이티브 모델(Gemini, Claude 또는 GPT 시리즈)을 선택한 다음, 확인 응답을 보내 "
             "Cursor로 구현 인계를 진행하세요.\n"
             "동의하지 않거나 조정이 필요하면 문제를 설명해 주세요. 다시 분석하겠습니다."

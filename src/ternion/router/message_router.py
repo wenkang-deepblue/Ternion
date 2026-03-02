@@ -8,7 +8,6 @@ Note: Message assembly (phase-specific prompt injection) is handled by
 workflow/nodes.py, which is the authoritative implementation.
 """
 
-
 import structlog
 
 from ternion.core.models import (

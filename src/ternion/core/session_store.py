@@ -57,14 +57,14 @@ def _to_jsonable(value: Any) -> Any:
         return [_to_jsonable(v) for v in sorted(value, key=lambda x: str(x))]
 
     # Pydantic v2 models (e.g., TextContent/ImageContent)
-    if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+    if hasattr(value, "model_dump") and callable(value.model_dump):
         try:
             return _to_jsonable(value.model_dump())
         except Exception:
             return str(value)
 
     # Pydantic v1 compatibility
-    if hasattr(value, "dict") and callable(getattr(value, "dict")):
+    if hasattr(value, "dict") and callable(value.dict):
         try:
             return _to_jsonable(value.dict())
         except Exception:
@@ -127,6 +127,9 @@ class Session:
     cursor_tool_choice: Any | None = None
     execution_messages: list[dict[str, Any]] = field(default_factory=list)
     pending_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Step 2: When a tool_calls response contains both mutation tools and shell verification,
+    # the server may transparently split it into multiple batches without re-calling the LLM.
+    deferred_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_call_index: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_results_raw: dict[str, str] = field(default_factory=dict)
     tool_results_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -157,6 +160,9 @@ class Session:
     # Valid values: "execution", "optimizer", or empty (default report-stage behavior).
     report_evidence_resume_phase: str = ""
     ternion_analyses: list[dict[str, Any]] = field(default_factory=list)
+    # Traceability: key guardrail events and external output pointers (append-only).
+    guardrail_events: list[dict[str, Any]] = field(default_factory=list)
+    external_outputs_index: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def ternion_report(self) -> str:
@@ -184,6 +190,7 @@ class Session:
         # Backward compatibility: migrate old single-field format to dual-field
         if "ternion_report_raw" not in data and "ternion_report" in data:
             from ternion.utils.cursor_safety import sanitize_for_cursor_display
+
             raw_report = data.pop("ternion_report")
             data["ternion_report_raw"] = raw_report
             data["ternion_report_safe"] = sanitize_for_cursor_display(raw_report)
@@ -193,8 +200,37 @@ class Session:
         data.setdefault("report_evidence_resume_phase", "")
         data.setdefault("tool_call_index", {})
         data.setdefault("tool_loop_pre_git_status", {})
+        data.setdefault("deferred_tool_calls", [])
+        data.setdefault("guardrail_events", [])
+        data.setdefault("external_outputs_index", [])
 
         return cls(**data)
+
+
+_MAX_GUARDRAIL_EVENTS = 200
+_MAX_EXTERNAL_OUTPUTS_INDEX = 200
+
+
+def _now_iso_z() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _append_capped(
+    items: list[dict[str, Any]],
+    new_items: list[dict[str, Any]],
+    *,
+    max_items: int,
+) -> list[dict[str, Any]]:
+    if not new_items:
+        return items
+    merged = list(items or [])
+    for item in new_items:
+        if not isinstance(item, dict):
+            continue
+        merged.append(item)
+    if len(merged) > max_items:
+        merged = merged[-max_items:]
+    return merged
 
 
 def generate_session_id() -> str:
@@ -314,6 +350,7 @@ class SessionStore:
         cursor_tool_choice: Any | None = None,
         execution_messages: list[dict[str, Any]] | None = None,
         pending_tool_calls: list[dict[str, Any]] | None = None,
+        deferred_tool_calls: list[dict[str, Any]] | None = None,
         tool_call_index: dict[str, dict[str, Any]] | None = None,
         tool_results_raw: dict[str, str] | None = None,
         tool_results_meta: dict[str, dict[str, Any]] | None = None,
@@ -380,6 +417,7 @@ class SessionStore:
             cursor_tool_choice=cursor_tool_choice,
             execution_messages=list(execution_messages or []),
             pending_tool_calls=pending_calls,
+            deferred_tool_calls=list(deferred_tool_calls or []),
             tool_call_index=dict(tool_call_index or {}),
             tool_results_raw=dict(tool_results_raw or {}),
             tool_results_meta=dict(tool_results_meta or {}),
@@ -473,6 +511,7 @@ class SessionStore:
         cursor_tool_choice: Any | None = None,
         execution_messages: list[dict[str, Any]] | None = None,
         pending_tool_calls: list[dict[str, Any]] | None = None,
+        deferred_tool_calls: list[dict[str, Any]] | None = None,
         tool_call_index: dict[str, dict[str, Any]] | None = None,
         tool_results_raw: dict[str, str] | None = None,
         tool_results_meta: dict[str, dict[str, Any]] | None = None,
@@ -496,6 +535,8 @@ class SessionStore:
         evidence_topup_round: int | None = None,
         report_evidence_resume_phase: str | None = None,
         ternion_analyses: list[dict[str, Any]] | None = None,
+        append_guardrail_events: list[dict[str, Any]] | None = None,
+        append_external_outputs_index: list[dict[str, Any]] | None = None,
     ) -> Session | None:
         """
         Update a session with new values.
@@ -545,6 +586,8 @@ class SessionStore:
             session.execution_messages = execution_messages
         if pending_tool_calls is not None:
             session.pending_tool_calls = pending_tool_calls
+        if deferred_tool_calls is not None:
+            session.deferred_tool_calls = deferred_tool_calls
         if tool_results_raw is not None:
             session.tool_results_raw = tool_results_raw
         if tool_results_meta is not None:
@@ -589,6 +632,38 @@ class SessionStore:
             session.report_evidence_resume_phase = str(report_evidence_resume_phase or "")
         if ternion_analyses is not None:
             session.ternion_analyses = ternion_analyses
+
+        if append_guardrail_events:
+            normalized: list[dict[str, Any]] = []
+            for event in append_guardrail_events:
+                if not isinstance(event, dict):
+                    continue
+                item = dict(event)
+                item.setdefault("ts", _now_iso_z())
+                item.setdefault("phase", str(session.workflow_phase or ""))
+                normalized.append(item)
+            if normalized:
+                session.guardrail_events = _append_capped(
+                    list(getattr(session, "guardrail_events", []) or []),
+                    normalized,
+                    max_items=_MAX_GUARDRAIL_EVENTS,
+                )
+
+        if append_external_outputs_index:
+            normalized_out: list[dict[str, Any]] = []
+            for entry in append_external_outputs_index:
+                if not isinstance(entry, dict):
+                    continue
+                item = dict(entry)
+                item.setdefault("ts", _now_iso_z())
+                item.setdefault("phase", str(session.workflow_phase or ""))
+                normalized_out.append(item)
+            if normalized_out:
+                session.external_outputs_index = _append_capped(
+                    list(getattr(session, "external_outputs_index", []) or []),
+                    normalized_out,
+                    max_items=_MAX_EXTERNAL_OUTPUTS_INDEX,
+                )
 
         if tool_call_index is not None:
             session.tool_call_index = tool_call_index
@@ -676,9 +751,7 @@ class SessionStore:
             session = self.load_session(path.stem)
             if session is not None:
                 try:
-                    created = datetime.fromisoformat(
-                        session.created_at.replace("Z", "+00:00")
-                    )
+                    created = datetime.fromisoformat(session.created_at.replace("Z", "+00:00"))
                     if created.replace(tzinfo=None) < cutoff:
                         self.delete_session(session.session_id)
                         deleted += 1

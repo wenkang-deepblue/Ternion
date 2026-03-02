@@ -203,14 +203,10 @@ async def add_api_key(request: AddApiKeyRequest) -> dict:
     provider_manager.reload()
 
     log_manager.emit(
-        "INFO",
-        "USER_ACTION",
-        f'API Key saved: {provider_display} (key name: "{request.name}")'
+        "INFO", "USER_ACTION", f'API Key saved: {provider_display} (key name: "{request.name}")'
     )
     log_manager.emit(
-        "INFO",
-        "USER_ACTION",
-        f'Config saved to: [file]{config_store.config_path}[/file]'
+        "INFO", "USER_ACTION", f"Config saved to: [file]{config_store.config_path}[/file]"
     )
 
     return {
@@ -243,9 +239,7 @@ async def delete_api_key(request: DeleteApiKeyRequest) -> dict:
 
     # Find and remove the key
     original_count = len(provider_config.api_keys)
-    provider_config.api_keys = [
-        k for k in provider_config.api_keys if k.id != request.key_id
-    ]
+    provider_config.api_keys = [k for k in provider_config.api_keys if k.id != request.key_id]
 
     if len(provider_config.api_keys) == original_count:
         raise HTTPException(status_code=404, detail="API_KEY_NOT_FOUND")
@@ -264,9 +258,7 @@ async def delete_api_key(request: DeleteApiKeyRequest) -> dict:
     provider_manager.reload()
 
     log_manager.emit(
-        "WARN",
-        "USER_ACTION",
-        f'API Key deleted: {provider_display} (key name: "{key_name}")'
+        "WARN", "USER_ACTION", f'API Key deleted: {provider_display} (key name: "{key_name}")'
     )
 
     return {"success": True, "config": config_store.to_safe_dict()}
@@ -306,9 +298,7 @@ async def select_api_key(request: SelectApiKeyRequest) -> dict:
     provider_manager.reload()
 
     log_manager.emit(
-        "INFO",
-        "USER_ACTION",
-        f'API Key selected: {provider_display} (key name: "{key_name}")'
+        "INFO", "USER_ACTION", f'API Key selected: {provider_display} (key name: "{key_name}")'
     )
 
     return {
@@ -400,9 +390,7 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
         budget_changed = False
         if request.budget.monthly_limit_usd is not None:
             if request.budget.monthly_limit_usd <= 0:
-                raise HTTPException(
-                    status_code=400, detail="INVALID_BUDGET_LIMIT"
-                )
+                raise HTTPException(status_code=400, detail="INVALID_BUDGET_LIMIT")
             config.budget.monthly_limit_usd = request.budget.monthly_limit_usd
             budget_changed = True
         if request.budget.alert_threshold is not None:
@@ -419,7 +407,7 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
             log_manager.emit(
                 "INFO",
                 "USER_ACTION",
-                f"Budget updated: Limit=${config.budget.monthly_limit_usd}, Alert={threshold_pct}%"
+                f"Budget updated: Limit=${config.budget.monthly_limit_usd}, Alert={threshold_pct}%",
             )
 
             # Sync active budget manager settings
@@ -433,7 +421,11 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
         old_mode = config.execution_mode
         config.execution_mode = request.execution_mode
         if old_mode != request.execution_mode:
-            mode_display = "Ternion + Cursor" if request.execution_mode == "cursor_handoff" else "All in Ternion"
+            mode_display = (
+                "Ternion + Cursor"
+                if request.execution_mode == "cursor_handoff"
+                else "All in Ternion"
+            )
             log_manager.emit(
                 "INFO",
                 "USER_ACTION",
@@ -494,9 +486,7 @@ async def log_execution_mode_selection(request: ExecutionModeSelectionLogRequest
         raise HTTPException(status_code=400, detail="INVALID_EXECUTION_MODE")
 
     mode_display = (
-        "Ternion + Cursor"
-        if request.execution_mode == "cursor_handoff"
-        else "All in Ternion"
+        "Ternion + Cursor" if request.execution_mode == "cursor_handoff" else "All in Ternion"
     )
     log_manager.emit(
         "INFO",
@@ -579,13 +569,28 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
         # Redact any secrets that might be in error messages (CR-027)
         safe_error_msg = redact_secrets(error_msg)
         error_lower = error_msg.lower()
-        auth_keywords = ["invalid", "unauthorized", "not valid", "api_key_invalid", "authentication", "incorrect"]
+        auth_keywords = [
+            "invalid",
+            "unauthorized",
+            "not valid",
+            "api_key_invalid",
+            "authentication",
+            "incorrect",
+        ]
         if any(kw in error_lower for kw in auth_keywords):
-            log_manager.emit("ERROR", "USER_ACTION", f"API Key test failed: {provider_display} - {safe_error_msg[:2000]}")
+            log_manager.emit(
+                "ERROR",
+                "USER_ACTION",
+                f"API Key test failed: {provider_display} - {safe_error_msg[:2000]}",
+            )
             return TestProviderResponse(
                 success=False, message=safe_error_msg[:100], code="AUTH_ERROR"
             )
-        log_manager.emit("ERROR", "USER_ACTION", f"API Key test failed: {provider_display} - {safe_error_msg[:2000]}")
+        log_manager.emit(
+            "ERROR",
+            "USER_ACTION",
+            f"API Key test failed: {provider_display} - {safe_error_msg[:2000]}",
+        )
         return TestProviderResponse(
             success=False, message=safe_error_msg[:100], code="CONNECTION_ERROR"
         )
@@ -650,7 +655,15 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
         config.show_phase_indicators = request.show_phase_indicators
 
     # Store browser-detected language (used when language="auto")
-    if request.browser_language is not None and request.browser_language in ("en", "zh", "es", "fr", "de", "ja", "ko"):
+    if request.browser_language is not None and request.browser_language in (
+        "en",
+        "zh",
+        "es",
+        "fr",
+        "de",
+        "ja",
+        "ko",
+    ):
         config.browser_language = request.browser_language
         logger.debug("browser_language_updated", browser_language=request.browser_language)
 
@@ -701,10 +714,7 @@ async def update_ports(request: PortsUpdateRequest) -> dict:
     # Validate port range (1024-65535)
     def validate_port(port: int, name: str) -> None:
         if port < 1024 or port > 65535:
-            raise HTTPException(
-                status_code=400,
-                detail=f"INVALID_PORT_{name.upper()}"
-            )
+            raise HTTPException(status_code=400, detail=f"INVALID_PORT_{name.upper()}")
 
     if request.backend is not None:
         validate_port(request.backend, "backend")
@@ -719,7 +729,7 @@ async def update_ports(request: PortsUpdateRequest) -> dict:
     log_manager.emit(
         "INFO",
         "USER_ACTION",
-        f"Port configuration saved: backend={config.ports.backend}, web={config.ports.web}"
+        f"Port configuration saved: backend={config.ports.backend}, web={config.ports.web}",
     )
 
     return {
@@ -729,7 +739,7 @@ async def update_ports(request: PortsUpdateRequest) -> dict:
             "web": config.ports.web,
         },
         "restart_required": True,
-        "message": "Port configuration saved. Restart server to apply changes.",
+        "message": "PORTS_SAVED_RESTART_REQUIRED",
     }
 
 
@@ -845,6 +855,7 @@ async def reveal_file(request: RevealFileRequest) -> dict:
 async def _log_event_generator(queue: asyncio.Queue) -> AsyncGenerator[str, None]:
     """Generate SSE events from log queue."""
     import json
+
     try:
         # Send initial history
         for entry in log_manager.get_history():

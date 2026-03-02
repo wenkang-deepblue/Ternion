@@ -123,8 +123,8 @@ class GoogleProvider(BaseProvider):
         # For now, check if it exists or default to 0
         thoughts_tokens = 0  # New SDK standardization pending on this field
         if usage_metadata:
-             # Try getting it safely if it exists in schema
-             thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
+            # Try getting it safely if it exists in schema
+            thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
 
         total_tokens = (usage_metadata.total_token_count or 0) if usage_metadata else 0
         output_tokens = candidates_tokens + thoughts_tokens
@@ -219,7 +219,9 @@ class GoogleProvider(BaseProvider):
         if last_chunk and hasattr(last_chunk, "usage_metadata") and last_chunk.usage_metadata:
             usage_metadata = last_chunk.usage_metadata
             prompt_tokens = (usage_metadata.prompt_token_count or 0) if usage_metadata else 0
-            candidates_tokens = (usage_metadata.candidates_token_count or 0) if usage_metadata else 0
+            candidates_tokens = (
+                (usage_metadata.candidates_token_count or 0) if usage_metadata else 0
+            )
             thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
             total_tokens = (usage_metadata.total_token_count or 0) if usage_metadata else 0
             output_tokens = candidates_tokens + thoughts_tokens
@@ -294,14 +296,12 @@ class GoogleProvider(BaseProvider):
             # Async pager logic:
             async for _ in pager:
                 return True
-            return False # Empty list
+            return False  # Empty list
         except Exception as e:
             logger.warning("google_unavailable", error=str(e))
             return False
 
-    def _convert_messages(
-        self, messages: list[ChatMessage]
-    ) -> tuple[str, list[dict[str, Any]]]:
+    def _convert_messages(self, messages: list[ChatMessage]) -> tuple[str, list[dict[str, Any]]]:
         """
         Convert ChatMessage objects to Google Gemini format (new SDK).
 
@@ -331,10 +331,12 @@ class GoogleProvider(BaseProvider):
             role = "user" if msg.role == MessageRole.USER else "model"
             parts = self._convert_content_to_parts(msg.content)
 
-            contents.append({
-                "role": role,
-                "parts": parts,
-            })
+            contents.append(
+                {
+                    "role": role,
+                    "parts": parts,
+                }
+            )
 
         return system_instruction, contents
 
@@ -360,12 +362,14 @@ class GoogleProvider(BaseProvider):
                 elif isinstance(part, ImageContent):
                     image_data = self._extract_image_data(part.image_url.url)
                     if image_data:
-                        parts.append({
-                            "inline_data": {
-                                "mime_type": image_data["mime_type"],
-                                "data": image_data["data"],
+                        parts.append(
+                            {
+                                "inline_data": {
+                                    "mime_type": image_data["mime_type"],
+                                    "data": image_data["data"],
+                                }
                             }
-                        })
+                        )
             return parts
 
         return [{"text": str(content) if content else ""}]

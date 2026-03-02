@@ -9,6 +9,7 @@ from typing import Any
 
 import structlog
 from langgraph.graph import END, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from ternion.core.models import MessageRole
 from ternion.router.context import TernionContext
@@ -62,12 +63,18 @@ def should_continue_after_report_evidence(state: TernionState) -> str:
     Determine next step after Phase 1.5 report evidence collection.
 
     If tool calls are pending or errors occurred, stop and await tool results.
-    Otherwise, proceed to convergence.
+    Otherwise, route by the phase selected by report_evidence_node.
     """
     if state.get("pending_tool_calls"):
         return END
     if state.get("errors"):
         return END
+
+    phase = str(state.get("current_phase", "") or "").strip().lower()
+    if phase == WorkflowPhase.EXECUTION.value:
+        return "execution"
+    if phase == WorkflowPhase.OPTIMIZER.value:
+        return "optimizer"
     return "convergence"
 
 
@@ -75,26 +82,29 @@ def should_continue_after_execution(state: TernionState) -> str:
     """
     Determine next step after execution.
 
-    Only proceed to optimizer if execution succeeded and advanced the workflow.
+    Execution may continue to optimizer or request Phase 1.5 evidence top-up.
     """
-    phase = state.get("current_phase", "")
+    phase = str(state.get("current_phase", "") or "").strip().lower()
+    if phase == WorkflowPhase.REPORT_EVIDENCE.value:
+        return "report_evidence"
     if phase == WorkflowPhase.OPTIMIZER.value:
         return "optimizer"
     return END
 
 
-def should_continue_after_optimizer(_state: TernionState) -> str:
+def should_continue_after_optimizer(state: TernionState) -> str:
     """
     Determine next step after optimizer.
 
-    The optimizer may emit tool calls (phase remains OPTIMIZER) or complete.
-    In both cases, the LangGraph workflow should stop and let the server route
-    any follow-ups via the tool-loop session.
+    Optimizer may request Phase 1.5 evidence top-up before finalizing.
     """
+    phase = str(state.get("current_phase", "") or "").strip().lower()
+    if phase == WorkflowPhase.REPORT_EVIDENCE.value:
+        return "report_evidence"
     return END
 
 
-def create_workflow(*, entry_point: str = "evidence") -> StateGraph:
+def create_workflow(*, entry_point: str = "evidence") -> CompiledStateGraph:
     """
     Create the Ternion discussion workflow graph.
 
@@ -151,6 +161,8 @@ def create_workflow(*, entry_point: str = "evidence") -> StateGraph:
         should_continue_after_report_evidence,
         {
             "convergence": "convergence",
+            "execution": "execution",
+            "optimizer": "optimizer",
             END: END,
         },
     )
@@ -167,6 +179,7 @@ def create_workflow(*, entry_point: str = "evidence") -> StateGraph:
         "execution",
         should_continue_after_execution,
         {
+            "report_evidence": "report_evidence",
             "optimizer": "optimizer",
             END: END,
         },
@@ -175,19 +188,20 @@ def create_workflow(*, entry_point: str = "evidence") -> StateGraph:
         "optimizer",
         should_continue_after_optimizer,
         {
+            "report_evidence": "report_evidence",
             END: END,
         },
     )
 
-    return workflow.compile()  # type: ignore[return-value]
+    return workflow.compile()
 
 
 # Global compiled workflow
-_workflow = None
-_report_evidence_workflow = None
+_workflow: CompiledStateGraph | None = None
+_report_evidence_workflow: CompiledStateGraph | None = None
 
 
-def get_workflow() -> StateGraph:
+def get_workflow() -> CompiledStateGraph:
     """Get or create the compiled workflow."""
     global _workflow
     if _workflow is None:
@@ -195,7 +209,7 @@ def get_workflow() -> StateGraph:
     return _workflow
 
 
-def get_report_evidence_workflow() -> StateGraph:
+def get_report_evidence_workflow() -> CompiledStateGraph:
     """Get or create the compiled workflow starting from Phase 1.5."""
     global _report_evidence_workflow
     if _report_evidence_workflow is None:
@@ -223,7 +237,8 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
     initial_state: TernionState = {
         "cursor_system_prompt": (
             context.cursor_system_prompt.content
-            if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str)
+            if context.cursor_system_prompt
+            and isinstance(context.cursor_system_prompt.content, str)
             else None
         ),
         "conversation_history": [
@@ -235,7 +250,8 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
                 "tool_call_id": msg.tool_call_id,
             }
             for msg in context.conversation_history
-            if msg.role != MessageRole.SYSTEM and (
+            if msg.role != MessageRole.SYSTEM
+            and (
                 msg.content is not None
                 or msg.tool_calls is not None
                 or msg.tool_call_id is not None
@@ -245,7 +261,9 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         "current_phase": WorkflowPhase.EVIDENCE.value,
         # Session management (Human-in-the-Loop)
         "session_id": getattr(context, "session_id", ""),
-        "await_confirmation": getattr(context, "await_confirmation", True),  # Default: require confirmation
+        "await_confirmation": getattr(
+            context, "await_confirmation", True
+        ),  # Default: require confirmation
         "execution_mode": getattr(context, "execution_mode", ""),
         "rejection_context": getattr(context, "rejection_context", ""),
         # Streaming event queue (for real-time output)
@@ -277,7 +295,7 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
 
     # Run the workflow
     workflow = get_workflow()
-    final_state = await workflow.ainvoke(initial_state)  # type: ignore[attr-defined]
+    final_state = await workflow.ainvoke(initial_state)
 
     logger.info(
         "discussion_complete",
@@ -297,6 +315,9 @@ async def resume_report_evidence(
     evidence_gaps: str,
     evidence_requests: str,
     ternion_analyses: list[dict[str, Any]],
+    evidence_chain_index: list[dict[str, Any]] | None = None,
+    evidence_topup_round: int = 0,
+    report_evidence_resume_phase: str = "",
 ) -> dict[str, Any]:
     """
     Resume workflow from report_evidence phase (Phase 1.5) with preserved state.
@@ -310,6 +331,9 @@ async def resume_report_evidence(
         evidence_gaps: Preserved evidence gaps from Phase 0
         evidence_requests: Council member evidence requests from Phase 1
         ternion_analyses: Council analyses from Phase 1
+        evidence_chain_index: Preserved evidence request satisfaction index
+        evidence_topup_round: Number of top-up rounds already used
+        report_evidence_resume_phase: Target phase after report_evidence
 
     Returns:
         Final state with generated output
@@ -325,7 +349,8 @@ async def resume_report_evidence(
     resume_state: TernionState = {
         "cursor_system_prompt": (
             context.cursor_system_prompt.content
-            if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str)
+            if context.cursor_system_prompt
+            and isinstance(context.cursor_system_prompt.content, str)
             else None
         ),
         "conversation_history": [
@@ -337,7 +362,8 @@ async def resume_report_evidence(
                 "tool_call_id": msg.tool_call_id,
             }
             for msg in context.conversation_history
-            if msg.role != MessageRole.SYSTEM and (
+            if msg.role != MessageRole.SYSTEM
+            and (
                 msg.content is not None
                 or msg.tool_calls is not None
                 or msg.tool_call_id is not None
@@ -359,7 +385,9 @@ async def resume_report_evidence(
         "evidence_bundle": evidence_bundle,
         "evidence_gaps": evidence_gaps,
         "evidence_requests": evidence_requests,
-        "evidence_chain_index": [],
+        "evidence_chain_index": list(evidence_chain_index or []),
+        "evidence_topup_round": int(evidence_topup_round or 0),
+        "report_evidence_resume_phase": str(report_evidence_resume_phase or ""),
         "ternion_analyses": ternion_analyses,
         # Workflow outputs (initialized)
         "is_consensus": False,
@@ -393,4 +421,3 @@ async def resume_report_evidence(
     )
 
     return final_state
-

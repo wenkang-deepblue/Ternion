@@ -184,7 +184,7 @@ export function ExecutionModeSelector({
     } catch {
       // ignore logging errors
     }
-  }, [savedMode, isPendingSave, onLogMessage, t]);
+  }, [savedMode, isPendingSave, onLogMessage]);
 
   const handleSave = useCallback(async () => {
     if (!selectedMode || selectedMode === savedMode) return;
@@ -203,7 +203,7 @@ export function ExecutionModeSelector({
     } finally {
       setIsSaving(false);
     }
-  }, [selectedMode, savedMode, onConfigUpdate, onLogMessage, t]);
+  }, [selectedMode, savedMode, onConfigUpdate, onLogMessage]);
 
   // Click outside -> cancel pending selection (do not change saved state)
   useEffect(() => {

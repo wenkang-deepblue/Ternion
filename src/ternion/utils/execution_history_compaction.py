@@ -136,7 +136,9 @@ def _build_tool_context_digest(
     # Group by tool for readability.
     by_tool: dict[str, list[tuple[str, dict[str, Any], str]]] = {}
     for tool_call_id, name, parsed_args, result_summary in tool_results:
-        by_tool.setdefault(name or "(unknown)", []).append((tool_call_id, parsed_args, result_summary))
+        by_tool.setdefault(name or "(unknown)", []).append(
+            (tool_call_id, parsed_args, result_summary)
+        )
 
     # Keep substantially more than the last 10 calls/tool. In long loops,
     # retaining only 10 makes the Writer re-read the same files repeatedly.
@@ -148,7 +150,9 @@ def _build_tool_context_digest(
         for tool_call_id, parsed_args, result_summary in shown:
             args_preview = _format_args_preview(parsed_args, max_len=cfg.max_args_chars)
             if result_summary:
-                lines.append(f"  - {tool_call_id}: args={args_preview} | result={result_summary}".rstrip())
+                lines.append(
+                    f"  - {tool_call_id}: args={args_preview} | result={result_summary}".rstrip()
+                )
             else:
                 lines.append(f"  - {tool_call_id}: args={args_preview}".rstrip())
         if len(items) > max_calls_per_tool:
@@ -310,4 +314,3 @@ def _summarize_tool_content(text: str, *, max_len: int) -> str:
     summary = " | ".join(lines)
     summary = re.sub(r"\s+", " ", summary).strip()
     return _truncate_text(summary, max_len)
-

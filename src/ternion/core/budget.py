@@ -56,8 +56,8 @@ MODEL_PRICING = {
 GEMINI_PRICING = {
     "gemini-3-pro-preview": {
         "context_threshold": 200000,  # 200K tokens
-        "input_standard": 2.0 / 1000,   # <=200K
-        "input_extended": 4.0 / 1000,   # >200K
+        "input_standard": 2.0 / 1000,  # <=200K
+        "input_extended": 4.0 / 1000,  # >200K
         "output_standard": 12.0 / 1000,
         "output_extended": 18.0 / 1000,
     },
@@ -470,10 +470,9 @@ class BudgetManager:
             else:
                 # Flash models
                 text_tokens = input_tokens - audio_input_tokens
-                input_cost = (
-                    (text_tokens / 1000) * pricing["input_text"]
-                    + (audio_input_tokens / 1000) * pricing["input_audio"]
-                )
+                input_cost = (text_tokens / 1000) * pricing["input_text"] + (
+                    audio_input_tokens / 1000
+                ) * pricing["input_audio"]
                 output_cost = ((output_tokens - thoughts_tokens) / 1000) * pricing["output"]
                 thoughts_cost = (thoughts_tokens / 1000) * pricing["output"]
         else:
@@ -578,12 +577,10 @@ class BudgetManager:
             "total_cost_usd": round(monthly_cost, 4),
             "request_count": today_requests,
             "monthly_limit_usd": self.settings.monthly_limit_usd,
-            "remaining_usd": round(
-                self.settings.monthly_limit_usd - monthly_cost, 4
-            ),
-            "usage_pct": round(
-                (monthly_cost / self.settings.monthly_limit_usd) * 100, 1
-            ) if self.settings.monthly_limit_usd > 0 else 0,
+            "remaining_usd": round(self.settings.monthly_limit_usd - monthly_cost, 4),
+            "usage_pct": round((monthly_cost / self.settings.monthly_limit_usd) * 100, 1)
+            if self.settings.monthly_limit_usd > 0
+            else 0,
             "provider_costs": {k: round(v, 4) for k, v in provider_costs.items()},
         }
 
@@ -673,7 +670,9 @@ class BudgetManager:
                     if prov in provider_details:
                         provider_details[prov]["input_tokens"] += prov_data.get("input_tokens", 0)
                         provider_details[prov]["output_tokens"] += prov_data.get("output_tokens", 0)
-                        provider_details[prov]["thoughts_tokens"] += prov_data.get("thoughts_tokens", 0)
+                        provider_details[prov]["thoughts_tokens"] += prov_data.get(
+                            "thoughts_tokens", 0
+                        )
                         # Aggregate cost fields with fallback for legacy data
                         prov_input_cost = prov_data.get("input_cost", 0)
                         prov_output_cost = prov_data.get("output_cost", 0)
@@ -689,9 +688,7 @@ class BudgetManager:
         # Build daily_data for charts (ALL data, frontend will filter)
         daily_data = []
         for summary in self._store.daily_summaries:
-            day_input = sum(
-                p.get("input_tokens", 0) for p in summary.get("providers", {}).values()
-            )
+            day_input = sum(p.get("input_tokens", 0) for p in summary.get("providers", {}).values())
             day_output = sum(
                 p.get("output_tokens", 0) for p in summary.get("providers", {}).values()
             )
@@ -711,15 +708,21 @@ class BudgetManager:
                 # If no separate costs, fall back to combined cost distributed by token ratio
                 if prov_input_cost == 0 and prov_output_cost == 0 and prov_thoughts_cost == 0:
                     total_tokens = (
-                        prov_data.get("input_tokens", 0) +
-                        prov_data.get("output_tokens", 0) +
-                        prov_data.get("thoughts_tokens", 0)
+                        prov_data.get("input_tokens", 0)
+                        + prov_data.get("output_tokens", 0)
+                        + prov_data.get("thoughts_tokens", 0)
                     )
                     if total_tokens > 0:
                         total_cost = prov_data.get("cost", 0)
-                        prov_input_cost = total_cost * prov_data.get("input_tokens", 0) / total_tokens
-                        prov_output_cost = total_cost * prov_data.get("output_tokens", 0) / total_tokens
-                        prov_thoughts_cost = total_cost * prov_data.get("thoughts_tokens", 0) / total_tokens
+                        prov_input_cost = (
+                            total_cost * prov_data.get("input_tokens", 0) / total_tokens
+                        )
+                        prov_output_cost = (
+                            total_cost * prov_data.get("output_tokens", 0) / total_tokens
+                        )
+                        prov_thoughts_cost = (
+                            total_cost * prov_data.get("thoughts_tokens", 0) / total_tokens
+                        )
 
                 providers[prov] = {
                     "input_tokens": prov_data.get("input_tokens", 0),
@@ -733,17 +736,19 @@ class BudgetManager:
                 day_output_cost += prov_output_cost
                 day_thoughts_cost += prov_thoughts_cost
 
-            daily_data.append({
-                "date": summary.get("date"),
-                "cost": round(summary.get("total_cost", 0), 4),
-                "input_cost": round(day_input_cost, 4),
-                "output_cost": round(day_output_cost, 4),
-                "thoughts_cost": round(day_thoughts_cost, 4),
-                "input_tokens": day_input,
-                "output_tokens": day_output,
-                "thoughts_tokens": day_thoughts,
-                "providers": providers,
-            })
+            daily_data.append(
+                {
+                    "date": summary.get("date"),
+                    "cost": round(summary.get("total_cost", 0), 4),
+                    "input_cost": round(day_input_cost, 4),
+                    "output_cost": round(day_output_cost, 4),
+                    "thoughts_cost": round(day_thoughts_cost, 4),
+                    "input_tokens": day_input,
+                    "output_tokens": day_output,
+                    "thoughts_tokens": day_thoughts,
+                    "providers": providers,
+                }
+            )
 
         # Add today's data
         if self._store.today_records:
@@ -754,16 +759,18 @@ class BudgetManager:
             today_input = sum(r.get("input_tokens", 0) for r in self._store.today_records)
             today_output = sum(r.get("output_tokens", 0) for r in self._store.today_records)
             today_thoughts = sum(r.get("thoughts_tokens", 0) for r in self._store.today_records)
-            daily_data.append({
-                "date": self._store.today,
-                "cost": round(today_cost, 4),
-                "input_cost": round(today_input_cost, 4),
-                "output_cost": round(today_output_cost, 4),
-                "thoughts_cost": round(today_thoughts_cost, 4),
-                "input_tokens": today_input,
-                "output_tokens": today_output,
-                "thoughts_tokens": today_thoughts,
-            })
+            daily_data.append(
+                {
+                    "date": self._store.today,
+                    "cost": round(today_cost, 4),
+                    "input_cost": round(today_input_cost, 4),
+                    "output_cost": round(today_output_cost, 4),
+                    "thoughts_cost": round(today_thoughts_cost, 4),
+                    "input_tokens": today_input,
+                    "output_tokens": today_output,
+                    "thoughts_tokens": today_thoughts,
+                }
+            )
 
         # Sort daily data by date
         daily_data.sort(key=lambda x: x["date"])
@@ -778,22 +785,38 @@ class BudgetManager:
             for prov, prov_data in summary.get("providers", {}).items():
                 if prov not in monthly_providers[month_key]:
                     monthly_providers[month_key][prov] = {
-                        "input_tokens": 0, "output_tokens": 0, "thoughts_tokens": 0,
-                        "input_cost": 0.0, "output_cost": 0.0, "thoughts_cost": 0.0
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "thoughts_tokens": 0,
+                        "input_cost": 0.0,
+                        "output_cost": 0.0,
+                        "thoughts_cost": 0.0,
                     }
-                monthly_providers[month_key][prov]["input_tokens"] += prov_data.get("input_tokens", 0)
-                monthly_providers[month_key][prov]["output_tokens"] += prov_data.get("output_tokens", 0)
-                monthly_providers[month_key][prov]["thoughts_tokens"] += prov_data.get("thoughts_tokens", 0)
+                monthly_providers[month_key][prov]["input_tokens"] += prov_data.get(
+                    "input_tokens", 0
+                )
+                monthly_providers[month_key][prov]["output_tokens"] += prov_data.get(
+                    "output_tokens", 0
+                )
+                monthly_providers[month_key][prov]["thoughts_tokens"] += prov_data.get(
+                    "thoughts_tokens", 0
+                )
                 monthly_providers[month_key][prov]["input_cost"] += prov_data.get("input_cost", 0)
                 monthly_providers[month_key][prov]["output_cost"] += prov_data.get("output_cost", 0)
-                monthly_providers[month_key][prov]["thoughts_cost"] += prov_data.get("thoughts_cost", 0)
+                monthly_providers[month_key][prov]["thoughts_cost"] += prov_data.get(
+                    "thoughts_cost", 0
+                )
 
         # Aggregate monthly totals for separate costs
         monthly_costs: dict[str, dict] = {}
         for summary in self._store.daily_summaries:
             month_key = summary.get("date", "")[:7]
             if month_key not in monthly_costs:
-                monthly_costs[month_key] = {"input_cost": 0.0, "output_cost": 0.0, "thoughts_cost": 0.0}
+                monthly_costs[month_key] = {
+                    "input_cost": 0.0,
+                    "output_cost": 0.0,
+                    "thoughts_cost": 0.0,
+                }
             for prov_data in summary.get("providers", {}).values():
                 monthly_costs[month_key]["input_cost"] += prov_data.get("input_cost", 0)
                 monthly_costs[month_key]["output_cost"] += prov_data.get("output_cost", 0)
@@ -801,18 +824,22 @@ class BudgetManager:
 
         monthly_data = []
         for month_key, totals in self._store.monthly_totals.items():
-            costs = monthly_costs.get(month_key, {"input_cost": 0, "output_cost": 0, "thoughts_cost": 0})
-            monthly_data.append({
-                "month": month_key,
-                "cost": round(totals.get("total_cost", 0), 4),
-                "input_cost": round(costs["input_cost"], 4),
-                "output_cost": round(costs["output_cost"], 4),
-                "thoughts_cost": round(costs["thoughts_cost"], 4),
-                "input_tokens": totals.get("input_tokens", 0),
-                "output_tokens": totals.get("output_tokens", 0),
-                "thoughts_tokens": totals.get("thoughts_tokens", 0),
-                "providers": monthly_providers.get(month_key, {}),
-            })
+            costs = monthly_costs.get(
+                month_key, {"input_cost": 0, "output_cost": 0, "thoughts_cost": 0}
+            )
+            monthly_data.append(
+                {
+                    "month": month_key,
+                    "cost": round(totals.get("total_cost", 0), 4),
+                    "input_cost": round(costs["input_cost"], 4),
+                    "output_cost": round(costs["output_cost"], 4),
+                    "thoughts_cost": round(costs["thoughts_cost"], 4),
+                    "input_tokens": totals.get("input_tokens", 0),
+                    "output_tokens": totals.get("output_tokens", 0),
+                    "thoughts_tokens": totals.get("thoughts_tokens", 0),
+                    "providers": monthly_providers.get(month_key, {}),
+                }
+            )
 
         # Sort monthly data by month
         monthly_data.sort(key=lambda x: x["month"])
@@ -833,27 +860,29 @@ class BudgetManager:
 
         # Merge with base summary
         base_summary = self.get_usage_summary()
-        base_summary.update({
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "thoughts_tokens": thoughts_tokens,
-            "provider_details": {
-                k: {
-                    "cost": round(v["cost"], 4),
-                    "input_tokens": v["input_tokens"],
-                    "output_tokens": v["output_tokens"],
-                    "thoughts_tokens": v.get("thoughts_tokens", 0),
-                    "input_cost": round(v.get("input_cost", 0), 4),
-                    "output_cost": round(v.get("output_cost", 0), 4),
-                    "thoughts_cost": round(v.get("thoughts_cost", 0), 4),
-                }
-                for k, v in provider_details.items()
-            },
-            "daily_data": daily_data,
-            "monthly_data": monthly_data,
-            "available_months": available_months,
-            "available_years": available_years,
-        })
+        base_summary.update(
+            {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "thoughts_tokens": thoughts_tokens,
+                "provider_details": {
+                    k: {
+                        "cost": round(v["cost"], 4),
+                        "input_tokens": v["input_tokens"],
+                        "output_tokens": v["output_tokens"],
+                        "thoughts_tokens": v.get("thoughts_tokens", 0),
+                        "input_cost": round(v.get("input_cost", 0), 4),
+                        "output_cost": round(v.get("output_cost", 0), 4),
+                        "thoughts_cost": round(v.get("thoughts_cost", 0), 4),
+                    }
+                    for k, v in provider_details.items()
+                },
+                "daily_data": daily_data,
+                "monthly_data": monthly_data,
+                "available_months": available_months,
+                "available_years": available_years,
+            }
+        )
 
         return base_summary
 

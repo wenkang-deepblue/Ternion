@@ -245,16 +245,18 @@ def _compact_generic(
     ]
     if args_preview:
         parts.append("tool_arguments_preview=" + args_preview.replace("\n", "\\n"))
-    parts.extend([
-        "",
-        "[HEAD]",
-        head.rstrip(),
-        "",
-        "[TAIL]",
-        tail.lstrip(),
-        "",
-        "Note: The tool output was compacted for context budget. Do not assume omitted content.",
-    ])
+    parts.extend(
+        [
+            "",
+            "[HEAD]",
+            head.rstrip(),
+            "",
+            "[TAIL]",
+            tail.lstrip(),
+            "",
+            "Note: The tool output was compacted for context budget. Do not assume omitted content.",
+        ]
+    )
     return "\n".join(parts).strip()
 
 
@@ -360,4 +362,3 @@ def _join_with_budget(*, lines: list[str], budget: int) -> str:
         out_lines.append(line)
         used += len(line) + 1
     return "\n".join(out_lines).strip()
-

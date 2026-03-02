@@ -2,7 +2,11 @@
 Tests for the FastAPI server.
 """
 
+from __future__ import annotations
+
 import os
+from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,8 +24,9 @@ def client() -> TestClient:
 
 
 @pytest.fixture
-def mock_ternion_config():
+def mock_ternion_config() -> Callable[[str], RoleConfig | None]:
     """Mock ternion configuration for all roles."""
+
     def get_role_config(role: str) -> RoleConfig | None:
         # Provide mock config for all roles
         configs = {
@@ -33,6 +38,7 @@ def mock_ternion_config():
             "reviewer": RoleConfig(provider="openai", model="gpt-4"),
         }
         return configs.get(role)
+
     return get_role_config
 
 
@@ -71,7 +77,9 @@ class TestChatCompletions:
     """Tests for chat completions endpoint."""
 
     def test_chat_completions_basic(
-        self, client: TestClient, mock_ternion_config
+        self,
+        client: TestClient,
+        mock_ternion_config: Callable[[str], RoleConfig | None],
     ) -> None:
         """Test basic chat completion request with mocked workflow."""
         # Mock the workflow to avoid actual LLM calls
@@ -112,9 +120,7 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [
-                        {"role": "user", "content": "Hello"}
-                    ],
+                    "messages": [{"role": "user", "content": "Hello"}],
                     "stream": False,
                 },
             )
@@ -125,7 +131,9 @@ class TestChatCompletions:
             assert len(data["choices"]) == 1
 
     def test_chat_completions_streaming(
-        self, client: TestClient, mock_ternion_config
+        self,
+        client: TestClient,
+        mock_ternion_config: Callable[[str], RoleConfig | None],
     ) -> None:
         """Test streaming chat completion request with mocked workflow."""
         mock_result = {
@@ -166,9 +174,7 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [
-                        {"role": "user", "content": "Hello"}
-                    ],
+                    "messages": [{"role": "user", "content": "Hello"}],
                     "stream": True,
                 },
             ) as response:
@@ -185,9 +191,7 @@ class TestChatCompletions:
 
                 assert len(chunks) > 0
 
-    def test_chat_completions_returns_tool_calls_and_rewrites_ids(
-        self, client: TestClient
-    ) -> None:
+    def test_chat_completions_returns_tool_calls_and_rewrites_ids(self, client: TestClient) -> None:
         """When workflow returns pending_tool_calls, respond with tool_calls and embedded session_id."""
         mock_user_config = MagicMock()
         mock_user_config.execution_mode = "ternion_full"
@@ -211,7 +215,10 @@ class TestChatCompletions:
                 {
                     "id": "call_abc",
                     "type": "function",
-                    "function": {"name": "Write", "arguments": "{\"file_path\":\"docs/a.md\",\"content\":\"x\"}"},
+                    "function": {
+                        "name": "Write",
+                        "arguments": '{"file_path":"docs/a.md","content":"x"}',
+                    },
                 }
             ],
             "thinking_logs": [],
@@ -299,7 +306,7 @@ class TestChatCompletions:
                     "type": "function",
                     "function": {
                         "name": "Write",
-                        "arguments": "{\"file_path\":\"src/app.py\",\"content\":\"x\"}",
+                        "arguments": '{"file_path":"src/app.py","content":"x"}',
                     },
                 }
             ],
@@ -387,7 +394,7 @@ class TestChatCompletions:
                     "type": "function",
                     "function": {
                         "name": "Write",
-                        "arguments": "{\"file_path\":\"docs/plan.md\",\"content\":\"x\"}",
+                        "arguments": '{"file_path":"docs/plan.md","content":"x"}',
                     },
                 }
             ],
@@ -472,7 +479,7 @@ class TestChatCompletions:
                     "type": "function",
                     "function": {
                         "name": "Write",
-                        "arguments": "{\"path\":\"docs/plan.md\",\"content\":\"x\"}",
+                        "arguments": '{"path":"docs/plan.md","content":"x"}',
                     },
                 }
             ],
@@ -557,7 +564,7 @@ class TestChatCompletions:
                     "type": "function",
                     "function": {
                         "name": "write_file",
-                        "arguments": "{\"path\":\"src/app.py\",\"content\":\"x\"}",
+                        "arguments": '{"path":"src/app.py","content":"x"}',
                     },
                 }
             ],
@@ -644,7 +651,7 @@ class TestChatCompletions:
                     "type": "function",
                     "function": {
                         "name": "Write",
-                        "arguments": "{\"file_path\":\"docs/plan.md\",\"content\":\"x\"}",
+                        "arguments": '{"file_path":"docs/plan.md","content":"x"}',
                     },
                 }
             ],
@@ -730,7 +737,7 @@ class TestChatCompletions:
                     "type": "function",
                     "function": {
                         "name": "Write",
-                        "arguments": "{\"file_path\":\"src/app.py\",\"content\":\"x\"}",
+                        "arguments": '{"file_path":"src/app.py","content":"x"}',
                     },
                 }
             ],
@@ -815,7 +822,7 @@ class TestChatCompletions:
                     "type": "function",
                     "function": {
                         "name": "Read",
-                        "arguments": "{\"path\":\"src/app.py\"}",
+                        "arguments": '{"path":"src/app.py"}',
                     },
                 }
             ],
@@ -901,7 +908,7 @@ class TestChatCompletions:
                     "type": "function",
                     "function": {
                         "name": "run_terminal_cmd",
-                        "arguments": "{\"command\":\"cat README.md\"}",
+                        "arguments": '{"command":"cat README.md"}',
                     },
                 }
             ],
@@ -986,7 +993,7 @@ class TestChatCompletions:
                 "type": "function",
                 "function": {
                     "name": "Write",
-                    "arguments": "{\"file_path\":\"src/app.py\",\"content\":\"x\"}",
+                    "arguments": '{"file_path":"src/app.py","content":"x"}',
                 },
             }
         ]
@@ -1015,7 +1022,7 @@ class TestChatCompletions:
                 "type": "function",
                 "function": {
                     "name": "Write",
-                    "arguments": "{\"file_path\":\"/tmp/outside.py\",\"content\":\"x\"}",
+                    "arguments": '{"file_path":"/tmp/outside.py","content":"x"}',
                 },
             }
         ]
@@ -1033,10 +1040,8 @@ class TestChatCompletions:
         assert "repo/**" in message
         assert "/tmp/outside.py" in message
 
-    def test_workspace_relative_path_uses_project_root(self, tmp_path) -> None:
+    def test_workspace_relative_path_uses_project_root(self, tmp_path: Path) -> None:
         """Relative path resolution should anchor to project root, not cwd."""
-        from pathlib import Path
-
         from ternion.server.routes import _resolve_project_root, _workspace_relative_path
 
         root = _resolve_project_root()
@@ -1099,9 +1104,7 @@ class TestChatCompletions:
             assert data["model"] == "ternion-team"
             assert data["choices"][0]["message"]["content"] == "PONG"
 
-    def test_streaming_tool_calls_finishes_with_tool_calls(
-        self, client: TestClient
-    ) -> None:
+    def test_streaming_tool_calls_finishes_with_tool_calls(self, client: TestClient) -> None:
         """When streaming returns tool_calls, SSE must end with finish_reason=tool_calls."""
         import json as json_lib
 
@@ -1127,7 +1130,7 @@ class TestChatCompletions:
                 {
                     "id": "call_abc",
                     "type": "function",
-                    "function": {"name": "codebase_search", "arguments": "{\"query\":\"foo\"}"},
+                    "function": {"name": "codebase_search", "arguments": '{"query":"foo"}'},
                 }
             ],
             "conversation_history": [],
@@ -1201,8 +1204,7 @@ class TestChatCompletions:
                 assert saw_tool_calls, "Expected a delta.tool_calls chunk in SSE stream"
 
                 saw_finish = any(
-                    c.get("choices", [{}])[0].get("finish_reason") == "tool_calls"
-                    for c in chunks
+                    c.get("choices", [{}])[0].get("finish_reason") == "tool_calls" for c in chunks
                 )
                 assert saw_finish, "Expected a finish_reason='tool_calls' final SSE chunk"
 
@@ -1214,7 +1216,10 @@ class TestChatCompletions:
             assert kwargs.get("evidence_gaps") == mock_result["evidence_gaps"]
             assert kwargs.get("evidence_requests") == mock_result["evidence_requests"]
             assert kwargs.get("evidence_topup_round") == mock_result["evidence_topup_round"]
-            assert kwargs.get("report_evidence_resume_phase") == mock_result["report_evidence_resume_phase"]
+            assert (
+                kwargs.get("report_evidence_resume_phase")
+                == mock_result["report_evidence_resume_phase"]
+            )
             assert kwargs.get("ternion_analyses") == mock_result["ternion_analyses"]
 
     def test_non_streaming_tool_calls_persist_report_evidence_resume_and_topup_round(
@@ -1243,7 +1248,7 @@ class TestChatCompletions:
                 {
                     "id": "call_abc",
                     "type": "function",
-                    "function": {"name": "codebase_search", "arguments": "{\"query\":\"foo\"}"},
+                    "function": {"name": "codebase_search", "arguments": '{"query":"foo"}'},
                 }
             ],
             "conversation_history": [],
@@ -1299,11 +1304,12 @@ class TestChatCompletions:
             kwargs = mock_session_store.create_session.call_args.kwargs
             assert kwargs.get("workflow_phase") == "report_evidence"
             assert kwargs.get("evidence_topup_round") == mock_result["evidence_topup_round"]
-            assert kwargs.get("report_evidence_resume_phase") == mock_result["report_evidence_resume_phase"]
+            assert (
+                kwargs.get("report_evidence_resume_phase")
+                == mock_result["report_evidence_resume_phase"]
+            )
 
-    def test_streaming_tool_calls_emits_no_content_deltas(
-        self, client: TestClient
-    ) -> None:
+    def test_streaming_tool_calls_emits_no_content_deltas(self, client: TestClient) -> None:
         """
         Tool-calls responses must not emit any user-visible content deltas.
 
@@ -1336,7 +1342,10 @@ class TestChatCompletions:
                 {
                     "id": "call_abc",
                     "type": "function",
-                    "function": {"name": "Write", "arguments": "{\"file_path\":\"docs/a.md\",\"content\":\"x\"}"},
+                    "function": {
+                        "name": "Write",
+                        "arguments": '{"file_path":"docs/a.md","content":"x"}',
+                    },
                 }
             ],
             "conversation_history": [],
@@ -1412,8 +1421,11 @@ class TestChatCompletions:
                         )
 
                 tool_chunks = [
-                    c for c in chunks
-                    if isinstance(c.get("choices", [{}])[0].get("delta", {}).get("tool_calls"), list)
+                    c
+                    for c in chunks
+                    if isinstance(
+                        c.get("choices", [{}])[0].get("delta", {}).get("tool_calls"), list
+                    )
                 ]
                 assert tool_chunks, "Expected a delta.tool_calls chunk in SSE stream"
 
@@ -1452,12 +1464,15 @@ class TestChatCompletions:
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.server.routes.session_store") as mock_session_store,
-            patch("ternion.server.routes.handle_execution_followup", new_callable=AsyncMock) as mock_handler,
+            patch(
+                "ternion.server.routes.handle_execution_followup", new_callable=AsyncMock
+            ) as mock_handler,
         ):
             mock_config_store.load.return_value = mock_user_config
             mock_provider_mgr.has_providers = True
             mock_session_store.load_session.return_value = fake_session
             from fastapi.responses import JSONResponse
+
             mock_handler.return_value = JSONResponse(content={"ok": True})
 
             response = client.post(
@@ -1528,7 +1543,7 @@ class TestChatCompletions:
                 {
                     "id": "call_abc",
                     "type": "function",
-                    "function": {"name": "codebase_search", "arguments": "{\"query\":\"foo\"}"},
+                    "function": {"name": "codebase_search", "arguments": '{"query":"foo"}'},
                 }
             ],
             "conversation_history": [],
@@ -1544,7 +1559,9 @@ class TestChatCompletions:
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.session_store") as mock_session_store,
             patch("ternion.server.routes.budget_manager") as mock_budget_manager,
-            patch("ternion.workflow.graph.resume_report_evidence", new_callable=AsyncMock) as mock_resume,
+            patch(
+                "ternion.workflow.graph.resume_report_evidence", new_callable=AsyncMock
+            ) as mock_resume,
         ):
             mock_config_store.load.return_value = mock_user_config
             mock_session_store.load_session.return_value = resume_session
@@ -1591,6 +1608,252 @@ class TestChatCompletions:
             )
             assert saw_tool_session_update
 
+    def test_report_evidence_followup_keeps_existing_tool_call_history(
+        self, client: TestClient
+    ) -> None:
+        """Report-evidence follow-up must keep prior assistant tool-call history."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_thinking_logs = True
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        prior_tool_call_id = "ternion_0123456789ab_r0001_c00"
+        resume_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+            round_index=1,
+            workflow_phase="report_evidence",
+            cursor_system_prompt="SYS",
+            execution_messages=[
+                {"role": "user", "content": "u"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": prior_tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "Read",
+                                "arguments": '{"path":"/tmp/a.py"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": prior_tool_call_id,
+                    "content": "RESULT_A",
+                },
+            ],
+            evidence_bundle="EVIDENCE_BUNDLE:\n- [FILE_EXCERPT] path=foo.py | lines=1-2",
+            evidence_gaps="EVIDENCE_GAPS:\n- None",
+            evidence_requests="- [P0] path=foo.py:1-2",
+            ternion_analyses=[{"ternion_id": "ternion_a", "analysis": "A"}],
+        )
+        mock_final_state = {
+            "current_phase": "report_evidence",
+            "execution_mode": "ternion_full",
+            "ternion_report": "REPORT",
+            "pending_tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {"name": "codebase_search", "arguments": '{"query":"foo"}'},
+                }
+            ],
+            # Simulate workflow-cleaned history (tool messages stripped)
+            "conversation_history": [{"role": "user", "content": "cleaned_history_only"}],
+            "evidence_bundle": resume_session.evidence_bundle,
+            "evidence_gaps": resume_session.evidence_gaps,
+            "evidence_requests": resume_session.evidence_requests,
+            "ternion_analyses": resume_session.ternion_analyses,
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+            patch("ternion.server.routes.budget_manager") as mock_budget_manager,
+            patch(
+                "ternion.workflow.graph.resume_report_evidence", new_callable=AsyncMock
+            ) as mock_resume,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_session_store.load_session.return_value = resume_session
+            mock_session_store.update_session.return_value = resume_session
+            mock_budget_manager.check_budget.return_value = (True, None)
+            mock_resume.return_value = mock_final_state
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [
+                        {
+                            "role": "tool",
+                            "tool_call_id": prior_tool_call_id,
+                            "content": "RESULT_A",
+                        }
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["choices"][0]["finish_reason"] == "tool_calls"
+            assert (
+                data["choices"][0]["message"]["tool_calls"][0]["id"]
+                == "ternion_0123456789ab_r0002_c00"
+            )
+
+            matching_updates = [
+                call
+                for call in mock_session_store.update_session.call_args_list
+                if call.args
+                and call.args[0] == resume_session.session_id
+                and call.kwargs.get("round_index") == 2
+                and call.kwargs.get("workflow_phase") == "report_evidence"
+                and isinstance(call.kwargs.get("pending_tool_calls"), list)
+            ]
+            assert matching_updates
+            history = matching_updates[-1].kwargs.get("execution_messages") or []
+            assistant_tool_call_ids = {
+                tc.get("id")
+                for msg in history
+                if isinstance(msg, dict) and msg.get("role") == "assistant"
+                for tc in (msg.get("tool_calls") or [])
+                if isinstance(tc, dict)
+            }
+            assert prior_tool_call_id in assistant_tool_call_ids
+            assert "ternion_0123456789ab_r0002_c00" in assistant_tool_call_ids
+
+    def test_evidence_followup_keeps_existing_tool_call_history_on_phase_transition(
+        self, client: TestClient
+    ) -> None:
+        """Evidence follow-up must keep prior tool-call history after phase transition."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+
+        prior_tool_call_id = "ternion_0123456789ab_r0001_c00"
+        resume_session = Session(
+            session_id="0123456789ab",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="REPORT",
+            ternion_report_safe="REPORT",
+            report_hash="hash",
+            created_at="2026-01-11T00:00:00Z",
+            updated_at="2026-01-11T00:00:00Z",
+            round_index=1,
+            workflow_phase="evidence",
+            cursor_system_prompt="SYS",
+            execution_messages=[
+                {"role": "user", "content": "u"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": prior_tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "Read",
+                                "arguments": '{"path":"/tmp/a.py"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": prior_tool_call_id,
+                    "content": "RESULT_A",
+                },
+            ],
+        )
+        mock_final_state = {
+            "current_phase": "report_evidence",
+            "ternion_report": "REPORT",
+            "pending_tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {"name": "codebase_search", "arguments": '{"query":"foo"}'},
+                }
+            ],
+            # Simulate workflow-cleaned history (tool messages stripped)
+            "conversation_history": [{"role": "user", "content": "cleaned_history_only"}],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+            patch("ternion.server.routes.budget_manager") as mock_budget_manager,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_session_store.load_session.return_value = resume_session
+            mock_session_store.update_session.return_value = resume_session
+            mock_budget_manager.check_budget.return_value = (True, None)
+            mock_run.return_value = mock_final_state
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [
+                        {
+                            "role": "tool",
+                            "tool_call_id": prior_tool_call_id,
+                            "content": "RESULT_A",
+                        }
+                    ],
+                    "stream": False,
+                },
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["choices"][0]["finish_reason"] == "tool_calls"
+            assert (
+                data["choices"][0]["message"]["tool_calls"][0]["id"]
+                == "ternion_0123456789ab_r0002_c00"
+            )
+
+            matching_updates = [
+                call
+                for call in mock_session_store.update_session.call_args_list
+                if call.args
+                and call.args[0] == resume_session.session_id
+                and call.kwargs.get("round_index") == 2
+                and call.kwargs.get("workflow_phase") == "report_evidence"
+                and isinstance(call.kwargs.get("pending_tool_calls"), list)
+            ]
+            assert matching_updates
+            history = matching_updates[-1].kwargs.get("execution_messages") or []
+            assistant_tool_call_ids = {
+                tc.get("id")
+                for msg in history
+                if isinstance(msg, dict) and msg.get("role") == "assistant"
+                for tc in (msg.get("tool_calls") or [])
+                if isinstance(tc, dict)
+            }
+            assert prior_tool_call_id in assistant_tool_call_ids
+            assert "ternion_0123456789ab_r0002_c00" in assistant_tool_call_ids
+
     def test_report_evidence_followup_with_resume_phase_routes_to_execution_followup(
         self, client: TestClient
     ) -> None:
@@ -1612,12 +1875,18 @@ class TestChatCompletions:
 
         with (
             patch("ternion.server.routes.session_store") as mock_session_store,
-            patch("ternion.server.routes.handle_execution_followup", new_callable=AsyncMock) as mock_exec,
-            patch("ternion.server.routes.handle_report_evidence_followup", new_callable=AsyncMock) as mock_report_evidence,
+            patch(
+                "ternion.server.routes.handle_execution_followup", new_callable=AsyncMock
+            ) as mock_exec,
+            patch(
+                "ternion.server.routes.handle_report_evidence_followup", new_callable=AsyncMock
+            ) as mock_report_evidence,
         ):
             mock_session_store.load_session.return_value = resume_session
             mock_exec.return_value = JSONResponse(content={"ok": "execution_followup"})
-            mock_report_evidence.return_value = JSONResponse(content={"ok": "report_evidence_followup"})
+            mock_report_evidence.return_value = JSONResponse(
+                content={"ok": "report_evidence_followup"}
+            )
 
             response = client.post(
                 "/v1/chat/completions",
@@ -1647,15 +1916,17 @@ class TestChatCompletions:
             {
                 "id": "call_abc",
                 "type": "function",
-                "function": {"name": "read_file", "arguments": "{\"target_file\":\"/tmp/x\"}"},
+                "function": {"name": "read_file", "arguments": '{"target_file":"/tmp/x"}'},
             }
         ]
         rewritten = _rewrite_tool_call_ids(tool_calls, session_id="0123456789ab", round_index=1)
         args = rewritten[0]["function"]["arguments"]
-        assert "\"offset\": 1" in args
-        assert "\"limit\"" in args
+        assert '"offset": 1' in args
+        assert '"limit"' in args
 
-    def test_rewrite_tool_call_ids_normalizes_repo_relative_read_paths(self, client: TestClient) -> None:
+    def test_rewrite_tool_call_ids_normalizes_repo_relative_read_paths(
+        self, client: TestClient
+    ) -> None:
         """Server should normalize repo-relative Read paths like /docs/x.md."""
         import json as json_lib
         from pathlib import Path
@@ -1667,7 +1938,7 @@ class TestChatCompletions:
             {
                 "id": "call_abc",
                 "type": "function",
-                "function": {"name": "Read", "arguments": "{\"path\":\"/docs/development_log.md\"}"},
+                "function": {"name": "Read", "arguments": '{"path":"/docs/development_log.md"}'},
             }
         ]
         rewritten = _rewrite_tool_call_ids(
@@ -1679,9 +1950,7 @@ class TestChatCompletions:
         args = json_lib.loads(rewritten[0]["function"]["arguments"])
         assert args["path"] == str(repo_root / "docs" / "development_log.md")
 
-    def test_cursor_handoff_agent_auto_switches_to_ternion_full(
-        self, client: TestClient
-    ) -> None:
+    def test_cursor_handoff_agent_auto_switches_to_ternion_full(self, client: TestClient) -> None:
         """
         When configured as cursor_handoff but invoked from Cursor Agent mode,
         the server should auto-switch to ternion_full and skip confirmation gate.

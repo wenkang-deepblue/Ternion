@@ -95,8 +95,39 @@ function AppContent() {
     document.documentElement.classList.toggle('dark', isDarkMode);
   }, [isDarkMode]);
 
+  const loadData = async () => {
+    try {
+      const [configData, statusData] = await Promise.all([
+        api.getConfig(),
+        api.getStatus(),
+      ]);
+      setConfig(configData);
+      setStatus(statusData);
+
+      // Load preferences from config
+      if (configData?.preferences) {
+        if (configData.preferences.theme) {
+          setThemeMode(configData.preferences.theme as ThemeMode);
+        }
+        if (configData.preferences.language) {
+          setLanguageMode(configData.preferences.language as LanguageMode);
+
+          // If language is 'auto', send current browser language to backend
+          // This ensures Ternion reports use the correct language
+          if (configData.preferences.language === 'auto') {
+            const browserLang = detectBrowserLanguage();
+            api.updatePreferences({ browser_language: browserLang }).catch(console.error);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load data:', error);
+    }
+  };
+
   // Load initial data and preferences
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadData();
   }, []);
 
@@ -125,36 +156,6 @@ function AppContent() {
       window.clearInterval(interval);
     };
   }, []);
-
-  const loadData = async () => {
-    try {
-      const [configData, statusData] = await Promise.all([
-        api.getConfig(),
-        api.getStatus(),
-      ]);
-      setConfig(configData);
-      setStatus(statusData);
-
-      // Load preferences from config
-      if (configData?.preferences) {
-        if (configData.preferences.theme) {
-          setThemeMode(configData.preferences.theme as ThemeMode);
-        }
-        if (configData.preferences.language) {
-          setLanguageMode(configData.preferences.language as LanguageMode);
-          
-          // If language is 'auto', send current browser language to backend
-          // This ensures Ternion reports use the correct language
-          if (configData.preferences.language === 'auto') {
-            const browserLang = detectBrowserLanguage();
-            api.updatePreferences({ browser_language: browserLang }).catch(console.error);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Failed to load data:', error);
-    }
-  };
 
   const handleConfigUpdate = (newConfig: Config) => {
     setConfig(newConfig);

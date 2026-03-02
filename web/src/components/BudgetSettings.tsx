@@ -9,7 +9,7 @@
 import { useState, useEffect } from 'react';
 import api from '../api/client';
 import type { Config, BudgetConfig } from '../api/client';
-import { useToast } from './Toast';
+import { useToast } from './toastContext';
 import type { Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
 import type { Language } from '../i18n';

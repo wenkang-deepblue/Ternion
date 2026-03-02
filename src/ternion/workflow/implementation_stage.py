@@ -11,9 +11,9 @@ from typing import Any
 
 import structlog
 
+from ternion.utils.i18n import MessageKey, t
 from ternion.workflow.nodes import execution_node, optimizer_node, report_evidence_node
 from ternion.workflow.state import TernionState, WorkflowPhase
-from ternion.utils.i18n import MessageKey, t
 
 logger = structlog.get_logger(__name__)
 

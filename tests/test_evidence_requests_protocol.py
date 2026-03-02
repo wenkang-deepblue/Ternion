@@ -51,4 +51,3 @@ def test_extract_evidence_requests_block_requires_end_marker() -> None:
         "PURPOSE: Verify initialization.\n"
     )
     assert extract_evidence_requests_block(text) is None
-

@@ -82,6 +82,15 @@ def _get_file_meta(repo_root: Path, raw_path: str) -> dict[str, object]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """
+    CLI entry point for repository-internal file metadata inspection.
+
+    Args:
+        argv: Optional argument vector for testing.
+
+    Returns:
+        Process exit code (0 on success).
+    """
     parser = argparse.ArgumentParser(
         prog="ternion.utils.file_meta",
         add_help=True,
@@ -100,4 +109,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

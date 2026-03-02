@@ -49,7 +49,7 @@ def create_sse_stream(
 
     # Split content into fixed-size chunks instead of by words (CR-032)
     for i in range(0, len(content), CHUNK_SIZE):
-        text = content[i:i + CHUNK_SIZE]
+        text = content[i : i + CHUNK_SIZE]
 
         chunk = ChatCompletionChunk(
             id=chunk_id,

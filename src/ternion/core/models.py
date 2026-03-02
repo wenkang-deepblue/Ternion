@@ -156,7 +156,11 @@ class ChatCompletionRequest(BaseModel):
                     text = part.get("text")
                     if text is None:
                         # Some clients may use `content` or `delta` for text chunks.
-                        text = part.get("content") if part.get("content") is not None else part.get("delta")
+                        text = (
+                            part.get("content")
+                            if part.get("content") is not None
+                            else part.get("delta")
+                        )
                     normalized.append({"type": "text", "text": "" if text is None else str(text)})
                     continue
 
@@ -167,7 +171,11 @@ class ChatCompletionRequest(BaseModel):
                     # - {"type":"input_image","image_url":{"url":"..."}}
                     url = ""
                     detail: str = "auto"
-                    image_url = part.get("image_url") if part.get("image_url") is not None else part.get("url")
+                    image_url = (
+                        part.get("image_url")
+                        if part.get("image_url") is not None
+                        else part.get("url")
+                    )
                     if isinstance(image_url, dict):
                         url = str(image_url.get("url") or "")
                         detail_val = image_url.get("detail")
@@ -178,7 +186,9 @@ class ChatCompletionRequest(BaseModel):
 
                     if detail not in {"auto", "low", "high"}:
                         detail = "auto"
-                    normalized.append({"type": "image_url", "image_url": {"url": url, "detail": detail}})
+                    normalized.append(
+                        {"type": "image_url", "image_url": {"url": url, "detail": detail}}
+                    )
                     continue
 
                 # Fallback: preserve information as text.

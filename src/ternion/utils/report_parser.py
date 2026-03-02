@@ -101,10 +101,14 @@ def parse_structured_report(report: str) -> ParsedReport:
     root_cause = pick("Root Cause")
     evidence = pick("Evidence / Logs", "Evidence/Logs", "Evidence")
     scope = pick("Scope & Non-Goals", "Scope & Non-Goals", "Scope and Non-Goals", "Scope")
-    fix_plan = pick("Fix Plan / Recommendation", "Fix Plan/Recommendation", "Fix Plan", "Recommendation")
+    fix_plan = pick(
+        "Fix Plan / Recommendation", "Fix Plan/Recommendation", "Fix Plan", "Recommendation"
+    )
     verification = pick("Verification")
     risks = pick("Risks & Rollback", "Risks and Rollback", "Risks & Rollback Strategy", "Risks")
-    if_not_effective = pick("If not effective, then what?", "If not effective", "Next Steps If Not Effective")
+    if_not_effective = pick(
+        "If not effective, then what?", "If not effective", "Next Steps If Not Effective"
+    )
 
     return ParsedReport(
         root_cause=root_cause,
@@ -185,4 +189,3 @@ def format_report_for_display(report: str) -> str:
     ]
 
     return "\n\n".join(parts).strip()
-

@@ -2,6 +2,8 @@
 Tests for the i18n module.
 """
 
+from __future__ import annotations
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,7 +20,7 @@ from ternion.utils.i18n import (
 class TestMessageKeyCompleteness:
     """Tests to ensure translation completeness across all languages."""
 
-    def test_all_languages_have_required_keys(self):
+    def test_all_languages_have_required_keys(self) -> None:
         """All languages should have translations for all MessageKey values."""
         required_keys = list(MessageKey)
 
@@ -28,7 +30,7 @@ class TestMessageKeyCompleteness:
                     f"Missing translation for {key} in language '{lang}'"
                 )
 
-    def test_no_corrupted_characters(self):
+    def test_no_corrupted_characters(self) -> None:
         """Translations should not contain replacement characters (U+FFFD)."""
         for lang, translations in TRANSLATIONS.items():
             for key, value in translations.items():
@@ -41,20 +43,20 @@ class TestTranslationFunction:
     """Tests for the t() translation function."""
 
     @pytest.fixture
-    def mock_english_config(self):
+    def mock_english_config(self) -> MagicMock:
         """Mock config to return English language."""
         config = MagicMock()
         config.language = "en"
         return config
 
     @pytest.fixture
-    def mock_chinese_config(self):
+    def mock_chinese_config(self) -> MagicMock:
         """Mock config to return Chinese language."""
         config = MagicMock()
         config.language = "zh"
         return config
 
-    def test_t_returns_translated_string(self, mock_english_config):
+    def test_t_returns_translated_string(self, mock_english_config: MagicMock) -> None:
         """t() should return translated string for valid key."""
         with patch("ternion.utils.i18n.config_store") as mock_store:
             mock_store.load.return_value = mock_english_config
@@ -64,17 +66,19 @@ class TestTranslationFunction:
             assert "Arbiter" in result
             assert "analysis" in result.lower()
 
-    def test_t_formats_placeholders_correctly(self, mock_english_config):
+    def test_t_formats_placeholders_correctly(self, mock_english_config: MagicMock) -> None:
         """t() should correctly format placeholder values."""
         with patch("ternion.utils.i18n.config_store") as mock_store:
             mock_store.load.return_value = mock_english_config
 
-            result = t(MessageKey.DIVERGENCE_ANALYSIS, ternion_id="ternion_a", preview="Test preview")
+            result = t(
+                MessageKey.DIVERGENCE_ANALYSIS, ternion_id="ternion_a", preview="Test preview"
+            )
 
             assert "ternion_a" in result
             assert "Test preview" in result
 
-    def test_t_formats_error_placeholders(self, mock_english_config):
+    def test_t_formats_error_placeholders(self, mock_english_config: MagicMock) -> None:
         """t() should correctly format error placeholders."""
         with patch("ternion.utils.i18n.config_store") as mock_store:
             mock_store.load.return_value = mock_english_config
@@ -84,7 +88,7 @@ class TestTranslationFunction:
             assert "Test error message" in result
             assert "error" in result.lower() or "Error" in result
 
-    def test_t_formats_missing_roles_placeholder(self, mock_english_config):
+    def test_t_formats_missing_roles_placeholder(self, mock_english_config: MagicMock) -> None:
         """t() should correctly format missing_roles placeholder."""
         with patch("ternion.utils.i18n.config_store") as mock_store:
             mock_store.load.return_value = mock_english_config
@@ -93,7 +97,7 @@ class TestTranslationFunction:
 
             assert "arbiter, writer" in result
 
-    def test_t_respects_language_setting(self, mock_chinese_config):
+    def test_t_respects_language_setting(self, mock_chinese_config: MagicMock) -> None:
         """t() should use user's configured language."""
         with patch("ternion.utils.i18n.config_store") as mock_store:
             mock_store.load.return_value = mock_chinese_config
@@ -103,7 +107,7 @@ class TestTranslationFunction:
             # Chinese translation should contain Chinese characters
             assert "开始" in result or "分析" in result
 
-    def test_t_falls_back_to_english_on_invalid_language(self):
+    def test_t_falls_back_to_english_on_invalid_language(self) -> None:
         """t() should fall back to English for invalid language."""
         config = MagicMock()
         config.language = "invalid_lang"
@@ -121,7 +125,7 @@ class TestAllLanguagePlaceholderFormatting:
     """Tests to ensure all language templates can be formatted without errors."""
 
     @pytest.mark.parametrize("lang", ["en", "zh", "es", "fr", "de", "ja", "ko"])
-    def test_divergence_analysis_formats_in_all_languages(self, lang):
+    def test_divergence_analysis_formats_in_all_languages(self, lang: str) -> None:
         """DIVERGENCE_ANALYSIS should format correctly in all languages."""
         config = MagicMock()
         config.language = lang
@@ -136,7 +140,7 @@ class TestAllLanguagePlaceholderFormatting:
             assert "Test" in result
 
     @pytest.mark.parametrize("lang", ["en", "zh", "es", "fr", "de", "ja", "ko"])
-    def test_error_keys_format_in_all_languages(self, lang):
+    def test_error_keys_format_in_all_languages(self, lang: str) -> None:
         """Error message keys should format correctly in all languages."""
         config = MagicMock()
         config.language = lang
@@ -156,7 +160,7 @@ class TestAllLanguagePlaceholderFormatting:
                 assert "test error" in result, f"{key} failed to format in {lang}"
 
     @pytest.mark.parametrize("lang", ["en", "zh", "es", "fr", "de", "ja", "ko"])
-    def test_validation_error_keys_format_in_all_languages(self, lang):
+    def test_validation_error_keys_format_in_all_languages(self, lang: str) -> None:
         """Validation error keys should format correctly in all languages."""
         config = MagicMock()
         config.language = lang
@@ -176,7 +180,7 @@ class TestAllLanguagePlaceholderFormatting:
 class TestGetUserLanguage:
     """Tests for get_user_language function."""
 
-    def test_returns_configured_language(self):
+    def test_returns_configured_language(self) -> None:
         """Should return user's configured language."""
         config = MagicMock()
         config.language = "zh"
@@ -188,7 +192,7 @@ class TestGetUserLanguage:
 
             assert result == "zh"
 
-    def test_returns_default_on_error(self):
+    def test_returns_default_on_error(self) -> None:
         """Should return default language when config fails."""
         with patch("ternion.utils.i18n.config_store") as mock_store:
             mock_store.load.side_effect = Exception("Config error")
@@ -197,7 +201,7 @@ class TestGetUserLanguage:
 
             assert result == DEFAULT_LANGUAGE
 
-    def test_returns_default_for_unsupported_language(self):
+    def test_returns_default_for_unsupported_language(self) -> None:
         """Should return default for unsupported language codes."""
         config = MagicMock()
         config.language = "unsupported"
@@ -209,7 +213,7 @@ class TestGetUserLanguage:
 
             assert result == DEFAULT_LANGUAGE
 
-    def test_returns_browser_language_when_auto_is_set(self):
+    def test_returns_browser_language_when_auto_is_set(self) -> None:
         """Should return browser_language when language is set to 'auto'."""
         config = MagicMock()
         config.language = "auto"
@@ -222,7 +226,7 @@ class TestGetUserLanguage:
 
             assert result == "zh"
 
-    def test_returns_default_when_auto_and_unsupported_browser_language(self):
+    def test_returns_default_when_auto_and_unsupported_browser_language(self) -> None:
         """Should return default when language is 'auto' but browser_language is unsupported."""
         config = MagicMock()
         config.language = "auto"
@@ -234,4 +238,3 @@ class TestGetUserLanguage:
             result = get_user_language()
 
             assert result == DEFAULT_LANGUAGE
-

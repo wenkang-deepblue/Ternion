@@ -11,8 +11,9 @@
 import { useState, useEffect } from 'react';
 import api from '../api/client';
 import type { PortsConfig } from '../api/client';
-import { useToast } from './Toast';
+import { useToast } from './toastContext';
 import type { Translations } from '../i18n';
+import { getErrorMessage } from '../i18n';
 
 // Port settings icons
 import portIconLight from '../assets/icons/port_light_mode_50dp.svg';
@@ -93,7 +94,7 @@ export function PortsSettings({ t, isDarkMode }: PortsSettingsProps) {
     } catch (error) {
       console.error('Failed to save ports:', error);
       const errorCode = error instanceof Error ? error.message : String(error);
-      showToast(errorCode, 'error');
+      showToast(getErrorMessage(t, errorCode), 'error');
     } finally {
       setSaving(false);
     }

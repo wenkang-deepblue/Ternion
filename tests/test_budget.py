@@ -67,9 +67,7 @@ class TestCostCalculation:
         expected = (1000 / 1000) * 0.015 + (1000 / 1000) * 0.075
         assert cost == pytest.approx(expected)
 
-    def test_calculate_cost_unknown_model_uses_default(
-        self, budget_manager: BudgetManager
-    ) -> None:
+    def test_calculate_cost_unknown_model_uses_default(self, budget_manager: BudgetManager) -> None:
         """Test that unknown models use default pricing."""
         cost = budget_manager.calculate_cost(
             model="unknown-model",
@@ -77,13 +75,12 @@ class TestCostCalculation:
             output_tokens=1000,
         )
         # Default: $0.01/1K input, $0.03/1K output
-        expected = (1000 / 1000) * DEFAULT_PRICING["input"] + \
-                   (1000 / 1000) * DEFAULT_PRICING["output"]
+        expected = (1000 / 1000) * DEFAULT_PRICING["input"] + (1000 / 1000) * DEFAULT_PRICING[
+            "output"
+        ]
         assert cost == pytest.approx(expected)
 
-    def test_calculate_cost_gemini_pro_standard_tier(
-        self, budget_manager: BudgetManager
-    ) -> None:
+    def test_calculate_cost_gemini_pro_standard_tier(self, budget_manager: BudgetManager) -> None:
         """Test Gemini Pro cost with context <= 200K."""
         cost = budget_manager.calculate_cost(
             model="gemini-3-pro-preview",
@@ -95,9 +92,7 @@ class TestCostCalculation:
         expected = (1000 / 1000) * 0.002 + (1000 / 1000) * 0.012
         assert cost == pytest.approx(expected)
 
-    def test_calculate_cost_gemini_pro_extended_tier(
-        self, budget_manager: BudgetManager
-    ) -> None:
+    def test_calculate_cost_gemini_pro_extended_tier(self, budget_manager: BudgetManager) -> None:
         """Test Gemini Pro cost with context > 200K."""
         cost = budget_manager.calculate_cost(
             model="gemini-3-pro-preview",
@@ -109,9 +104,7 @@ class TestCostCalculation:
         expected = (1000 / 1000) * 0.004 + (1000 / 1000) * 0.018
         assert cost == pytest.approx(expected)
 
-    def test_calculate_cost_gemini_flash_text_only(
-        self, budget_manager: BudgetManager
-    ) -> None:
+    def test_calculate_cost_gemini_flash_text_only(self, budget_manager: BudgetManager) -> None:
         """Test Gemini Flash cost with text-only input."""
         cost = budget_manager.calculate_cost(
             model="gemini-3-flash-preview",
@@ -123,9 +116,7 @@ class TestCostCalculation:
         expected = (1000 / 1000) * 0.0005 + (1000 / 1000) * 0.003
         assert cost == pytest.approx(expected)
 
-    def test_calculate_cost_gemini_flash_with_audio(
-        self, budget_manager: BudgetManager
-    ) -> None:
+    def test_calculate_cost_gemini_flash_with_audio(self, budget_manager: BudgetManager) -> None:
         """Test Gemini Flash cost with mixed text and audio input."""
         cost = budget_manager.calculate_cost(
             model="gemini-3-flash-preview",
@@ -137,9 +128,7 @@ class TestCostCalculation:
         expected = (600 / 1000) * 0.0005 + (400 / 1000) * 0.001 + (1000 / 1000) * 0.003
         assert cost == pytest.approx(expected)
 
-    def test_calculate_cost_gemini_flash_lite(
-        self, budget_manager: BudgetManager
-    ) -> None:
+    def test_calculate_cost_gemini_flash_lite(self, budget_manager: BudgetManager) -> None:
         """Test Gemini Flash Lite cost calculation."""
         cost = budget_manager.calculate_cost(
             model="gemini-flash-lite-latest",
@@ -235,9 +224,7 @@ class TestBudgetCheck:
 class TestUsageTracking:
     """Tests for usage tracking."""
 
-    def test_track_usage(
-        self, budget_manager: BudgetManager, temp_usage_file: Path
-    ) -> None:
+    def test_track_usage(self, budget_manager: BudgetManager, temp_usage_file: Path) -> None:
         """Test tracking usage."""
         cost = budget_manager.track_usage(
             provider="anthropic",
@@ -274,9 +261,7 @@ class TestUsageTracking:
 class TestMonthlyReset:
     """Tests for monthly reset functionality."""
 
-    def test_new_month_resets_usage(
-        self, temp_usage_file: Path
-    ) -> None:
+    def test_new_month_resets_usage(self, temp_usage_file: Path) -> None:
         """Test that usage resets when month changes."""
         # Create usage from previous month
         old_month = "2024-01"
@@ -380,8 +365,12 @@ class TestProviderCostAggregation:
         # provider_costs should aggregate input_cost + output_cost + thoughts_cost
         assert "google" in summary["provider_costs"]
         assert "anthropic" in summary["provider_costs"]
-        assert summary["provider_costs"]["google"] == pytest.approx(0.0092, rel=0.01)  # 0.002+0.006+0.0012
-        assert summary["provider_costs"]["anthropic"] == pytest.approx(0.024, rel=0.01)  # 0.006+0.015+0.003
+        assert summary["provider_costs"]["google"] == pytest.approx(
+            0.0092, rel=0.01
+        )  # 0.002+0.006+0.0012
+        assert summary["provider_costs"]["anthropic"] == pytest.approx(
+            0.024, rel=0.01
+        )  # 0.006+0.015+0.003
 
     def test_provider_details_includes_separate_cost_fields(
         self, budget_manager: BudgetManager, temp_usage_file: Path
@@ -465,4 +454,3 @@ class TestProviderCostAggregation:
         # Should fall back to 'cost' field when separate fields are 0
         assert "openai" in summary["provider_costs"]
         assert summary["provider_costs"]["openai"] == pytest.approx(0.045, rel=0.01)
-

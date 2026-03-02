@@ -8,6 +8,8 @@ with mocked providers. Verifies:
 - Correct role invocation patterns
 """
 
+from __future__ import annotations
+
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,10 +23,10 @@ from ternion.server.app import app
 
 # Dangerous patterns that should not appear in user-facing output
 CODE_FENCE_PATTERNS = [
-    r"^```",           # Code fence start
-    r"^~~~",           # Alternative code fence
+    r"^```",  # Code fence start
+    r"^~~~",  # Alternative code fence
     r"\*\*\* Begin Patch",  # Patch trigger
-    r"diff --git",     # Git diff trigger
+    r"diff --git",  # Git diff trigger
 ]
 
 
@@ -40,7 +42,7 @@ def client() -> TestClient:
 
 
 @pytest.fixture
-def mock_user_config():
+def mock_user_config() -> MagicMock:
     """Create mock user config with all roles configured."""
     config = MagicMock()
     config.execution_mode = "cursor_handoff"
@@ -61,7 +63,7 @@ def mock_user_config():
 
 
 @pytest.fixture
-def mock_session_awaiting():
+def mock_session_awaiting() -> Session:
     """Create a mock session in AWAITING_CONFIRMATION state."""
     raw_report = """## Root Cause
 - Primary verdict: A null pointer/None access is triggered under a specific runtime path.
@@ -116,7 +118,10 @@ class TestRCAToConfirmHandoff:
     """Test RCA → Report → Confirm → Handoff flow (CURSOR_HANDOFF mode)."""
 
     def test_confirm_generates_handoff_package(
-        self, client: TestClient, mock_user_config, mock_session_awaiting
+        self,
+        client: TestClient,
+        mock_user_config: MagicMock,
+        mock_session_awaiting: Session,
     ) -> None:
         """Confirm intent should generate handoff package without code fences."""
         mock_session_awaiting.execution_mode = ExecutionMode.CURSOR_HANDOFF
@@ -125,7 +130,9 @@ class TestRCAToConfirmHandoff:
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.server.routes.session_store") as mock_session_store,
-            patch("ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock) as mock_classify,
+            patch(
+                "ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock
+            ) as mock_classify,
         ):
             mock_config_store.load.return_value = mock_user_config
             mock_provider_mgr.has_providers = True
@@ -138,7 +145,10 @@ class TestRCAToConfirmHandoff:
                 json={
                     "model": "ternion-team",
                     "messages": [
-                        {"role": "assistant", "content": "TERNION_SESSION_ID=test123abc\nTERNION_REPORT_HASH=abc123"},
+                        {
+                            "role": "assistant",
+                            "content": "TERNION_SESSION_ID=test123abc\nTERNION_REPORT_HASH=abc123",
+                        },
                         {"role": "user", "content": "Yes, proceed with this analysis"},
                     ],
                     "stream": False,
@@ -157,25 +167,33 @@ class TestRCAToConfirmHandoff:
             assert "switch your model" in content.lower() or "switch" in content.lower()
 
             # Verify no code fence triggers
-            assert not contains_code_fence_trigger(content), \
+            assert not contains_code_fence_trigger(content), (
                 "Handoff package should not contain code fence triggers"
+            )
 
             # Verify session stage was updated
             mock_session_store.update_session.assert_called()
 
     def test_handoff_package_contains_sanitized_report(
-        self, client: TestClient, mock_user_config, mock_session_awaiting
+        self,
+        client: TestClient,
+        mock_user_config: MagicMock,
+        mock_session_awaiting: Session,
     ) -> None:
         """Handoff package should contain sanitized report content."""
         # Add potentially dangerous content to report
         mock_session_awaiting.ternion_report_raw = "Analysis:\n```python\nprint('test')\n```"
-        mock_session_awaiting.ternion_report_safe = "Analysis:\n`\u200b`\u200b`python\nprint('test')\n`\u200b`\u200b`"
+        mock_session_awaiting.ternion_report_safe = (
+            "Analysis:\n`\u200b`\u200b`python\nprint('test')\n`\u200b`\u200b`"
+        )
 
         with (
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.server.routes.session_store") as mock_session_store,
-            patch("ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock) as mock_classify,
+            patch(
+                "ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock
+            ) as mock_classify,
         ):
             mock_config_store.load.return_value = mock_user_config
             mock_provider_mgr.has_providers = True
@@ -205,7 +223,10 @@ class TestRCAToConfirmImplementation:
     """Test RCA → Report → Confirm → Implementation flow (TERNION_FULL mode)."""
 
     def test_confirm_triggers_implementation_stage(
-        self, client: TestClient, mock_user_config, mock_session_awaiting
+        self,
+        client: TestClient,
+        mock_user_config: MagicMock,
+        mock_session_awaiting: Session,
     ) -> None:
         """Confirm in TERNION_FULL mode should run implementation stage."""
         mock_user_config.execution_mode = "ternion_full"
@@ -221,8 +242,13 @@ class TestRCAToConfirmImplementation:
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.server.routes.session_store") as mock_session_store,
-            patch("ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock) as mock_classify,
-            patch("ternion.workflow.implementation_stage.run_implementation_stage", new_callable=AsyncMock) as mock_impl,
+            patch(
+                "ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock
+            ) as mock_classify,
+            patch(
+                "ternion.workflow.implementation_stage.run_implementation_stage",
+                new_callable=AsyncMock,
+            ) as mock_impl,
         ):
             mock_config_store.load.return_value = mock_user_config
             mock_provider_mgr.has_providers = True
@@ -255,7 +281,10 @@ class TestRCAToRejectClarify:
     """Test RCA → Report → Reject/Clarify flows."""
 
     def test_reject_triggers_new_rca(
-        self, client: TestClient, mock_user_config, mock_session_awaiting
+        self,
+        client: TestClient,
+        mock_user_config: MagicMock,
+        mock_session_awaiting: Session,
     ) -> None:
         """Reject intent should trigger new RCA analysis."""
         mock_new_result = {
@@ -267,7 +296,9 @@ class TestRCAToRejectClarify:
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.server.routes.session_store") as mock_session_store,
-            patch("ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock) as mock_classify,
+            patch(
+                "ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock
+            ) as mock_classify,
             patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
         ):
             mock_config_store.load.return_value = mock_user_config
@@ -297,7 +328,10 @@ class TestRCAToRejectClarify:
             mock_session_store.update_session.assert_called()
 
     def test_clarify_uses_existing_report(
-        self, client: TestClient, mock_user_config, mock_session_awaiting
+        self,
+        client: TestClient,
+        mock_user_config: MagicMock,
+        mock_session_awaiting: Session,
     ) -> None:
         """Clarify intent should answer using existing report without re-running RCA."""
         # Make the report very long to ensure clarify does not echo it back in full
@@ -312,7 +346,9 @@ class TestRCAToRejectClarify:
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.server.routes.session_store") as mock_session_store,
-            patch("ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock) as mock_classify,
+            patch(
+                "ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock
+            ) as mock_classify,
             patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
         ):
             mock_config_store.load.return_value = mock_user_config
@@ -345,7 +381,10 @@ class TestRCAToRejectClarify:
             assert "END_OF_REPORT_TOKEN" not in content
 
     def test_clarify_architecture_question_routes_to_fix_plan_excerpt(
-        self, client: TestClient, mock_user_config, mock_session_awaiting
+        self,
+        client: TestClient,
+        mock_user_config: MagicMock,
+        mock_session_awaiting: Session,
     ) -> None:
         """
         Clarify should route design/architecture questions to the Fix Plan excerpt.
@@ -377,7 +416,9 @@ class TestRCAToRejectClarify:
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.server.routes.session_store") as mock_session_store,
-            patch("ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock) as mock_classify,
+            patch(
+                "ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock
+            ) as mock_classify,
             patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
         ):
             mock_config_store.load.return_value = mock_user_config
@@ -412,7 +453,7 @@ class TestPostExecutionFollowup:
     """Test follow-up behavior after session completion."""
 
     def test_cursor_handoff_reminds_to_switch_model(
-        self, client: TestClient, mock_user_config
+        self, client: TestClient, mock_user_config: MagicMock
     ) -> None:
         """CURSOR_HANDOFF in CONFIRMED state should remind user to switch."""
         confirmed_session = Session(
@@ -454,7 +495,7 @@ class TestPostExecutionFollowup:
             assert "switch" in content.lower()
 
     def test_ternion_full_completed_informs_user(
-        self, client: TestClient, mock_user_config
+        self, client: TestClient, mock_user_config: MagicMock
     ) -> None:
         """TERNION_FULL in EXECUTED state should inform session is complete."""
         executed_session = Session(
@@ -501,7 +542,10 @@ class TestReportHashVerification:
     """Test report hash consistency verification."""
 
     def test_hash_mismatch_is_logged(
-        self, client: TestClient, mock_user_config, mock_session_awaiting
+        self,
+        client: TestClient,
+        mock_user_config: MagicMock,
+        mock_session_awaiting: Session,
     ) -> None:
         """Hash mismatch should be logged but processing continues."""
         mock_session_awaiting.report_hash = "stored_hash_123"
@@ -510,7 +554,9 @@ class TestReportHashVerification:
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.server.routes.session_store") as mock_session_store,
-            patch("ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock) as mock_classify,
+            patch(
+                "ternion.server.routes.classify_intent_with_fallback", new_callable=AsyncMock
+            ) as mock_classify,
             patch("ternion.server.routes.logger") as mock_logger,
         ):
             mock_config_store.load.return_value = mock_user_config
@@ -524,7 +570,10 @@ class TestReportHashVerification:
                 json={
                     "model": "ternion-team",
                     "messages": [
-                        {"role": "assistant", "content": "TERNION_SESSION_ID=test123abc\nTERNION_REPORT_HASH=different_hash"},
+                        {
+                            "role": "assistant",
+                            "content": "TERNION_SESSION_ID=test123abc\nTERNION_REPORT_HASH=different_hash",
+                        },
                         {"role": "user", "content": "Proceed"},
                     ],
                     "stream": False,

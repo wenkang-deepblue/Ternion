@@ -2,6 +2,8 @@
 Tests for the intent classifier module.
 """
 
+from __future__ import annotations
+
 import pytest
 
 from ternion.core.intent_classifier import (
@@ -16,124 +18,148 @@ class TestClassifyIntent:
     """Tests for intent classification."""
 
     # English confirmation tests
-    @pytest.mark.parametrize("text", [
-        "yes",
-        "Yes, proceed",
-        "yep",
-        "confirm",
-        "looks good",
-        "LGTM",
-        "go ahead",
-        "ok",
-        "sure",
-        "That's correct",
-        "sounds good to me",
-        "perfect, let's do it",
-    ])
-    def test_confirm_english(self, text):
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "yes",
+            "Yes, proceed",
+            "yep",
+            "confirm",
+            "looks good",
+            "LGTM",
+            "go ahead",
+            "ok",
+            "sure",
+            "That's correct",
+            "sounds good to me",
+            "perfect, let's do it",
+        ],
+    )
+    def test_confirm_english(self, text: str) -> None:
         """Should classify English confirmation phrases."""
         assert classify_intent(text) == Intent.CONFIRM
 
     # Chinese confirmation tests
-    @pytest.mark.parametrize("text", [
-        "是的",
-        "好的",
-        "可以",
-        "确认",
-        "继续",
-        "没问题",
-        "对的",
-        "分析正确",
-    ])
-    def test_confirm_chinese(self, text):
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "是的",
+            "好的",
+            "可以",
+            "确认",
+            "继续",
+            "没问题",
+            "对的",
+            "分析正确",
+        ],
+    )
+    def test_confirm_chinese(self, text: str) -> None:
         """Should classify Chinese confirmation phrases."""
         assert classify_intent(text) == Intent.CONFIRM
 
     # Other languages confirmation tests
-    @pytest.mark.parametrize("text,lang", [
-        ("sí, confirmar", "Spanish"),
-        ("oui, continuer", "French"),
-        ("ja, bestätigen", "German"),
-        ("はい、続行", "Japanese"),
-        ("네, 확인", "Korean"),
-    ])
-    def test_confirm_other_languages(self, text, lang):
+    @pytest.mark.parametrize(
+        "text,lang",
+        [
+            ("sí, confirmar", "Spanish"),
+            ("oui, continuer", "French"),
+            ("ja, bestätigen", "German"),
+            ("はい、続行", "Japanese"),
+            ("네, 확인", "Korean"),
+        ],
+    )
+    def test_confirm_other_languages(self, text: str, lang: str) -> None:
         """Should classify confirmation in other languages."""
         assert classify_intent(text) == Intent.CONFIRM, f"Failed for {lang}"
 
     # English rejection tests
-    @pytest.mark.parametrize("text", [
-        "no",
-        "nope",
-        "wrong",
-        "incorrect",
-        "that's wrong",
-        "re-analyze",
-        "try again",
-        "this is not right",
-        "disagree",
-    ])
-    def test_reject_english(self, text):
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "no",
+            "nope",
+            "wrong",
+            "incorrect",
+            "that's wrong",
+            "re-analyze",
+            "try again",
+            "this is not right",
+            "disagree",
+        ],
+    )
+    def test_reject_english(self, text: str) -> None:
         """Should classify English rejection phrases."""
         assert classify_intent(text) == Intent.REJECT
 
     # Chinese rejection tests
-    @pytest.mark.parametrize("text", [
-        "不对",
-        "错了",
-        "不正确",
-        "有问题",
-        "重新分析",
-        "这是错的",
-        "需要修正",
-    ])
-    def test_reject_chinese(self, text):
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "不对",
+            "错了",
+            "不正确",
+            "有问题",
+            "重新分析",
+            "这是错的",
+            "需要修正",
+        ],
+    )
+    def test_reject_chinese(self, text: str) -> None:
         """Should classify Chinese rejection phrases."""
         assert classify_intent(text) == Intent.REJECT
 
     # Other languages rejection tests
-    @pytest.mark.parametrize("text,lang", [
-        ("no, incorrecto", "Spanish"),
-        ("non, incorrect", "French"),
-        ("nein, falsch", "German"),
-        ("いいえ、間違い", "Japanese"),
-        ("아니, 틀렸어", "Korean"),
-    ])
-    def test_reject_other_languages(self, text, lang):
+    @pytest.mark.parametrize(
+        "text,lang",
+        [
+            ("no, incorrecto", "Spanish"),
+            ("non, incorrect", "French"),
+            ("nein, falsch", "German"),
+            ("いいえ、間違い", "Japanese"),
+            ("아니, 틀렸어", "Korean"),
+        ],
+    )
+    def test_reject_other_languages(self, text: str, lang: str) -> None:
         """Should classify rejection in other languages."""
         assert classify_intent(text) == Intent.REJECT, f"Failed for {lang}"
 
     # Clarification tests
-    @pytest.mark.parametrize("text", [
-        "can you clarify",
-        "what about the edge case",
-        "but what if",
-        "what if we consider another approach",
-        "需要更多细节",
-        "不太明白这部分",
-    ])
-    def test_clarify(self, text):
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "can you clarify",
+            "what about the edge case",
+            "but what if",
+            "what if we consider another approach",
+            "需要更多细节",
+            "不太明白这部分",
+        ],
+    )
+    def test_clarify(self, text: str) -> None:
         """Should classify clarification requests."""
         assert classify_intent(text) == Intent.CLARIFY
 
     # Unknown intent tests
-    @pytest.mark.parametrize("text", [
-        "",
-        "   ",
-        "hello world",
-        "random text without intent",
-        "12345",
-    ])
-    def test_unknown(self, text):
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "   ",
+            "hello world",
+            "random text without intent",
+            "12345",
+        ],
+    )
+    def test_unknown(self, text: str) -> None:
         """Should return UNKNOWN for ambiguous input."""
         assert classify_intent(text) == Intent.UNKNOWN
 
-    def test_reject_priority_over_confirm(self):
+    def test_reject_priority_over_confirm(self) -> None:
         """Rejection indicators should take priority over confirmation."""
         # "yes" would match confirm, but "wrong" should trigger reject
         assert classify_intent("no, this is wrong") == Intent.REJECT
 
-    def test_case_insensitive(self):
+    def test_case_insensitive(self) -> None:
         """Classification should be case-insensitive."""
         assert classify_intent("YES") == Intent.CONFIRM
         assert classify_intent("NO") == Intent.REJECT
@@ -142,7 +168,7 @@ class TestClassifyIntent:
 class TestParseSessionMarker:
     """Tests for session marker parsing."""
 
-    def test_find_session_id(self):
+    def test_find_session_id(self) -> None:
         """Should find session ID in assistant message."""
         messages = [
             {"role": "user", "content": "help me fix this bug"},
@@ -150,7 +176,7 @@ class TestParseSessionMarker:
         ]
         assert parse_session_marker(messages) == "abc123xyz"
 
-    def test_find_latest_session_id(self):
+    def test_find_latest_session_id(self) -> None:
         """Should find the most recent session ID."""
         messages = [
             {"role": "assistant", "content": "TERNION_SESSION_ID=old123"},
@@ -159,7 +185,7 @@ class TestParseSessionMarker:
         ]
         assert parse_session_marker(messages) == "new456"
 
-    def test_no_session_id(self):
+    def test_no_session_id(self) -> None:
         """Should return None when no session ID found."""
         messages = [
             {"role": "user", "content": "hello"},
@@ -167,7 +193,7 @@ class TestParseSessionMarker:
         ]
         assert parse_session_marker(messages) is None
 
-    def test_empty_messages(self):
+    def test_empty_messages(self) -> None:
         """Should handle empty message list."""
         assert parse_session_marker([]) is None
 
@@ -175,7 +201,7 @@ class TestParseSessionMarker:
 class TestGetLatestUserMessage:
     """Tests for user message extraction."""
 
-    def test_get_latest_user_message(self):
+    def test_get_latest_user_message(self) -> None:
         """Should get the most recent user message."""
         messages = [
             {"role": "user", "content": "first message"},
@@ -184,7 +210,7 @@ class TestGetLatestUserMessage:
         ]
         assert get_latest_user_message(messages) == "second message"
 
-    def test_multimodal_content(self):
+    def test_multimodal_content(self) -> None:
         """Should handle multimodal content with text parts."""
         messages = [
             {
@@ -192,18 +218,18 @@ class TestGetLatestUserMessage:
                 "content": [
                     {"type": "text", "text": "please analyze"},
                     {"type": "image_url", "image_url": {"url": "..."}},
-                ]
+                ],
             },
         ]
         assert get_latest_user_message(messages) == "please analyze"
 
-    def test_no_user_messages(self):
+    def test_no_user_messages(self) -> None:
         """Should return empty string when no user messages."""
         messages = [
             {"role": "assistant", "content": "hello"},
         ]
         assert get_latest_user_message(messages) == ""
 
-    def test_empty_messages(self):
+    def test_empty_messages(self) -> None:
         """Should handle empty message list."""
         assert get_latest_user_message([]) == ""

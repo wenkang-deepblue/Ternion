@@ -124,9 +124,7 @@ class ProviderManager:
         role_cfg = config_store.get_role_config(role)
 
         if not role_cfg or not role_cfg.provider:
-            raise AllProvidersUnavailable(
-                t(MessageKey.ROLE_NOT_CONFIGURED, role=role)
-            )
+            raise AllProvidersUnavailable(t(MessageKey.ROLE_NOT_CONFIGURED, role=role))
 
         provider = self._providers.get(role_cfg.provider)
         if provider:

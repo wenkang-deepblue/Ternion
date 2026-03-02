@@ -2,7 +2,6 @@
 Tests for cursor safety utilities.
 """
 
-
 from ternion.utils.cursor_safety import (
     FULLWIDTH_BACKTICK,
     FULLWIDTH_TILDE,

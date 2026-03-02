@@ -7,39 +7,28 @@
  * - Multi-line message support
  */
 
-import { useState, createContext, useContext, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
+import type { ReactNode } from 'react';
 
 // Toast icons
 import checkIcon from '../assets/icons/check.svg';
 import errorIcon from '../assets/icons/error.svg';
 import infoIcon from '../assets/icons/information.svg';
-
-interface ToastContextType {
-  showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
-}
-
-const ToastContext = createContext<ToastContextType | null>(null);
-
-export function useToast() {
-  const context = useContext(ToastContext);
-  if (!context) {
-    throw new Error('useToast must be used within ToastProvider');
-  }
-  return context;
-}
+import { ToastContext } from './toastContext';
+import type { ToastType } from './toastContext';
 
 interface Toast {
   id: number;
   message: string;
-  type: 'success' | 'error' | 'info';
+  type: ToastType;
   exiting: boolean;
 }
 
-export function ToastProvider({ children }: { children: React.ReactNode }) {
+export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextIdRef = useRef(0);
 
-  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
+  const showToast = useCallback((message: string, type: ToastType = 'info') => {
     const id = nextIdRef.current++;
     setToasts(prev => [...prev, { id, message, type, exiting: false }]);
 

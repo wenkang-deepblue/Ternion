@@ -127,9 +127,7 @@ async def ternion_error_handler(request: Request, exc: TernionError) -> JSONResp
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_error_handler(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """
     Handle request validation errors (CR-031).
 

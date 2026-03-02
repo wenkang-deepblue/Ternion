@@ -11,7 +11,7 @@
 import { useState, useEffect } from 'react';
 import api from '../api/client';
 import type { Config, RoleConfig, ModelsData, ModelInfo } from '../api/client';
-import { useToast } from './Toast';
+import { useToast } from './toastContext';
 import type { Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
 import type { Language } from '../i18n';
@@ -87,10 +87,10 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
     const hasAnyApiKeyConfigured = Object.values(cfg.providers || {}).some(
       (p) =>
         Boolean(
-          (p as any)?.has_keys ||
-            (p as any)?.enabled ||
-            (p as any)?.selected_key_id ||
-            ((p as any)?.keys?.length ?? 0) > 0
+          p?.has_keys ||
+            p?.enabled ||
+            p?.selected_key_id ||
+            (p?.keys?.length ?? 0) > 0
         )
     );
     return !hasExecutionMode && !hasAnyRoleConfigured && !hasAnyApiKeyConfigured;

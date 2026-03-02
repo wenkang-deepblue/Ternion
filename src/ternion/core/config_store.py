@@ -93,7 +93,7 @@ class PortsConfig(BaseModel):
     """Server port configuration."""
 
     backend: int = 9110  # Ternion API server port
-    web: int = 9120      # Web control panel port
+    web: int = 9120  # Web control panel port
 
 
 class UserConfig(BaseModel):
@@ -165,7 +165,11 @@ class ConfigStore:
         if "providers" in data:
             for provider_name, provider_data in data["providers"].items():
                 # Check if using old format (single api_key instead of api_keys list)
-                if isinstance(provider_data, dict) and "api_key" in provider_data and "api_keys" not in provider_data:
+                if (
+                    isinstance(provider_data, dict)
+                    and "api_key" in provider_data
+                    and "api_keys" not in provider_data
+                ):
                     old_key = provider_data.get("api_key", "")
                     if old_key:
                         # Migrate to new format
@@ -232,9 +236,7 @@ class ConfigStore:
 
         # Atomic write using temp file + replace
         fd, tmp_path = tempfile.mkstemp(
-            dir=self.config_path.parent,
-            suffix=".tmp",
-            prefix="config_"
+            dir=self.config_path.parent, suffix=".tmp", prefix="config_"
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -256,11 +258,7 @@ class ConfigStore:
     def get_enabled_providers(self) -> list[str]:
         """Get list of providers with valid API keys."""
         config = self.load()
-        return [
-            name
-            for name, provider in config.providers.items()
-            if provider.enabled
-        ]
+        return [name for name, provider in config.providers.items() if provider.enabled]
 
     def get_provider_api_key(self, provider: str) -> str | None:
         """Get active API key for a provider."""

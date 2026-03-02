@@ -1879,7 +1879,8 @@ export const translations: Record<Language, Translations> = {
  */
 export function detectBrowserLanguage(): Language {
   if (typeof navigator !== 'undefined') {
-    const lang = (navigator.language || (navigator as any).userLanguage || 'en').toLowerCase();
+    const nav = navigator as Navigator & { userLanguage?: string };
+    const lang = (navigator.language || nav.userLanguage || 'en').toLowerCase();
     if (lang.startsWith('zh')) {
       return 'zh';
     }
@@ -1926,6 +1927,10 @@ export function isCJKLanguage(lang: Language): boolean {
  * @param language - Optional explicit language for formatting (defaults to 'en' if not provided)
  */
 export function getErrorMessage(t: Translations, errorCode: string, language?: Language): string {
+  if (errorCode.startsWith('INVALID_PORT_')) {
+    return t.portsInvalid;
+  }
+
   // Special handling: include missing roles for ROLES_INCOMPLETE
   // Backend may return: "ROLES_INCOMPLETE:ternion_a,arbiter,writer"
   if (errorCode.startsWith('ROLES_INCOMPLETE:')) {

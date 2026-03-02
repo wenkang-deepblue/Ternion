@@ -1,6 +1,9 @@
 from unittest.mock import MagicMock, patch
 
-from ternion.workflow.nodes import _validate_evidence_requests_payload, _validate_evidence_topup_request
+from ternion.workflow.nodes import (
+    _validate_evidence_requests_payload,
+    _validate_evidence_topup_request,
+)
 
 
 def test_validate_evidence_topup_allows_first_request() -> None:
@@ -8,10 +11,7 @@ def test_validate_evidence_topup_allows_first_request() -> None:
     config.language = "en"
     with patch("ternion.utils.i18n.config_store") as mock_store:
         mock_store.load.return_value = config
-        assert (
-            _validate_evidence_topup_request(used_round=0, final_request=False)
-            is None
-        )
+        assert _validate_evidence_topup_request(used_round=0, final_request=False) is None
 
 
 def test_validate_evidence_topup_requires_final_on_second_request() -> None:
@@ -76,4 +76,3 @@ def test_validate_evidence_requests_payload_accepts_bullet_purpose_prefix() -> N
             "- [P0] path=src/app.py:1-2\n- PURPOSE: Verify initialization."
         )
         assert msg is None
-

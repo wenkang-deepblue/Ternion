@@ -13,11 +13,7 @@ def test_read_only_filter_accepts_snake_case_names() -> None:
         {"type": "function", "function": {"name": "Write"}},
     ]
     filtered = _filter_read_only_cursor_tools(tools)
-    names = [
-        tool.get("function", {}).get("name")
-        for tool in filtered
-        if isinstance(tool, dict)
-    ]
+    names = [tool.get("function", {}).get("name") for tool in filtered if isinstance(tool, dict)]
     assert "read_file" in names
     assert "grep" in names
     assert "codebase_search" in names

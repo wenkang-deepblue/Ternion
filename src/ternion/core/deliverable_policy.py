@@ -52,10 +52,7 @@ class DeliverableReason(str, Enum):
 def _has_any_pattern(text: str, patterns: list[str]) -> bool:
     if not text:
         return False
-    for pattern in patterns:
-        if re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE):
-            return True
-    return False
+    return any(re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE) for pattern in patterns)
 
 
 @dataclass(frozen=True)

@@ -19,6 +19,8 @@ _RESOURCE_PATH = Path(__file__).with_name("language_resources.json")
 
 @dataclass(frozen=True)
 class DeliverablePolicyPatterns:
+    """Language-driven pattern lists used by deliverable policy classification."""
+
     doc_only: list[str]
     analysis_only: list[str]
     no_code: list[str]
@@ -28,6 +30,8 @@ class DeliverablePolicyPatterns:
 
 @dataclass(frozen=True)
 class IntentPatterns:
+    """Language-driven pattern lists used by intent classification."""
+
     confirm: list[str]
     reject: list[str]
     clarify: list[str]
@@ -35,6 +39,8 @@ class IntentPatterns:
 
 @dataclass(frozen=True)
 class ReportSectionKeywords:
+    """Keyword lists used to detect report section intent across languages."""
+
     scope: list[str]
     verification: list[str]
     risks: list[str]
@@ -88,6 +94,7 @@ def _get_str(data: dict[str, Any], *keys: str) -> str:
 
 
 def get_deliverable_policy_patterns() -> DeliverablePolicyPatterns:
+    """Return deliverable-policy patterns loaded from bundled language resources."""
     data = load_language_resources()
     return DeliverablePolicyPatterns(
         doc_only=_get_list(data, "deliverable_policy", "doc_only_patterns"),
@@ -99,6 +106,7 @@ def get_deliverable_policy_patterns() -> DeliverablePolicyPatterns:
 
 
 def get_intent_patterns() -> IntentPatterns:
+    """Return intent-classifier patterns loaded from bundled language resources."""
     data = load_language_resources()
     return IntentPatterns(
         confirm=_get_list(data, "intent_classifier", "confirm_patterns"),
@@ -108,21 +116,25 @@ def get_intent_patterns() -> IntentPatterns:
 
 
 def get_intent_classification_prompt() -> str:
+    """Return the prompt template used for intent classification."""
     data = load_language_resources()
     return _get_str(data, "intent_classifier_prompt")
 
 
 def get_report_language_instruction_template() -> str:
+    """Return the language instruction template injected into report prompts."""
     data = load_language_resources()
     return _get_str(data, "report_language_instruction_template")
 
 
 def get_optimizer_language_instruction_template() -> str:
+    """Return the language instruction template injected into optimizer prompts."""
     data = load_language_resources()
     return _get_str(data, "optimizer_language_instruction_template")
 
 
 def get_report_section_keywords() -> ReportSectionKeywords:
+    """Return keyword lists used for report section classification."""
     data = load_language_resources()
     return ReportSectionKeywords(
         scope=_get_list(data, "report_section_keywords", "scope"),
@@ -138,6 +150,7 @@ def get_report_section_keywords() -> ReportSectionKeywords:
 
 
 def get_language_name(language_code: str) -> str:
+    """Return a display name for a language code if available."""
     data = load_language_resources()
     names = data.get("language_names")
     if isinstance(names, dict):
@@ -148,5 +161,6 @@ def get_language_name(language_code: str) -> str:
 
 
 def get_cursor_non_agent_mode_hints() -> list[str]:
+    """Return Cursor mode reminder substrings used for non-agent detection."""
     data = load_language_resources()
     return _get_list(data, "cursor_non_agent_mode_hints")

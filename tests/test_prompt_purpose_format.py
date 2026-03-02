@@ -15,10 +15,7 @@ def test_arbiter_evidence_prompt_includes_purpose_field_format() -> None:
     )
     assert expected in ARBITER_EVIDENCE_PROMPT
     assert "EXACTLY 2 top-level sections" in ARBITER_EVIDENCE_PROMPT
-    assert (
-        "PURPOSE must never appear inside EXCERPT_BEGIN/END"
-        in ARBITER_EVIDENCE_PROMPT
-    )
+    assert "PURPOSE must never appear inside EXCERPT_BEGIN/END" in ARBITER_EVIDENCE_PROMPT
 
 
 def test_report_evidence_prompt_includes_purpose_field_format() -> None:
@@ -30,15 +27,9 @@ def test_report_evidence_prompt_includes_purpose_field_format() -> None:
     )
     assert expected in ARBITER_REPORT_EVIDENCE_PROMPT
     assert "EXACTLY 2 top-level sections" in ARBITER_REPORT_EVIDENCE_PROMPT
-    assert (
-        "PURPOSE must never appear inside EXCERPT_BEGIN/END"
-        in ARBITER_REPORT_EVIDENCE_PROMPT
-    )
+    assert "PURPOSE must never appear inside EXCERPT_BEGIN/END" in ARBITER_REPORT_EVIDENCE_PROMPT
     assert "PURPOSE MAPPING (MANDATORY)" in ARBITER_REPORT_EVIDENCE_PROMPT
-    assert (
-        "Do NOT repeat previously collected evidence"
-        in ARBITER_REPORT_EVIDENCE_PROMPT
-    )
+    assert "Do NOT repeat previously collected evidence" in ARBITER_REPORT_EVIDENCE_PROMPT
 
 
 def test_divergence_prompt_requires_purpose_in_requests() -> None:

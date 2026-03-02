@@ -11,7 +11,7 @@ from ternion.workflow.state import WorkflowPhase
 
 
 @pytest.mark.asyncio
-async def test_run_implementation_stage_missing_report_is_localized_with_browser_language():
+async def test_run_implementation_stage_missing_report_is_localized_with_browser_language() -> None:
     """Missing-field message should respect browser_language when language is 'auto'."""
     config = MagicMock()
     config.language = "auto"
@@ -32,7 +32,7 @@ async def test_run_implementation_stage_missing_report_is_localized_with_browser
 
 
 @pytest.mark.asyncio
-async def test_run_implementation_stage_supports_report_evidence_and_resumes_to_execution():
+async def test_run_implementation_stage_supports_report_evidence_and_resumes_to_execution() -> None:
     """Implementation stage should run Phase 1.5 and resume back to execution."""
     state = {
         "ternion_report": "REPORT",
@@ -43,9 +43,14 @@ async def test_run_implementation_stage_supports_report_evidence_and_resumes_to_
     }
 
     with (
-        patch("ternion.workflow.implementation_stage.report_evidence_node", new_callable=AsyncMock) as mock_report_evidence,
-        patch("ternion.workflow.implementation_stage.execution_node", new_callable=AsyncMock) as mock_execution,
+        patch(
+            "ternion.workflow.implementation_stage.report_evidence_node", new_callable=AsyncMock
+        ) as mock_report_evidence,
+        patch(
+            "ternion.workflow.implementation_stage.execution_node", new_callable=AsyncMock
+        ) as mock_execution,
     ):
+
         async def report_impl(s):  # type: ignore[no-untyped-def]
             return {**s, "current_phase": WorkflowPhase.EXECUTION.value}
 
@@ -63,7 +68,7 @@ async def test_run_implementation_stage_supports_report_evidence_and_resumes_to_
 
 
 @pytest.mark.asyncio
-async def test_run_implementation_stage_transitions_from_execution_to_report_evidence():
+async def test_run_implementation_stage_transitions_from_execution_to_report_evidence() -> None:
     """Execution node may request Phase 1.5; the runner must not terminate early."""
     state = {
         "ternion_report": "REPORT",
@@ -72,9 +77,14 @@ async def test_run_implementation_stage_transitions_from_execution_to_report_evi
     }
 
     with (
-        patch("ternion.workflow.implementation_stage.execution_node", new_callable=AsyncMock) as mock_execution,
-        patch("ternion.workflow.implementation_stage.report_evidence_node", new_callable=AsyncMock) as mock_report_evidence,
+        patch(
+            "ternion.workflow.implementation_stage.execution_node", new_callable=AsyncMock
+        ) as mock_execution,
+        patch(
+            "ternion.workflow.implementation_stage.report_evidence_node", new_callable=AsyncMock
+        ) as mock_report_evidence,
     ):
+
         async def report_impl(s):  # type: ignore[no-untyped-def]
             return {**s, "current_phase": WorkflowPhase.EXECUTION.value}
 
@@ -102,7 +112,7 @@ async def test_run_implementation_stage_transitions_from_execution_to_report_evi
 
 
 @pytest.mark.asyncio
-async def test_run_implementation_stage_transitions_from_optimizer_to_report_evidence():
+async def test_run_implementation_stage_transitions_from_optimizer_to_report_evidence() -> None:
     """Optimizer node may request Phase 1.5; the runner must not terminate early."""
     state = {
         "ternion_report": "REPORT",
@@ -111,9 +121,14 @@ async def test_run_implementation_stage_transitions_from_optimizer_to_report_evi
     }
 
     with (
-        patch("ternion.workflow.implementation_stage.optimizer_node", new_callable=AsyncMock) as mock_optimizer,
-        patch("ternion.workflow.implementation_stage.report_evidence_node", new_callable=AsyncMock) as mock_report_evidence,
+        patch(
+            "ternion.workflow.implementation_stage.optimizer_node", new_callable=AsyncMock
+        ) as mock_optimizer,
+        patch(
+            "ternion.workflow.implementation_stage.report_evidence_node", new_callable=AsyncMock
+        ) as mock_report_evidence,
     ):
+
         async def report_impl(s):  # type: ignore[no-untyped-def]
             return {**s, "current_phase": WorkflowPhase.OPTIMIZER.value}
 
@@ -138,4 +153,3 @@ async def test_run_implementation_stage_transitions_from_optimizer_to_report_evi
     assert out.get("final_output") == "DONE"
     assert mock_report_evidence.await_count == 1
     assert mock_optimizer.await_count == 2
-

@@ -286,9 +286,7 @@ class AnthropicProvider(BaseProvider):
             logger.warning("anthropic_unavailable", error=str(e))
             return False
 
-    def _convert_messages(
-        self, messages: list[ChatMessage]
-    ) -> tuple[str, list[dict[str, Any]]]:
+    def _convert_messages(self, messages: list[ChatMessage]) -> tuple[str, list[dict[str, Any]]]:
         """
         Convert ChatMessage objects to Anthropic format.
 
@@ -315,40 +313,50 @@ class AnthropicProvider(BaseProvider):
             role = "user" if msg.role == MessageRole.USER else "assistant"
 
             if isinstance(msg.content, str):
-                result.append({
-                    "role": role,
-                    "content": msg.content,
-                })
+                result.append(
+                    {
+                        "role": role,
+                        "content": msg.content,
+                    }
+                )
             elif isinstance(msg.content, list):
                 # Multimodal content
                 content_parts = []
                 for part in msg.content:
                     if isinstance(part, TextContent):
-                        content_parts.append({
-                            "type": "text",
-                            "text": part.text,
-                        })
+                        content_parts.append(
+                            {
+                                "type": "text",
+                                "text": part.text,
+                            }
+                        )
                     elif isinstance(part, ImageContent):
                         # Anthropic requires base64 image data
                         image_data = self._extract_image_data(part.image_url.url)
                         if image_data:
-                            content_parts.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": image_data["media_type"],
-                                    "data": image_data["data"],
-                                },
-                            })
-                result.append({
-                    "role": role,
-                    "content": content_parts,
-                })
+                            content_parts.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": image_data["media_type"],
+                                        "data": image_data["data"],
+                                    },
+                                }
+                            )
+                result.append(
+                    {
+                        "role": role,
+                        "content": content_parts,
+                    }
+                )
             else:
-                result.append({
-                    "role": role,
-                    "content": str(msg.content) if msg.content else "",
-                })
+                result.append(
+                    {
+                        "role": role,
+                        "content": str(msg.content) if msg.content else "",
+                    }
+                )
 
         return system_prompt, result
 

@@ -2,7 +2,6 @@
 Tests for the Message Router module.
 """
 
-
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.router.context import TernionContext
 from ternion.router.message_router import MessageRouter

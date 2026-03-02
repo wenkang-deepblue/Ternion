@@ -50,16 +50,14 @@ function formatTokenCount(value: number): string {
 }
 
 // Custom tooltip for charts - uses dataKey for formatting decisions
-function CustomTooltip({ 
-  active, 
-  payload, 
+function CustomTooltip({
+  active,
+  payload,
   label,
-  t: _t,
 }: {
   active?: boolean;
   payload?: Array<{ name: string; value: number; color: string; dataKey?: string }>;
   label?: string;
-  t: Translations;
 }) {
   if (!active || !payload || payload.length === 0) return null;
 
@@ -559,7 +557,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                   tick={{ fill: chartColors.text, fontSize: 12 }}
                   tickFormatter={formatTokenCount}
                 />
-                <Tooltip content={<CustomTooltip t={t} />} />
+                <Tooltip content={<CustomTooltip />} />
                 <Legend />
                 <Bar 
                   yAxisId="left" 
@@ -671,7 +669,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                   tick={{ fill: chartColors.text, fontSize: 12 }}
                   tickFormatter={formatTokenCount}
                 />
-                <Tooltip content={<CustomTooltip t={t} />} />
+                <Tooltip content={<CustomTooltip />} />
                 <Legend />
                 <Bar 
                   yAxisId="left" 

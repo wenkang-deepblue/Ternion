@@ -1,12 +1,11 @@
 import json
-
-import pytest
+from pathlib import Path
 
 from ternion.core.models import TextContent
 from ternion.core.session_store import ExecutionMode, SessionStage, SessionStore
 
 
-def test_session_store_persists_multimodal_text_content(tmp_path) -> None:
+def test_session_store_persists_multimodal_text_content(tmp_path: Path) -> None:
     """
     Session persistence must support OpenAI-style content parts.
 
@@ -44,4 +43,3 @@ def test_session_store_persists_multimodal_text_content(tmp_path) -> None:
     assert isinstance(saved_content, list)
     assert saved_content[0].get("type") == "text"
     assert saved_content[0].get("text") == "hello"
-

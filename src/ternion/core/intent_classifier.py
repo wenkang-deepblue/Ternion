@@ -167,6 +167,7 @@ INTENT_FALLBACK_MODELS = [
     ("anthropic", "claude-haiku-4-5-20251001"),
 ]
 
+
 async def classify_intent_with_llm(text: str) -> Intent:
     """
     Classify user intent using LLM fallback.
@@ -292,4 +293,3 @@ async def classify_intent_with_fallback(text: str) -> Intent:
         intent=llm_result.value,
     )
     return llm_result
-

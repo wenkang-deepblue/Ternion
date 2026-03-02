@@ -49,19 +49,13 @@ class RolesSettings(BaseSettings):
     """Role assignments for the discussion."""
 
     arbiter: RoleConfig = Field(
-        default_factory=lambda: RoleConfig(
-            primary="google", fallback=["openai", "anthropic"]
-        )
+        default_factory=lambda: RoleConfig(primary="google", fallback=["openai", "anthropic"])
     )
     writer: RoleConfig = Field(
-        default_factory=lambda: RoleConfig(
-            primary="anthropic", fallback=["openai", "google"]
-        )
+        default_factory=lambda: RoleConfig(primary="anthropic", fallback=["openai", "google"])
     )
     reviewer: RoleConfig = Field(
-        default_factory=lambda: RoleConfig(
-            primary="openai", fallback=["anthropic", "google"]
-        )
+        default_factory=lambda: RoleConfig(primary="openai", fallback=["anthropic", "google"])
     )
 
 

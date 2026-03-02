@@ -1,6 +1,9 @@
-import pytest
+from __future__ import annotations
 
 from unittest.mock import MagicMock
+
+import pytest
+from pytest import MonkeyPatch
 
 from ternion.core.config_store import RoleConfig
 from ternion.core.models import ChatMessage, MessageRole
@@ -31,20 +34,20 @@ class _CapturingWriterProvider:
                     "type": "function",
                     "function": {
                         "name": "write",
-                        "arguments": "{\"file_path\":\"/abs/path\",\"content\":\"x\"}",
+                        "arguments": '{"file_path":"/abs/path","content":"x"}',
                     },
                 }
             ],
             usage={},
         )
 
-    def chat_completion_stream(self, *args: object, **kwargs: object):
+    def chat_completion_stream(self, *args: object, **kwargs: object) -> None:
         raise AssertionError("streaming not used in this test")
 
 
 @pytest.mark.asyncio
 async def test_execution_injects_text_tool_calls_based_on_runtime_provider_capability(
-    monkeypatch,
+    monkeypatch: MonkeyPatch,
 ) -> None:
     provider = _CapturingWriterProvider()
 
@@ -100,4 +103,3 @@ async def test_execution_injects_text_tool_calls_based_on_runtime_provider_capab
     assert isinstance(last_user.content, str)
     assert "[NON-OPENAI TOOL CALLS]" in last_user.content
     assert "TERNION_TOOL_CALLS_BEGIN" in last_user.content
-

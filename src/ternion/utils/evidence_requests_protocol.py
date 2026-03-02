@@ -10,7 +10,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-
 EVIDENCE_REQUESTS_BEGIN = "TERNION_EVIDENCE_REQUESTS_BEGIN"
 EVIDENCE_REQUESTS_END = "TERNION_EVIDENCE_REQUESTS_END"
 
@@ -122,4 +121,3 @@ def _parse_bool(value: str | None) -> bool:
         return False
     normalized = value.strip().lower()
     return normalized in ("1", "true", "yes", "y", "final")
-

@@ -15,6 +15,7 @@ EXECUTION_ALLOWED_TOOL_CANONICAL: frozenset[str] = frozenset(
     {
         "write",
         "writefile",
+        "strreplace",
         "searchreplace",
         "applypatch",
         "delete",
@@ -27,4 +28,3 @@ EXECUTION_ALLOWED_TOOL_CANONICAL: frozenset[str] = frozenset(
 )
 
 SHELL_TOOL_CANONICAL: frozenset[str] = frozenset({"runterminalcmd", "shell", "bash"})
-

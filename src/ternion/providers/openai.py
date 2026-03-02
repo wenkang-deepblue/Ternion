@@ -183,11 +183,13 @@ class OpenAIProvider(BaseProvider):
                     elif hasattr(item, "to_dict"):
                         tool_calls.append(item.to_dict())
                     else:
-                        tool_calls.append({
-                            "id": getattr(item, "id", ""),
-                            "type": getattr(item, "type", ""),
-                            "function": getattr(item, "function", None),
-                        })
+                        tool_calls.append(
+                            {
+                                "id": getattr(item, "id", ""),
+                                "type": getattr(item, "type", ""),
+                                "function": getattr(item, "function", None),
+                            }
+                        )
 
         # Extract token counts
         prompt_tokens = usage.prompt_tokens if usage else 0
@@ -196,7 +198,11 @@ class OpenAIProvider(BaseProvider):
 
         # Extract reasoning tokens if available (included in completion_tokens)
         reasoning_tokens = 0
-        if usage and hasattr(usage, "completion_tokens_details") and usage.completion_tokens_details:
+        if (
+            usage
+            and hasattr(usage, "completion_tokens_details")
+            and usage.completion_tokens_details
+        ):
             reasoning_tokens = getattr(usage.completion_tokens_details, "reasoning_tokens", 0) or 0
 
         logger.info(
@@ -342,18 +348,22 @@ class OpenAIProvider(BaseProvider):
                 content_parts = []
                 for part in msg.content:
                     if isinstance(part, TextContent):
-                        content_parts.append({
-                            "type": "text",
-                            "text": part.text,
-                        })
+                        content_parts.append(
+                            {
+                                "type": "text",
+                                "text": part.text,
+                            }
+                        )
                     elif isinstance(part, ImageContent):
-                        content_parts.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": part.image_url.url,
-                                "detail": part.image_url.detail,
-                            },
-                        })
+                        content_parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": part.image_url.url,
+                                    "detail": part.image_url.detail,
+                                },
+                            }
+                        )
                 out["content"] = content_parts
             elif msg.content is None:
                 out["content"] = None
@@ -467,7 +477,9 @@ class OpenAIProvider(BaseProvider):
 
             if etype == "response.completed":
                 final_response = getattr(event, "response", None)
-                usage = getattr(final_response, "usage", None) if final_response is not None else None
+                usage = (
+                    getattr(final_response, "usage", None) if final_response is not None else None
+                )
                 usage_dict = self._usage_dict_from_responses_usage(usage)
 
         if usage_dict is not None:
@@ -527,7 +539,11 @@ class OpenAIProvider(BaseProvider):
                 thoughts_tokens=0,
             )
 
-        tool_calls = self._extract_tool_calls_from_responses(final_response) if final_response is not None else None
+        tool_calls = (
+            self._extract_tool_calls_from_responses(final_response)
+            if final_response is not None
+            else None
+        )
         if tool_calls:
             yield encode_stream_tool_calls(tool_calls)
 
@@ -569,7 +585,11 @@ class OpenAIProvider(BaseProvider):
 
                     call = tool_calls_by_index.get(idx)
                     if call is None:
-                        call = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                        call = {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        }
                         tool_calls_by_index[idx] = call
 
                     tc_id = getattr(item, "id", None)
@@ -613,8 +633,13 @@ class OpenAIProvider(BaseProvider):
             total_tokens = usage_data.total_tokens or 0
 
             reasoning_tokens = 0
-            if hasattr(usage_data, "completion_tokens_details") and usage_data.completion_tokens_details:
-                reasoning_tokens = getattr(usage_data.completion_tokens_details, "reasoning_tokens", 0) or 0
+            if (
+                hasattr(usage_data, "completion_tokens_details")
+                and usage_data.completion_tokens_details
+            ):
+                reasoning_tokens = (
+                    getattr(usage_data.completion_tokens_details, "reasoning_tokens", 0) or 0
+                )
 
             logger.info(
                 "openai_token_usage",
@@ -703,7 +728,9 @@ class OpenAIProvider(BaseProvider):
                 filtered[key] = value
         return filtered
 
-    def _convert_messages_to_responses_input(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    def _convert_messages_to_responses_input(
+        self, messages: list[ChatMessage]
+    ) -> list[dict[str, Any]]:
         """
         Convert ChatMessage objects into OpenAI Responses API `input` items.
         """
@@ -712,11 +739,13 @@ class OpenAIProvider(BaseProvider):
             if msg.role == MessageRole.TOOL:
                 tool_text = self._content_to_text(msg.content) or ""
                 call_id = msg.tool_call_id or ""
-                items.append({
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": tool_text,
-                })
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": tool_text,
+                    }
+                )
                 continue
 
             content: Any
@@ -728,11 +757,13 @@ class OpenAIProvider(BaseProvider):
                     if isinstance(part, TextContent):
                         parts.append({"type": "input_text", "text": part.text})
                     elif isinstance(part, ImageContent):
-                        parts.append({
-                            "type": "input_image",
-                            "image_url": part.image_url.url,
-                            "detail": part.image_url.detail,
-                        })
+                        parts.append(
+                            {
+                                "type": "input_image",
+                                "image_url": part.image_url.url,
+                                "detail": part.image_url.detail,
+                            }
+                        )
                     else:
                         parts.append({"type": "input_text", "text": str(part)})
                 content = parts
@@ -765,13 +796,15 @@ class OpenAIProvider(BaseProvider):
 
                         arguments_str = json.dumps(arguments, ensure_ascii=False)
 
-                    items.append({
-                        "type": "function_call",
-                        "call_id": tc_call_id,
-                        "id": tc_call_id,
-                        "name": name,
-                        "arguments": arguments_str,
-                    })
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tc_call_id,
+                            "id": tc_call_id,
+                            "name": name,
+                            "arguments": arguments_str,
+                        }
+                    )
 
         return items
 
@@ -821,11 +854,13 @@ class OpenAIProvider(BaseProvider):
             if not isinstance(arguments, str):
                 arguments = "{}" if arguments is None else str(arguments)
 
-            tool_calls.append({
-                "id": call_id,
-                "type": "function",
-                "function": {"name": name, "arguments": arguments},
-            })
+            tool_calls.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }
+            )
 
         return tool_calls or None
 

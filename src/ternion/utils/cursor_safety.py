@@ -104,4 +104,3 @@ def sanitize_for_preview(text: str, max_length: int = 100) -> str:
 
     # Apply full trigger sanitization to ensure safety
     return sanitize_for_cursor_display(preview)
-

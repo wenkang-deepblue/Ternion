@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+
 import pytest
 
 from ternion.core.models import ChatMessage, MessageRole
@@ -29,7 +33,7 @@ class _FakeStreamingProvider:
                 {
                     "id": "retry_call_01",
                     "type": "function",
-                    "function": {"name": "read_file", "arguments": "{\"target_file\":\"/abs/path\"}"},
+                    "function": {"name": "read_file", "arguments": '{"target_file":"/abs/path"}'},
                 }
             ],
             usage={},
@@ -42,15 +46,15 @@ class _FakeStreamingProvider:
         model: str,
         temperature: float,
         **kwargs: object,
-    ):
+    ) -> AsyncIterator[str]:
         self.stream_calls += 1
 
-        async def gen():
+        async def gen() -> AsyncIterator[str]:
             # Exceed the guard buffer to force at least one streamed token delta.
             yield "A" * 300
             yield (
                 "TERNION_TOOL_CALLS_BEGIN\n"
-                "{\"tool_calls\":[{\"name\":\"grep\",\"arguments\":{\"pattern\":\"x\",\"path\":\"/\"}}]}\n"
+                '{"tool_calls":[{"name":"grep","arguments":{"pattern":"x","path":"/"}}]}\n'
                 "TERNION_TOOL_CALLS_END"
             )
 
@@ -82,4 +86,3 @@ async def test_call_with_stream_mixed_output_triggers_tool_calls_retry() -> None
     assert response.finish_reason == "tool_calls"
     assert response.tool_calls is not None
     assert response.tool_calls[0].get("id") == "retry_call_01"
-

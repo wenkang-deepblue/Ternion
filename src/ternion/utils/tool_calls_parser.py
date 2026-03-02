@@ -38,7 +38,7 @@ def decode_stream_tool_calls(text: str | None) -> list[dict[str, Any]] | None:
         return None
     if not text.startswith(STREAM_TOOL_CALLS_PREFIX):
         return None
-    payload = text[len(STREAM_TOOL_CALLS_PREFIX):].strip()
+    payload = text[len(STREAM_TOOL_CALLS_PREFIX) :].strip()
     try:
         data = json.loads(payload)
     except Exception:

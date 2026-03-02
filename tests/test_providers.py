@@ -2,6 +2,8 @@
 Tests for provider adapters.
 """
 
+from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import patch
 
 from ternion.core.models import ChatMessage, MessageRole
@@ -35,6 +37,7 @@ class TestBaseProvider:
 
     def test_convert_messages_string_content(self) -> None:
         """Test message conversion with string content."""
+
         # Create a concrete implementation for testing
         class TestProvider(BaseProvider):
             @property
@@ -45,10 +48,21 @@ class TestBaseProvider:
             def default_model(self) -> str:
                 return "test-model"
 
-            async def chat_completion(self, *args, **kwargs):
-                pass
+            async def chat_completion(
+                self,
+                *args: object,
+                **kwargs: object,
+            ) -> ProviderResponse:
+                raise AssertionError("chat_completion not used in this test")
 
-            async def chat_completion_stream(self, *args, **kwargs):
+            async def chat_completion_stream(
+                self,
+                messages: list[ChatMessage],
+                model: str | None = None,
+                temperature: float = 0.0,
+                max_tokens: int | None = None,
+                **kwargs: Any,
+            ) -> AsyncGenerator[str, None]:
                 yield "test"
 
             async def is_available(self) -> bool:

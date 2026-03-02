@@ -16,11 +16,7 @@ def test_execution_tool_filter_removes_read_tools() -> None:
         {"type": "function", "function": {"name": "run_terminal_cmd"}},
     ]
     filtered = _filter_execution_cursor_tools(tools)
-    names = [
-        tool.get("function", {}).get("name")
-        for tool in filtered
-        if isinstance(tool, dict)
-    ]
+    names = [tool.get("function", {}).get("name") for tool in filtered if isinstance(tool, dict)]
     assert "Read" not in names
     assert "read_file" not in names
     assert "Grep" not in names

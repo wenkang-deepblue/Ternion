@@ -161,19 +161,25 @@ class BaseProvider(ABC):
         result = []
         for msg in messages:
             if isinstance(msg.content, str):
-                result.append({
-                    "role": msg.role.value,
-                    "content": msg.content,
-                })
+                result.append(
+                    {
+                        "role": msg.role.value,
+                        "content": msg.content,
+                    }
+                )
             elif isinstance(msg.content, list):
                 # Handle multimodal content - override in subclasses
-                result.append({
-                    "role": msg.role.value,
-                    "content": msg.content,
-                })
+                result.append(
+                    {
+                        "role": msg.role.value,
+                        "content": msg.content,
+                    }
+                )
             else:
-                result.append({
-                    "role": msg.role.value,
-                    "content": str(msg.content) if msg.content else "",
-                })
+                result.append(
+                    {
+                        "role": msg.role.value,
+                        "content": str(msg.content) if msg.content else "",
+                    }
+                )
         return result

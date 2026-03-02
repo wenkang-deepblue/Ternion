@@ -8,7 +8,6 @@ import re
 import shlex
 from dataclasses import dataclass
 
-
 _ALLOWED_SCRIPT_RE = re.compile(
     r"^(?:lint|test|format|typecheck|check|build)(?:[:._-].+)?$",
     flags=re.IGNORECASE | re.UNICODE,
@@ -29,6 +28,8 @@ _BLOCKLIST_PATTERNS = [
 
 @dataclass(frozen=True)
 class ShellPolicyResult:
+    """Result of evaluating whether a shell command is allowed."""
+
     allowed: bool
     reason: str
 
@@ -142,10 +143,7 @@ def _has_command_substitution(command: str) -> bool:
 
 
 def _matches_any(text: str, patterns: list[str]) -> bool:
-    for pattern in patterns:
-        if re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE):
-            return True
-    return False
+    return any(re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE) for pattern in patterns)
 
 
 def _is_allowed_verification_part(part: str) -> tuple[bool, str]:
@@ -360,7 +358,7 @@ def _extract_inline_dir_opt_value(token: str) -> str | None:
     for key in ("--prefix", "--cwd", "--dir"):
         prefix = f"{key}="
         if token.startswith(prefix):
-            return token[len(prefix):]
+            return token[len(prefix) :]
     if token.startswith("-C") and token != "-C":
         value = token[2:]
         if value.startswith("="):

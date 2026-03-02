@@ -122,7 +122,9 @@ def test_shell_policy_allows_dollar_brace_variable() -> None:
 
 
 def test_shell_policy_allows_file_meta_tool() -> None:
-    result = evaluate_shell_command("python -m ternion.utils.file_meta docs/advanced_feature_plan.md")
+    result = evaluate_shell_command(
+        "python -m ternion.utils.file_meta docs/advanced_feature_plan.md"
+    )
     assert result.allowed
 
 

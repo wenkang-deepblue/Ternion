@@ -6,9 +6,11 @@ Each node represents a step in the 4-step discussion flow.
 
 import ast
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -16,11 +18,11 @@ import structlog
 
 from ternion.core.budget import budget_manager
 from ternion.core.config import settings
+from ternion.core.config_store import config_store
 from ternion.core.deliverable_policy import (
     format_deliverable_policy_for_prompt,
     resolve_deliverable_policy,
 )
-from ternion.core.config_store import config_store
 from ternion.core.exceptions import TimeoutError as TernionTimeout
 from ternion.core.intent_classifier import get_latest_user_message
 from ternion.core.models import ChatMessage, MessageRole
@@ -62,14 +64,15 @@ from ternion.utils.language_resources import (
 )
 from ternion.utils.log_manager import log_manager
 from ternion.utils.report_parser import format_report_for_display, parse_structured_report
+from ternion.utils.secrets import redact_secrets
 from ternion.utils.shell_policy import evaluate_shell_command
-from ternion.utils.tool_policy import EXECUTION_ALLOWED_TOOL_CANONICAL, SHELL_TOOL_CANONICAL
 from ternion.utils.tool_calls_parser import (
     TOOL_CALLS_BEGIN,
     build_text_tool_calls_instruction,
     decode_stream_tool_calls,
     extract_tool_calls_from_text,
 )
+from ternion.utils.tool_policy import EXECUTION_ALLOWED_TOOL_CANONICAL, SHELL_TOOL_CANONICAL
 from ternion.utils.workflow_prompt_capture import (
     build_workflow_prompt_payload,
     schedule_workflow_prompt_capture,
@@ -104,6 +107,7 @@ def _extract_report_scope_for_policy(report: str) -> str:
     if parsed.is_structured and parsed.scope.strip():
         return parsed.scope
     return report or ""
+
 
 # Default timeout for provider calls (CR-030)
 DEFAULT_TIMEOUT_SECONDS = settings.discussion.timeout_seconds
@@ -201,6 +205,72 @@ def _detect_blocked_execution_tool_calls(
     return blocked_tools, blocked_shell
 
 
+def _detect_malformed_execution_tool_calls(
+    tool_calls: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    """
+    Detect malformed tool calls that are likely to be rejected by Cursor tool
+    schemas or server-side policies.
+
+    This currently focuses on EditNotebook, which requires `target_notebook`
+    and is intended for `.ipynb` targets only.
+    """
+    issues: list[dict[str, str]] = []
+    for tc in tool_calls or []:
+        name, args_str = _extract_tool_name_and_arguments(tc)
+        canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+        if canonical != "editnotebook":
+            continue
+
+        args = _coerce_json_object(args_str)
+        target = args.get("target_notebook")
+        if not isinstance(target, str) or not target.strip():
+            issues.append(
+                {
+                    "tool": name or "EditNotebook",
+                    "reason": "Missing required argument: target_notebook",
+                }
+            )
+            continue
+
+        if not target.strip().lower().endswith(".ipynb"):
+            issues.append(
+                {
+                    "tool": name or "EditNotebook",
+                    "reason": (
+                        "EditNotebook is only allowed for `.ipynb` targets "
+                        "(use StrReplace/Write for text files)"
+                    ),
+                }
+            )
+
+    return issues
+
+
+def _build_tool_call_validation_guardrail_feedback(
+    *,
+    issues: list[dict[str, str]],
+    role_label: str,
+) -> str:
+    issue_lines: list[str] = []
+    for item in issues or []:
+        tool_name = item.get("tool", "(unknown)")
+        reason = item.get("reason", "")
+        issue_lines.append(f"- {tool_name}: {reason}")
+    issues_text = "\n".join(issue_lines) if issue_lines else "- (none)"
+
+    return (
+        f"Your previous tool calls were INVALID for {role_label} and cannot be executed safely.\n\n"
+        "Issues:\n"
+        f"{issues_text}\n\n"
+        "Hard rules (MANDATORY):\n"
+        "- For `EditNotebook`, you MUST include `target_notebook` and it MUST point to a `.ipynb` file.\n"
+        "- For non-notebook files, NEVER use `EditNotebook`. Prefer `StrReplace` for small edits or "
+        "`Write`/`ApplyPatch` for larger changes.\n"
+        "- Now: resend ONLY corrected tool_calls with EMPTY assistant content.\n"
+    )
+
+
 def _format_shell_allowlist_summary_for_model() -> str:
     # Keep this short: categories only (avoid dumping regex patterns).
     return (
@@ -210,6 +280,33 @@ def _format_shell_allowlist_summary_for_model() -> str:
         "- File metadata: `python -m ternion.utils.file_meta <repo_path>`\n"
         "- Sanity: `pwd`, `python --version` / `python -V`, `node --version` / `node -v`, `npm|pnpm|yarn --version` / `-v`"
     )
+
+
+def _build_scoped_ruff_verification_commands(modified_files: list[str] | None) -> list[str]:
+    """
+    Build Ruff verification commands scoped to modified Python files.
+    """
+    py_files: list[str] = []
+    seen: set[str] = set()
+    for path in modified_files or []:
+        if not isinstance(path, str):
+            continue
+        cleaned = path.strip()
+        if not cleaned.endswith(".py"):
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        py_files.append(cleaned)
+
+    if not py_files:
+        return []
+
+    args = " ".join(shlex.quote(p) for p in py_files)
+    return [
+        f"python3 -m ruff check {args}",
+        f"python3 -m ruff format --check {args}",
+    ]
 
 
 def _build_tool_policy_guardrail_feedback(
@@ -284,6 +381,177 @@ def _validate_evidence_requests_payload(requests_text: str) -> str | None:
     if len(missing_purpose) > 8:
         display += f"\n- ... (+{len(missing_purpose) - 8})"
     return t(MessageKey.EVIDENCE_TOPUP_PURPOSE_REQUIRED, missing_items=display)
+
+
+def _tool_message_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False)
+    except Exception:
+        return str(content)
+
+
+def _should_add_python3_fallback_guardrail(
+    history: list[dict[str, Any]],
+    *,
+    tool_results_meta: dict[str, Any] | None = None,
+) -> bool:
+    """
+    Detect whether writer instructions should force python->python3 fallback.
+
+    Trigger when recent shell results indicate `python` is unavailable.
+    """
+    recent_tool_messages: list[dict[str, Any]] = []
+    for msg in reversed(history or []):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        recent_tool_messages.append(msg)
+        if len(recent_tool_messages) >= 24:
+            break
+
+    if not recent_tool_messages:
+        return False
+
+    meta_map = tool_results_meta if isinstance(tool_results_meta, dict) else {}
+
+    for msg in recent_tool_messages:
+        text_lower = _tool_message_text(msg.get("content")).lower()
+        if "command not found: python3" in text_lower:
+            return False
+
+    saw_python_missing = False
+    for msg in recent_tool_messages:
+        tool_call_id = msg.get("tool_call_id")
+        meta = meta_map.get(tool_call_id, {}) if isinstance(tool_call_id, str) else {}
+        command = str(meta.get("shell_command") or "").strip().lower()
+
+        exit_code_raw = meta.get("shell_exit_code")
+        try:
+            exit_code = int(exit_code_raw) if exit_code_raw is not None else None
+        except Exception:
+            exit_code = None
+
+        text_lower = _tool_message_text(msg.get("content")).lower()
+        if (
+            "command not found: python" in text_lower
+            and "command not found: python3" not in text_lower
+        ):
+            saw_python_missing = True
+            continue
+
+        if exit_code == 127 and command.startswith("python ") and "python3" not in command:
+            saw_python_missing = True
+
+        if command.startswith("python3") and exit_code == 0:
+            return False
+
+    return saw_python_missing
+
+
+def _looks_like_pytest_command(command: str) -> bool:
+    return "pytest" in (command or "").lower()
+
+
+def _format_last_pytest_status(tool_results_meta: dict[str, Any] | None) -> str:
+    meta_map = tool_results_meta if isinstance(tool_results_meta, dict) else {}
+    pytest_metas: list[dict[str, Any]] = []
+    for meta in meta_map.values():
+        if not isinstance(meta, dict):
+            continue
+        command = str(meta.get("shell_command") or "")
+        if command and _looks_like_pytest_command(command):
+            pytest_metas.append(meta)
+
+    if not pytest_metas:
+        return ""
+
+    last_any = pytest_metas[-1]
+
+    def _last_str(key: str) -> str:
+        for m in reversed(pytest_metas):
+            v = m.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    def _last_list_str(key: str) -> list[str]:
+        for m in reversed(pytest_metas):
+            v = m.get(key)
+            if isinstance(v, list):
+                items = [str(x).strip() for x in v if isinstance(x, str) and str(x).strip()]
+                if items:
+                    return items
+        return []
+
+    command = str(last_any.get("shell_command") or "").strip()
+    exit_code_raw = last_any.get("shell_exit_code")
+    try:
+        exit_code = int(exit_code_raw) if exit_code_raw is not None else None
+    except Exception:
+        exit_code = None
+
+    failed_tests = _last_list_str("pytest_failed_tests")
+    error_type = _last_str("pytest_error_type")
+    summary_line = _last_str("pytest_summary_line")
+    trace_tail = _last_str("pytest_trace_tail")
+
+    lines: list[str] = ["\n\n[VERIFICATION STATUS - LAST PYTEST]\n"]
+    if command:
+        lines.append(f"- command: {command}\n")
+    if exit_code is not None:
+        lines.append(f"- exit_code: {exit_code}\n")
+    if failed_tests:
+        lines.append("- failed_tests:\n")
+        lines.extend([f"  - {test_id}\n" for test_id in failed_tests[:12]])
+        if len(failed_tests) > 12:
+            lines.append(f"  - ... (+{len(failed_tests) - 12})\n")
+    if error_type:
+        lines.append(f"- error_type: {error_type}\n")
+    if summary_line:
+        lines.append(f"- summary: {summary_line}\n")
+    if trace_tail:
+        lines.append("- trace_tail:\n")
+        lines.append(trace_tail.rstrip() + "\n")
+    return "".join(lines).rstrip() + "\n"
+
+
+def _format_optimizer_verification_retry_policy(tool_results_meta: dict[str, Any] | None) -> str:
+    meta_map = tool_results_meta if isinstance(tool_results_meta, dict) else {}
+    optimizer_failed = 0
+    saw_any = False
+    for meta in meta_map.values():
+        if not isinstance(meta, dict):
+            continue
+        command = str(meta.get("shell_command") or "")
+        if not command or not _looks_like_pytest_command(command):
+            continue
+        saw_any = True
+        if str(meta.get("shell_phase") or "") != WorkflowPhase.OPTIMIZER.value:
+            continue
+        exit_code_raw = meta.get("shell_exit_code")
+        try:
+            exit_code = int(exit_code_raw) if exit_code_raw is not None else None
+        except Exception:
+            exit_code = None
+        if exit_code is not None and exit_code != 0:
+            optimizer_failed += 1
+
+    if not saw_any:
+        return ""
+
+    max_retries = 2
+    remaining = max(0, max_retries - optimizer_failed)
+    return (
+        "\n\n[OPTIMIZER VERIFICATION RETRY POLICY]\n"
+        f"OPTIMIZER_MAX_VERIFICATION_RETRIES: {max_retries}\n"
+        f"OPTIMIZER_FAILED_VERIFICATION_ATTEMPTS: {optimizer_failed}\n"
+        f"OPTIMIZER_VERIFICATION_RETRIES_REMAINING: {remaining}\n"
+    )
 
 
 async def _call_with_timeout(
@@ -426,6 +694,7 @@ async def _call_with_stream(
             )
             topup_decision: bool | None = None
             suppress_stream_tokens = False
+            topup_notice_emitted = False
 
             def _maybe_is_evidence_topup_start(text: str) -> bool | None:
                 probe = (text or "").lstrip()
@@ -510,7 +779,7 @@ async def _call_with_stream(
                         marker_tail = ""
                         continue
                     if marker_len > 1:
-                        marker_tail = scan[-(marker_len - 1):]
+                        marker_tail = scan[-(marker_len - 1) :]
 
                 if tool_calls_detected:
                     continue
@@ -528,6 +797,19 @@ async def _call_with_stream(
                     if topup_decision is True:
                         # Suppress streaming for this response to avoid UI noise; the caller
                         # will parse/validate the full content and may soft-retry if needed.
+                        if not topup_notice_emitted:
+                            phase_lower = str(phase or "").strip().lower()
+                            role = (
+                                "Writer"
+                                if phase_lower == WorkflowPhase.EXECUTION.value
+                                else "Optimizer"
+                            )
+                            await stream_queue.put_token(
+                                delta=t(MessageKey.EVIDENCE_TOPUP_COLLECTING, role=role),
+                                phase=phase,
+                                message_id=message_id,
+                            )
+                            topup_notice_emitted = True
                         suppress_stream_tokens = True
                         buffered = ""
                         buffered_flushed = True
@@ -643,6 +925,13 @@ async def _call_with_stream(
             timeout_seconds=timeout,
         ) from None
     except Exception as e:
+        if stream_queue is not None and stream_queue.is_closed:
+            err_text = str(e).lower()
+            if (
+                "incomplete chunked read" in err_text
+                or "peer closed connection without sending complete message body" in err_text
+            ):
+                raise asyncio.CancelledError() from None
         logger.exception("stream_error", provider=provider.name, error=str(e))
         await stream_queue.put_error(str(e), phase=phase)
         raise
@@ -712,6 +1001,26 @@ async def _call_optimizer_with_stream(
         tail_len = 32
         user_emit_buffer_raw = ""
 
+        # Evidence top-up protocol suppression:
+        # If the Optimizer streams a top-up protocol block (which must start at the first
+        # non-empty line), do not forward protocol tokens to the UI. Emit a single short
+        # placeholder line instead.
+        topup_marker = EVIDENCE_REQUESTS_BEGIN
+        topup_decision: bool | None = None
+        topup_buffered = ""
+        suppress_stream_tokens = False
+        topup_notice_emitted = False
+
+        def _maybe_is_evidence_topup_start(text: str) -> bool | None:
+            probe = (text or "").lstrip()
+            if not probe:
+                return None
+            if probe.startswith(topup_marker):
+                return True
+            if topup_marker.startswith(probe) and len(probe) < len(topup_marker):
+                return None
+            return False
+
         async def _retry_tool_calls_only() -> list[dict[str, Any]] | None:
             nonlocal retry_remaining
             if retry_remaining <= 0:
@@ -780,10 +1089,37 @@ async def _call_optimizer_with_stream(
                     marker_tail = ""
                     continue
                 if marker_len > 1:
-                    marker_tail = scan[-(marker_len - 1):]
+                    marker_tail = scan[-(marker_len - 1) :]
 
             if tool_calls_detected:
                 continue
+
+            if suppress_stream_tokens:
+                continue
+
+            if topup_decision is None and not emitted_any and not user_started:
+                topup_buffered += chunk
+                topup_decision = _maybe_is_evidence_topup_start(topup_buffered)
+                if topup_decision is None:
+                    continue
+                if topup_decision is True:
+                    if not topup_notice_emitted:
+                        await stream_queue.put_token(
+                            delta=t(
+                                MessageKey.EVIDENCE_TOPUP_COLLECTING,
+                                role="Optimizer",
+                            ),
+                            phase=phase,
+                            message_id=message_id,
+                        )
+                        topup_notice_emitted = True
+                    suppress_stream_tokens = True
+                    topup_buffered = ""
+                    continue
+
+                # Not a top-up block. Continue streaming using the buffered content.
+                chunk = topup_buffered
+                topup_buffered = ""
 
             if user_done:
                 continue
@@ -799,7 +1135,7 @@ async def _call_optimizer_with_stream(
 
                 user_started = True
                 begin_tail = ""
-                visible_chunk = scan[idx + len(_OPTIMIZER_USER_BEGIN):].lstrip("\n\r")
+                visible_chunk = scan[idx + len(_OPTIMIZER_USER_BEGIN) :].lstrip("\n\r")
             else:
                 visible_chunk = chunk
 
@@ -878,7 +1214,9 @@ async def _call_optimizer_with_stream(
             if end_tail:
                 user_emit_buffer_raw += end_tail
                 end_tail = ""
-            safe_tail = sanitize_for_cursor_display(user_emit_buffer_raw) if user_emit_buffer_raw else ""
+            safe_tail = (
+                sanitize_for_cursor_display(user_emit_buffer_raw) if user_emit_buffer_raw else ""
+            )
             if safe_tail:
                 await stream_queue.put_token(
                     delta=safe_tail,
@@ -916,6 +1254,13 @@ async def _call_optimizer_with_stream(
             timeout_seconds=timeout,
         ) from None
     except Exception as e:
+        if stream_queue is not None and stream_queue.is_closed:
+            err_text = str(e).lower()
+            if (
+                "incomplete chunked read" in err_text
+                or "peer closed connection without sending complete message body" in err_text
+            ):
+                raise asyncio.CancelledError() from None
         logger.exception("optimizer_stream_error", provider=provider.name, error=str(e))
         await stream_queue.put_error(str(e), phase=phase)
         raise
@@ -1281,7 +1626,9 @@ async def evidence_node(state: TernionState) -> TernionState:
 
         supports_native_tools = getattr(provider, "supports_native_tool_calls", False) is True
         supports_text_tools = bool(cursor_tools) and not supports_native_tools
-        should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
+        should_use_tool_calls = bool(cursor_tools) and (
+            supports_native_tools or supports_text_tools
+        )
 
         if supports_text_tools:
             messages.append(
@@ -1328,11 +1675,7 @@ async def evidence_node(state: TernionState) -> TernionState:
 
         usage = response.usage or {}
         input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
-        completion_tokens = (
-            usage.get("completion_tokens")
-            or usage.get("output_tokens")
-            or 0
-        )
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
         thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
         output_for_cost = (
             completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
@@ -1398,9 +1741,8 @@ async def evidence_node(state: TernionState) -> TernionState:
         return {
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
-            "errors": state.get("errors", []) + [
-                t(MessageKey.EVIDENCE_COLLECTION_FAILED, error=str(e))
-            ],
+            "errors": state.get("errors", [])
+            + [t(MessageKey.EVIDENCE_COLLECTION_FAILED, error=str(e))],
             "thinking_logs": thinking_logs,
         }
 
@@ -1491,11 +1833,13 @@ async def divergence_node(state: TernionState) -> TernionState:
     for ternion_id in ternion_ids:
         cfg = config_store.get_role_config(ternion_id)
         if cfg and cfg.provider and cfg.model:
-            ternion_configs.append({
-                "ternion_id": ternion_id,
-                "provider": cfg.provider,
-                "model": cfg.model,
-            })
+            ternion_configs.append(
+                {
+                    "ternion_id": ternion_id,
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                }
+            )
         else:
             unconfigured.append(ternion_id)
 
@@ -1559,9 +1903,10 @@ async def divergence_node(state: TernionState) -> TernionState:
                 except Exception as e:
                     is_last = attempt >= max_attempts
                     error_text = str(e)
-                    retryable = (
-                        provider.name == "google"
-                        and ("503" in error_text or "UNAVAILABLE" in error_text or "overloaded" in error_text.lower())
+                    retryable = provider.name == "google" and (
+                        "503" in error_text
+                        or "UNAVAILABLE" in error_text
+                        or "overloaded" in error_text.lower()
                     )
                     if is_last or not retryable:
                         raise
@@ -1580,19 +1925,13 @@ async def divergence_node(state: TernionState) -> TernionState:
             if response is None:
                 raise RuntimeError("divergence_provider_response_missing")
             usage = response.usage or {}
-            input_tokens = (
-                usage.get("prompt_tokens")
-                or usage.get("input_tokens")
-                or 0
-            )
-            completion_tokens = (
-                usage.get("completion_tokens")
-                or usage.get("output_tokens")
-                or 0
-            )
+            input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+            completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
             thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
             output_for_cost = (
-                completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+                completion_tokens
+                if provider.name != "google"
+                else completion_tokens + thoughts_tokens
             )
             budget_manager.record_usage(
                 provider=provider.name,
@@ -1648,7 +1987,9 @@ async def divergence_node(state: TernionState) -> TernionState:
     # Add thinking logs for each analysis
     for a in successful:
         preview = sanitize_for_preview(a["analysis"], max_length=100)
-        thinking_logs.append(t(MessageKey.DIVERGENCE_ANALYSIS, ternion_id=a['ternion_id'], preview=preview))
+        thinking_logs.append(
+            t(MessageKey.DIVERGENCE_ANALYSIS, ternion_id=a["ternion_id"], preview=preview)
+        )
 
     failed = [a for a in analyses if a.get("error")]
     for a in failed:
@@ -1693,9 +2034,7 @@ def _has_real_evidence_requests(requests: str) -> bool:
         return False
 
     # Strict empty marker protocol (case-insensitive).
-    if len(lines) == 1 and lines[0].lower() in ("- [p0] none", "[p0] none"):
-        return False
-    return True
+    return not (len(lines) == 1 and lines[0].lower() in ("- [p0] none", "[p0] none"))
 
 
 _DETERMINISTIC_EVIDENCE_READ_CHUNK_LINES = 200
@@ -1968,7 +2307,9 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             if not isinstance(tool_call_id, str) or not tool_call_id:
                 continue
             content = msg.get("content")
-            tool_contents_by_id[tool_call_id] = content if isinstance(content, str) else str(content)
+            tool_contents_by_id[tool_call_id] = (
+                content if isinstance(content, str) else str(content)
+            )
 
         new_item_blocks: list[str] = []
 
@@ -1978,10 +2319,10 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         for msg in history:
             if msg.get("role") != "assistant":
                 continue
-            tool_calls = msg.get("tool_calls")
-            if not isinstance(tool_calls, list) or not tool_calls:
+            assistant_tool_calls = msg.get("tool_calls")
+            if not isinstance(assistant_tool_calls, list) or not assistant_tool_calls:
                 continue
-            for tc in tool_calls:
+            for tc in assistant_tool_calls:
                 if not isinstance(tc, dict):
                     continue
                 tc_id = tc.get("id")
@@ -2004,7 +2345,9 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                 if not isinstance(args, dict):
                     continue
 
-                raw_path = str(args.get("path") or args.get("target_file") or args.get("file_path") or "")
+                raw_path = str(
+                    args.get("path") or args.get("target_file") or args.get("file_path") or ""
+                )
                 path_rel = _to_repo_relative_path(raw_path)
                 if not path_rel or path_rel not in deterministic_paths:
                     continue
@@ -2048,18 +2391,18 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                         continue
                     existing_keys.add(key)
                     new_item_blocks.append(
-                        (
-                            f"- [FILE_EXCERPT] path={path_rel} | lines={lines_value}\n"
-                            f"  PURPOSE: {purpose}\n"
-                            "  EXCERPT_BEGIN\n"
-                            + "\n".join(excerpt_lines)
-                            + "\n"
-                            "  EXCERPT_END"
-                        )
+                        f"- [FILE_EXCERPT] path={path_rel} | lines={lines_value}\n"
+                        f"  PURPOSE: {purpose}\n"
+                        "  EXCERPT_BEGIN\n" + "\n".join(excerpt_lines) + "\n"
+                        "  EXCERPT_END"
                     )
 
         if new_item_blocks:
-            if updated_bundle and updated_bundle.strip().startswith("EVIDENCE_BUNDLE:") and "- None" not in updated_bundle:
+            if (
+                updated_bundle
+                and updated_bundle.strip().startswith("EVIDENCE_BUNDLE:")
+                and "- None" not in updated_bundle
+            ):
                 updated_bundle = updated_bundle.rstrip() + "\n\n" + "\n".join(new_item_blocks)
             else:
                 updated_bundle = "EVIDENCE_BUNDLE:\n" + "\n".join(new_item_blocks)
@@ -2068,13 +2411,13 @@ async def report_evidence_node(state: TernionState) -> TernionState:
     if deterministic_targets:
         bundle_items = parse_evidence_bundle(updated_bundle)
         covered_by_path: dict[str, list[tuple[int, int]]] = {}
-        for item in bundle_items:
-            if item.line_range is None:
+        for bundle_item in bundle_items:
+            if bundle_item.line_range is None:
                 continue
-            path_rel = _to_repo_relative_path(item.path)
+            path_rel = _to_repo_relative_path(bundle_item.path)
             if not path_rel or path_rel not in deterministic_paths:
                 continue
-            covered_by_path.setdefault(path_rel, []).append(item.line_range)
+            covered_by_path.setdefault(path_rel, []).append(bundle_item.line_range)
 
         segments_by_path: dict[str, list[tuple[int, int, str]]] = {}
         for target in deterministic_targets:
@@ -2095,11 +2438,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             seg_ranges = [(s, e) for s, e, _ in segments]
             merged = merge_adjacent_or_overlapping_ranges(seg_ranges)
             for seg_start, seg_end in merged:
-                purposes = {
-                    p
-                    for s, e, p in segments
-                    if p and not (e < seg_start or s > seg_end)
-                }
+                purposes = {p for s, e, p in segments if p and not (e < seg_start or s > seg_end)}
                 chunk_start = seg_start
                 while chunk_start <= seg_end:
                     chunk_end = min(
@@ -2152,12 +2491,12 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             break
 
         if read_tool_name:
-            tool_calls: list[dict[str, Any]] = []
-            for idx, item in enumerate(deterministic_tool_calls):
-                rel_path = str(item.get("path") or "")
+            pending_tool_calls: list[dict[str, Any]] = []
+            for idx, spec in enumerate(deterministic_tool_calls):
+                rel_path = str(spec.get("path") or "")
                 abs_path = _to_repo_absolute_path(rel_path)
-                start = int(item.get("start") or 0)
-                end = int(item.get("end") or 0)
+                start = int(spec.get("start") or 0)
+                end = int(spec.get("end") or 0)
                 if not abs_path or start <= 0 or end < start:
                     continue
                 args = {
@@ -2165,7 +2504,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                     offset_key: start,
                     limit_key: end - start + 1,
                 }
-                tool_calls.append(
+                pending_tool_calls.append(
                     {
                         "id": f"deterministic_report_evidence_{idx}",
                         "type": "function",
@@ -2176,20 +2515,20 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                     }
                 )
 
-            if tool_calls:
+            if pending_tool_calls:
                 log_manager.emit(
                     level="INFO",
                     category="WORKFLOW",
                     message=(
                         "report_evidence_deterministic_tool_calls_ready | "
                         f"session_id={session_id} | "
-                        f"count={len(tool_calls)}"
+                        f"count={len(pending_tool_calls)}"
                     ),
                 )
                 return {
                     **state,
                     "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
-                    "pending_tool_calls": tool_calls,
+                    "pending_tool_calls": pending_tool_calls,
                     "evidence_bundle": updated_bundle,
                     "thinking_logs": thinking_logs,
                 }
@@ -2257,16 +2596,16 @@ async def report_evidence_node(state: TernionState) -> TernionState:
     for msg in history:
         role = msg.get("role")
         if role == "assistant":
-            tool_calls = msg.get("tool_calls")
-            if isinstance(tool_calls, list) and tool_calls:
+            assistant_tool_calls = msg.get("tool_calls")
+            if isinstance(assistant_tool_calls, list) and assistant_tool_calls:
                 assistant_with_tools_count += 1
-                pending_tool_call_ids = _collect_tool_call_ids(tool_calls)
+                pending_tool_call_ids = _collect_tool_call_ids(assistant_tool_calls)
                 messages.append(
                     ChatMessage(
                         role=MessageRole.ASSISTANT,
                         content=msg.get("content"),
                         name=msg.get("name"),
-                        tool_calls=tool_calls,
+                        tool_calls=assistant_tool_calls,
                     )
                 )
             else:
@@ -2310,9 +2649,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                 tool_msg_count=raw_tool_msg_count,
                 history_roles=[msg.get("role") for msg in history],
                 history_has_tool_calls=[
-                    bool(msg.get("tool_calls"))
-                    for msg in history
-                    if msg.get("role") == "assistant"
+                    bool(msg.get("tool_calls")) for msg in history if msg.get("role") == "assistant"
                 ],
             )
         if dropped_tool_msg_count > 0:
@@ -2341,7 +2678,9 @@ async def report_evidence_node(state: TernionState) -> TernionState:
 
         supports_native_tools = getattr(provider, "supports_native_tool_calls", False) is True
         supports_text_tools = bool(cursor_tools) and not supports_native_tools
-        should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
+        should_use_tool_calls = bool(cursor_tools) and (
+            supports_native_tools or supports_text_tools
+        )
 
         if supports_text_tools:
             messages.append(
@@ -2378,21 +2717,19 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             temperature=0.2,
             **extra_kwargs,
         )
-        tool_calls = response.tool_calls if isinstance(response.tool_calls, list) else None
-        if supports_text_tools and not tool_calls:
+        response_tool_calls: list[dict[str, Any]] | None = (
+            response.tool_calls if isinstance(response.tool_calls, list) else None
+        )
+        if supports_text_tools and not response_tool_calls:
             parsed_tool_calls = extract_tool_calls_from_text(response.content)
             if parsed_tool_calls:
                 response.tool_calls = parsed_tool_calls
                 response.content = ""
-                tool_calls = parsed_tool_calls
+                response_tool_calls = parsed_tool_calls
 
         usage = response.usage or {}
         input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
-        completion_tokens = (
-            usage.get("completion_tokens")
-            or usage.get("output_tokens")
-            or 0
-        )
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
         thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
         output_for_cost = (
             completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
@@ -2417,20 +2754,20 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                 ),
             )
 
-        if tool_calls:
+        if response_tool_calls:
             log_manager.emit(
                 level="INFO",
                 category="WORKFLOW",
                 message=(
                     "report_evidence_tool_calls_ready | "
                     f"session_id={session_id} | "
-                    f"count={len(tool_calls)}"
+                    f"count={len(response_tool_calls)}"
                 ),
             )
             return {
                 **state,
                 "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
-                "pending_tool_calls": tool_calls,
+                "pending_tool_calls": response_tool_calls,
                 "thinking_logs": thinking_logs,
             }
 
@@ -2444,7 +2781,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             # Strip EVIDENCE_BUNDLE: header from new_bundle to avoid duplicate headers
             new_bundle_content = new_bundle
             if new_bundle_content.startswith("EVIDENCE_BUNDLE:"):
-                new_bundle_content = new_bundle_content[len("EVIDENCE_BUNDLE:"):].lstrip("\n")
+                new_bundle_content = new_bundle_content[len("EVIDENCE_BUNDLE:") :].lstrip("\n")
             if existing_bundle and "- None" not in existing_bundle:
                 # Append new evidence lines to existing bundle (after the header)
                 updated_bundle = f"{existing_bundle}\n\n{new_bundle_content}"
@@ -2460,7 +2797,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                 # Strip EVIDENCE_GAPS: header from new_gaps before merging
                 new_gaps_content = new_gaps
                 if new_gaps_content.startswith("EVIDENCE_GAPS:"):
-                    new_gaps_content = new_gaps_content[len("EVIDENCE_GAPS:"):].lstrip("\n")
+                    new_gaps_content = new_gaps_content[len("EVIDENCE_GAPS:") :].lstrip("\n")
                 # Merge: existing gaps + new gaps (dedupe handled by uniqueness of evidence items)
                 updated_gaps = f"{existing_gaps}\n{new_gaps_content}"
             else:
@@ -2502,9 +2839,8 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             **state,
             # Keep phase at REPORT_EVIDENCE since error occurred here (phase consistency fix)
             "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
-            "errors": state.get("errors", []) + [
-                t(MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED, error=str(e))
-            ],
+            "errors": state.get("errors", [])
+            + [t(MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED, error=str(e))],
             "thinking_logs": thinking_logs,
         }
 
@@ -2559,7 +2895,9 @@ async def convergence_node(state: TernionState) -> TernionState:
     )
 
     # Build synthesis prompt with language instruction
-    convergence_prompt_with_lang = CONVERGENCE_PROMPT.format(language_instruction=language_instruction)
+    convergence_prompt_with_lang = CONVERGENCE_PROMPT.format(
+        language_instruction=language_instruction
+    )
 
     evidence_bundle = state.get("evidence_bundle") or "EVIDENCE_BUNDLE:\n- None"
     evidence_gaps = state.get("evidence_gaps") or "EVIDENCE_GAPS:\n- None"
@@ -2614,12 +2952,8 @@ async def convergence_node(state: TernionState) -> TernionState:
             )
             return {
                 **state,
-                "errors": state.get("errors", []) + [
-                    error_msg
-                ],
-                "thinking_logs": thinking_logs + [
-                    t(MessageKey.CONVERGENCE_ERROR, error=error_msg)
-                ],
+                "errors": state.get("errors", []) + [error_msg],
+                "thinking_logs": thinking_logs + [t(MessageKey.CONVERGENCE_ERROR, error=error_msg)],
             }
 
         # Get stream queue from state for real-time output (if available)
@@ -2648,18 +2982,12 @@ async def convergence_node(state: TernionState) -> TernionState:
             message_id=session_id,
         )
         usage = response.usage or {}
-        input_tokens = (
-            usage.get("prompt_tokens")
-            or usage.get("input_tokens")
-            or 0
-        )
-        completion_tokens = (
-            usage.get("completion_tokens")
-            or usage.get("output_tokens")
-            or 0
-        )
+        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
         thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
-        output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        output_for_cost = (
+            completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        )
         if input_tokens or output_for_cost or thoughts_tokens:
             budget_manager.record_usage(
                 provider=provider.name,
@@ -2720,12 +3048,12 @@ async def convergence_node(state: TernionState) -> TernionState:
             log_manager.emit(
                 level="INFO",
                 category="SESSION",
-                message=f"Session created: {session.session_id} | Mode: {execution_mode.value} | Status: AWAITING_CONFIRMATION"
+                message=f"Session created: {session.session_id} | Mode: {execution_mode.value} | Status: AWAITING_CONFIRMATION",
             )
             log_manager.emit(
                 level="INFO",
                 category="REPORT",
-                message=f"Ternion Report generated (Len: {len(response.content)} chars). Content Preview: {response.content[:200].replace(chr(10), ' ')}..."
+                message=f"Ternion Report generated (Len: {len(response.content)} chars). Content Preview: {response.content[:200].replace(chr(10), ' ')}...",
             )
 
             # Generate a plain-text view of the report for display.
@@ -2825,11 +3153,13 @@ TERNION_REPORT_HASH={session.report_hash}"""
             ternion_id = analysis.get("ternion_id")
             cfg = config_store.get_role_config(ternion_id)
             if cfg and cfg.provider and cfg.model:
-                fallback_providers.append({
-                    "ternion_id": ternion_id,
-                    "provider": cfg.provider,
-                    "model": cfg.model,
-                })
+                fallback_providers.append(
+                    {
+                        "ternion_id": ternion_id,
+                        "provider": cfg.provider,
+                        "model": cfg.model,
+                    }
+                )
 
         fallback_response = None
         fallback_provider_name = None
@@ -2875,9 +3205,15 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 # Record usage for fallback
                 usage = fallback_response.usage or {}
                 input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
-                completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+                completion_tokens = (
+                    usage.get("completion_tokens") or usage.get("output_tokens") or 0
+                )
                 thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
-                output_for_cost = completion_tokens if fallback_provider.name != "google" else completion_tokens + thoughts_tokens
+                output_for_cost = (
+                    completion_tokens
+                    if fallback_provider.name != "google"
+                    else completion_tokens + thoughts_tokens
+                )
                 budget_manager.record_usage(
                     provider=fallback_provider.name,
                     model=fallback_cfg["model"],
@@ -2909,27 +3245,34 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 )
                 break  # Success, exit fallback loop
 
-            except Exception as fallback_error:
+            except Exception as fallback_exc:
                 logger.warning(
                     "convergence_fallback_failed",
                     ternion_id=fallback_cfg["ternion_id"],
-                    error=str(fallback_error),
+                    error=str(fallback_exc),
                 )
                 log_manager.emit(
                     level="WARN",
                     category="WORKFLOW",
-                    message=f"Fallback Arbiter failed: {fallback_cfg['ternion_id']} - {str(fallback_error)[:50]}",
+                    message=f"Fallback Arbiter failed: {fallback_cfg['ternion_id']} - {str(fallback_exc)[:50]}",
                 )
                 continue  # Try next fallback
 
         # If fallback succeeded, use the synthesized report
         if fallback_response:
-            thinking_logs.append(t(MessageKey.CONVERGENCE_ERROR, error=f"Used fallback: {fallback_provider_name}/{fallback_model}"))
+            thinking_logs.append(
+                t(
+                    MessageKey.CONVERGENCE_ERROR,
+                    error=f"Used fallback: {fallback_provider_name}/{fallback_model}",
+                )
+            )
             preview = sanitize_for_preview(fallback_response.content, max_length=80)
             thinking_logs.append(t(MessageKey.CONVERGENCE_COMPLETE, preview=preview))
 
             # Continue with normal flow using fallback response
-            execution_mode_str = state.get("execution_mode", "") or config_store.load().execution_mode
+            execution_mode_str = (
+                state.get("execution_mode", "") or config_store.load().execution_mode
+            )
             if execution_mode_str not in ("cursor_handoff", "ternion_full"):
                 error_msg = t(MessageKey.EXECUTION_MODE_NOT_CONFIGURED)
                 logger.error("execution_mode_not_configured")
@@ -2937,7 +3280,8 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     **state,
                     "current_phase": WorkflowPhase.COMPLETE.value,
                     "errors": state.get("errors", []) + [error_msg],
-                    "thinking_logs": thinking_logs + [t(MessageKey.CONVERGENCE_ERROR, error=error_msg)],
+                    "thinking_logs": thinking_logs
+                    + [t(MessageKey.CONVERGENCE_ERROR, error=error_msg)],
                 }
 
             execution_mode = ExecutionMode(execution_mode_str)
@@ -3040,8 +3384,8 @@ TERNION_REPORT_HASH={session.report_hash}"""
 
         # All fallbacks failed - use raw analysis as last resort
         fallback_report = successful_analyses[0]["analysis"]
-        fallback_error = t(MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED)
-        thinking_logs.append(t(MessageKey.CONVERGENCE_ERROR, error=fallback_error))
+        all_arbiters_failed_msg = t(MessageKey.CONVERGENCE_ALL_ARBITERS_FAILED)
+        thinking_logs.append(t(MessageKey.CONVERGENCE_ERROR, error=all_arbiters_failed_msg))
         log_manager.emit(
             level="WARN",
             category="WORKFLOW",
@@ -3254,38 +3598,84 @@ async def execution_node(state: TernionState) -> TernionState:
         *topup_status_lines,
     ]
     if tool_context_digest:
-        content_parts.extend([
-            "\n\n[TERNION TOOL CONTEXT DIGEST]\n\n",
-            tool_context_digest,
-        ])
+        content_parts.extend(
+            [
+                "\n\n[TERNION TOOL CONTEXT DIGEST]\n\n",
+                tool_context_digest,
+            ]
+        )
+
+    modified_files = state.get("modified_files") or []
+    if not isinstance(modified_files, list):
+        modified_files = []
+    if modified_files:
+        content_parts.extend(
+            [
+                "\n\n[MODIFIED FILES]\n\n",
+                "\n".join(f"- {p}" for p in modified_files),
+            ]
+        )
+        ruff_commands = _build_scoped_ruff_verification_commands(modified_files)
+        if ruff_commands:
+            content_parts.extend(
+                [
+                    "\n\n[SCOPED VERIFICATION COMMANDS]\n\n",
+                    "Default Ruff verification (scoped to modified Python files; avoid `... .`):\n",
+                    "\n".join(f"- {cmd}" for cmd in ruff_commands),
+                ]
+            )
 
     # If this is a revision round, always include reviewer feedback section
     # Even if feedback is empty, provide a placeholder to prevent Writer confusion
     if revision_count > 0:
         # Use placeholder if feedback is empty (e.g., truncated or missing)
-        feedback_content = review_feedback.strip() if review_feedback else (
-            "[NOTE] Reviewer requested revision but feedback content is empty or missing. "
-            "Please carefully review your deliverable for potential issues based on "
-            "the original analysis report."
+        feedback_content = (
+            review_feedback.strip()
+            if review_feedback
+            else (
+                "[NOTE] Reviewer requested revision but feedback content is empty or missing. "
+                "Please carefully review your deliverable for potential issues based on "
+                "the original analysis report."
+            )
         )
         # Use placeholder if previous code is empty (edge case)
-        code_content = previous_code.strip() if previous_code else (
-            "[NOTE] No previous deliverable found. This may indicate an error in the "
-            "workflow. Please generate a fresh deliverable based on the analysis report."
+        code_content = (
+            previous_code.strip()
+            if previous_code
+            else (
+                "[NOTE] No previous deliverable found. This may indicate an error in the "
+                "workflow. Please generate a fresh deliverable based on the analysis report."
+            )
         )
-        content_parts.extend([
-            "\n\n[REVIEWER FEEDBACK - REVISION REQUIRED]\n\n",
-            feedback_content,
-            "\n\n[CURRENT DELIVERABLE]\n\n",
-            code_content,
-            "\n\nAddress the issues above and revise the deliverable(s) based on the "
-            "report and reviewer feedback, following the deliverable policy and allowed "
-            "write scope.",
-        ])
+        content_parts.extend(
+            [
+                "\n\n[REVIEWER FEEDBACK - REVISION REQUIRED]\n\n",
+                feedback_content,
+                "\n\n[CURRENT DELIVERABLE]\n\n",
+                code_content,
+                "\n\nAddress the issues above and revise the deliverable(s) based on the "
+                "report and reviewer feedback, following the deliverable policy and allowed "
+                "write scope.",
+            ]
+        )
     else:
         content_parts.append(
             "\n\nProceed with the requested deliverable(s) based on the report above, "
             "and follow the deliverable policy and allowed write scope."
+        )
+
+    if _should_add_python3_fallback_guardrail(
+        history,
+        tool_results_meta=state.get("tool_results_meta"),
+    ):
+        content_parts.extend(
+            [
+                "\n\n[PYTHON RUNTIME FALLBACK]\n\n",
+                "Environment signal: previous shell results show `command not found: python`.\n",
+                "For Python module invocations and tests, use `python3` instead of `python`.\n",
+                "- Preferred command: `python3 -m pytest -q`\n",
+                "- Do not repeat commands that already failed with `command not found: python`.\n",
+            ]
         )
 
     # Add the Ternion Analysis Report + Writer instructions as the final instruction.
@@ -3312,12 +3702,8 @@ async def execution_node(state: TernionState) -> TernionState:
             )
             return {
                 **state,
-                "errors": state.get("errors", []) + [
-                    error_msg
-                ],
-                "thinking_logs": thinking_logs + [
-                    t(MessageKey.EXECUTION_ERROR, error=error_msg)
-                ],
+                "errors": state.get("errors", []) + [error_msg],
+                "thinking_logs": thinking_logs + [t(MessageKey.EXECUTION_ERROR, error=error_msg)],
             }
 
         # Get stream queue from state for real-time output (if available)
@@ -3326,8 +3712,75 @@ async def execution_node(state: TernionState) -> TernionState:
 
         supports_native_tools = getattr(provider, "supports_native_tool_calls", False) is True
         supports_text_tools = bool(cursor_tools) and not supports_native_tools
-        should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
+        should_use_tool_calls = bool(cursor_tools) and (
+            supports_native_tools or supports_text_tools
+        )
         writer_timeout = WRITER_TIMEOUT_SECONDS
+
+        async def _retry_writer_if_empty(
+            response: ProviderResponse,
+            *,
+            allow_tool_calls: bool,
+            response_context: str,
+            extra_kwargs: dict[str, Any] | None = None,
+        ) -> ProviderResponse:
+            has_tool_calls = bool(response.tool_calls) if allow_tool_calls else False
+            has_content = bool((response.content or "").strip())
+            if has_tool_calls or has_content:
+                return response
+
+            log_manager.emit(
+                level="WARN",
+                category="WORKFLOW",
+                message=(
+                    "execution_writer_empty_output_retry | "
+                    f"session_id={session_id} | "
+                    f"context={response_context}"
+                ),
+            )
+            guardrail = (
+                "[TERNION EMPTY OUTPUT GUARDRAIL]\n\n"
+                "Your previous response was empty.\n"
+                "Return exactly one of the following:\n"
+                "1) A valid tool-calls response (if tools are needed), OR\n"
+                "2) A non-empty deliverable response.\n"
+                "Do not return an empty response."
+            )
+            last = messages[-1] if messages else None
+            if last and last.role == MessageRole.USER and isinstance(last.content, str):
+                last.content += "\n\n" + guardrail
+            else:
+                messages.append(ChatMessage(role=MessageRole.USER, content=guardrail))
+
+            retry_response = await _call_with_timeout(
+                provider=provider,
+                messages=messages,
+                model=model,
+                temperature=0.3,
+                timeout_seconds=writer_timeout,
+                **(extra_kwargs or {}),
+            )
+            if supports_text_tools and allow_tool_calls and not retry_response.tool_calls:
+                parsed_tool_calls = extract_tool_calls_from_text(retry_response.content)
+                if parsed_tool_calls:
+                    retry_response.tool_calls = parsed_tool_calls
+                    retry_response.content = ""
+
+            retry_has_tool_calls = bool(retry_response.tool_calls) if allow_tool_calls else False
+            retry_has_content = bool((retry_response.content or "").strip())
+            if not retry_has_tool_calls and not retry_has_content:
+                log_manager.emit(
+                    level="ERROR",
+                    category="WORKFLOW",
+                    message=(
+                        "execution_writer_empty_output_retry_exhausted | "
+                        f"session_id={session_id} | "
+                        f"context={response_context}"
+                    ),
+                )
+                raise ValueError("writer_returned_empty_output_after_retry")
+
+            return retry_response
 
         if supports_text_tools and messages:
             last_msg = messages[-1]
@@ -3360,6 +3813,7 @@ async def execution_node(state: TernionState) -> TernionState:
                 if cursor_tool_choice is not None:
                     extra_kwargs["tool_choice"] = cursor_tool_choice
             import time
+
             started = time.monotonic()
             if stream_queue:
                 response = await _call_with_stream(
@@ -3401,19 +3855,13 @@ async def execution_node(state: TernionState) -> TernionState:
                 ),
             )
             usage = response.usage or {}
-            input_tokens = (
-                usage.get("prompt_tokens")
-                or usage.get("input_tokens")
-                or 0
-            )
-            completion_tokens = (
-                usage.get("completion_tokens")
-                or usage.get("output_tokens")
-                or 0
-            )
+            input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+            completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
             thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
             output_for_cost = (
-                completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+                completion_tokens
+                if provider.name != "google"
+                else completion_tokens + thoughts_tokens
             )
             budget_manager.record_usage(
                 provider=provider.name,
@@ -3449,17 +3897,40 @@ async def execution_node(state: TernionState) -> TernionState:
                             f"blocked_shell={len(blocked_shell)}"
                         ),
                     )
+                    try:
+                        blocked_shell_session: list[dict[str, str]] = []
+                        for item in blocked_shell:
+                            tool = str(item.get("tool") or "Shell")
+                            cmd = str(item.get("command") or "")
+                            reason = str(item.get("reason") or "")
+                            blocked_shell_session.append(
+                                {
+                                    "tool": tool,
+                                    "command_preview": redact_secrets(cmd),
+                                    "reason": reason,
+                                }
+                            )
+                        session_store.update_session(
+                            session_id,
+                            append_guardrail_events=[
+                                {
+                                    "type": "execution_tool_policy_soft_retry",
+                                    "phase": "execution",
+                                    "role": "writer",
+                                    "blocked_tools": list(blocked_tools or []),
+                                    "blocked_shell": blocked_shell_session,
+                                }
+                            ],
+                        )
+                    except Exception:
+                        pass
                     last = messages[-1] if messages else None
                     feedback = _build_tool_policy_guardrail_feedback(
                         blocked_tools=blocked_tools,
                         blocked_shell=blocked_shell,
                         role_label="Writer (execution)",
                     )
-                    if (
-                        last
-                        and last.role == MessageRole.USER
-                        and isinstance(last.content, str)
-                    ):
+                    if last and last.role == MessageRole.USER and isinstance(last.content, str):
                         last.content += "\n\n[TERNION TOOL POLICY GUARDRAIL]\n\n" + feedback
                     else:
                         messages.append(
@@ -3484,6 +3955,71 @@ async def execution_node(state: TernionState) -> TernionState:
                             response.tool_calls = parsed_tool_calls
                             response.content = ""
 
+                response = await _retry_writer_if_empty(
+                    response,
+                    allow_tool_calls=True,
+                    response_context="tool_mode_primary",
+                    extra_kwargs=extra_kwargs,
+                )
+                if response.tool_calls:
+                    malformed = _detect_malformed_execution_tool_calls(response.tool_calls)
+                    if malformed:
+                        log_manager.emit(
+                            level="INFO",
+                            category="GUARDRAIL",
+                            message=(
+                                "execution_tool_call_validation_soft_retry | "
+                                f"session_id={session_id} | "
+                                f"issues={len(malformed)}"
+                            ),
+                        )
+                        with contextlib.suppress(Exception):
+                            session_store.update_session(
+                                session_id,
+                                append_guardrail_events=[
+                                    {
+                                        "type": "execution_tool_call_validation_soft_retry",
+                                        "phase": "execution",
+                                        "role": "writer",
+                                        "issues": list(malformed[:20]),
+                                        "issues_truncated": len(malformed) > 20,
+                                    }
+                                ],
+                            )
+                        last = messages[-1] if messages else None
+                        feedback = _build_tool_call_validation_guardrail_feedback(
+                            issues=malformed,
+                            role_label="Writer (execution)",
+                        )
+                        if last and last.role == MessageRole.USER and isinstance(last.content, str):
+                            last.content += "\n\n[TERNION TOOL CALL VALIDATION]\n\n" + feedback
+                        else:
+                            messages.append(
+                                ChatMessage(
+                                    role=MessageRole.USER,
+                                    content="[TERNION TOOL CALL VALIDATION]\n\n" + feedback,
+                                )
+                            )
+
+                        response = await _call_with_timeout(
+                            provider=provider,
+                            messages=messages,
+                            model=model,
+                            temperature=0.3,
+                            timeout_seconds=writer_timeout,
+                            **extra_kwargs,
+                        )
+                        if supports_text_tools and not response.tool_calls:
+                            parsed_tool_calls = extract_tool_calls_from_text(response.content)
+                            if parsed_tool_calls:
+                                response.tool_calls = parsed_tool_calls
+                                response.content = ""
+                        response = await _retry_writer_if_empty(
+                            response,
+                            allow_tool_calls=True,
+                            response_context="tool_mode_validation_retry",
+                            extra_kwargs=extra_kwargs,
+                        )
                 if response.tool_calls:
                     log_manager.emit(
                         level="INFO",
@@ -3500,8 +4036,12 @@ async def execution_node(state: TernionState) -> TernionState:
                         "pending_tool_calls": response.tool_calls,
                         "thinking_logs": thinking_logs,
                     }
-            if not (response.content or "").strip():
-                raise ValueError("writer_returned_empty_output")
+            response = await _retry_writer_if_empty(
+                response,
+                allow_tool_calls=True,
+                response_context="tool_mode_post_processing",
+                extra_kwargs=extra_kwargs,
+            )
             topup_block = extract_evidence_requests_block(
                 response.content,
                 default_requester="execution",
@@ -3517,11 +4057,7 @@ async def execution_node(state: TernionState) -> TernionState:
                 if topup_error:
                     # Soft handling: retry once to avoid an extra user round-trip.
                     last = messages[-1] if messages else None
-                    if (
-                        last
-                        and last.role == MessageRole.USER
-                        and isinstance(last.content, str)
-                    ):
+                    if last and last.role == MessageRole.USER and isinstance(last.content, str):
                         last.content += (
                             "\n\n[TERNION EVIDENCE TOP-UP GUARDRAIL]\n\n"
                             f"{sanitize_for_cursor_display(topup_error)}\n\n"
@@ -3554,8 +4090,12 @@ async def execution_node(state: TernionState) -> TernionState:
                             "pending_tool_calls": response.tool_calls,
                             "thinking_logs": thinking_logs,
                         }
-                    if not (response.content or "").strip():
-                        raise ValueError("writer_returned_empty_output")
+                    response = await _retry_writer_if_empty(
+                        response,
+                        allow_tool_calls=True,
+                        response_context="topup_guardrail_retry_tool_mode",
+                        extra_kwargs=extra_kwargs,
+                    )
                     retry_block = extract_evidence_requests_block(
                         response.content,
                         default_requester="execution",
@@ -3622,8 +4162,11 @@ async def execution_node(state: TernionState) -> TernionState:
             message_id=session_id,
             timeout_seconds=writer_timeout,
         )
-        if not (response.content or "").strip():
-            raise ValueError("writer_returned_empty_output")
+        response = await _retry_writer_if_empty(
+            response,
+            allow_tool_calls=False,
+            response_context="deliverable_mode_primary",
+        )
         topup_block = extract_evidence_requests_block(
             response.content,
             default_requester="execution",
@@ -3638,11 +4181,7 @@ async def execution_node(state: TernionState) -> TernionState:
             topup_error = payload_error or policy_error
             if topup_error:
                 last = messages[-1] if messages else None
-                if (
-                    last
-                    and last.role == MessageRole.USER
-                    and isinstance(last.content, str)
-                ):
+                if last and last.role == MessageRole.USER and isinstance(last.content, str):
                     last.content += (
                         "\n\n[TERNION EVIDENCE TOP-UP GUARDRAIL]\n\n"
                         f"{sanitize_for_cursor_display(topup_error)}\n\n"
@@ -3660,17 +4199,18 @@ async def execution_node(state: TernionState) -> TernionState:
                     message_id=session_id,
                     timeout_seconds=writer_timeout,
                 )
-                if not (response.content or "").strip():
-                    raise ValueError("writer_returned_empty_output")
+                response = await _retry_writer_if_empty(
+                    response,
+                    allow_tool_calls=False,
+                    response_context="topup_guardrail_retry_deliverable_mode",
+                )
                 retry_block = extract_evidence_requests_block(
                     response.content,
                     default_requester="execution",
                 )
                 if retry_block is not None:
                     used_round = int(state.get("evidence_topup_round", 0) or 0)
-                    payload_error = _validate_evidence_requests_payload(
-                        retry_block.requests_text
-                    )
+                    payload_error = _validate_evidence_requests_payload(retry_block.requests_text)
                     policy_error = _validate_evidence_topup_request(
                         used_round=used_round,
                         final_request=retry_block.final_request,
@@ -3702,18 +4242,12 @@ async def execution_node(state: TernionState) -> TernionState:
                     "thinking_logs": thinking_logs,
                 }
         usage = response.usage or {}
-        input_tokens = (
-            usage.get("prompt_tokens")
-            or usage.get("input_tokens")
-            or 0
-        )
-        completion_tokens = (
-            usage.get("completion_tokens")
-            or usage.get("output_tokens")
-            or 0
-        )
+        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
         thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
-        output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        output_for_cost = (
+            completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        )
         if input_tokens or output_for_cost or thoughts_tokens:
             budget_manager.record_usage(
                 provider=provider.name,
@@ -3763,9 +4297,9 @@ async def execution_node(state: TernionState) -> TernionState:
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
             "generated_code": "",
+            "final_output": error_msg,
             "errors": state.get("errors", []) + [error_msg],
-            "thinking_logs": thinking_logs
-            + [t(MessageKey.EXECUTION_ERROR, error=str(e))],
+            "thinking_logs": thinking_logs + [t(MessageKey.EXECUTION_ERROR, error=str(e))],
         }
 
 
@@ -3859,12 +4393,8 @@ async def final_check_node(state: TernionState) -> TernionState:
             )
             return {
                 **state,
-                "errors": state.get("errors", []) + [
-                    error_msg
-                ],
-                "thinking_logs": thinking_logs + [
-                    t(MessageKey.FINAL_CHECK_ERROR, error=error_msg)
-                ],
+                "errors": state.get("errors", []) + [error_msg],
+                "thinking_logs": thinking_logs + [t(MessageKey.FINAL_CHECK_ERROR, error=error_msg)],
             }
 
         response = await _call_with_timeout(
@@ -3874,18 +4404,12 @@ async def final_check_node(state: TernionState) -> TernionState:
             temperature=0.2,  # Low temperature for critical review
         )
         usage = response.usage or {}
-        input_tokens = (
-            usage.get("prompt_tokens")
-            or usage.get("input_tokens")
-            or 0
-        )
-        completion_tokens = (
-            usage.get("completion_tokens")
-            or usage.get("output_tokens")
-            or 0
-        )
+        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
         thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
-        output_for_cost = completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        output_for_cost = (
+            completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
+        )
         if input_tokens or output_for_cost or thoughts_tokens:
             budget_manager.record_usage(
                 provider=provider.name,
@@ -4005,8 +4529,7 @@ async def final_check_node(state: TernionState) -> TernionState:
             "review_feedback": error_msg,
             "final_output": generated_code,
             "errors": state.get("errors", []) + [error_msg],
-            "thinking_logs": thinking_logs
-            + [t(MessageKey.FINAL_CHECK_ERROR, error=str(e))],
+            "thinking_logs": thinking_logs + [t(MessageKey.FINAL_CHECK_ERROR, error=str(e))],
         }
 
 
@@ -4045,6 +4568,8 @@ async def optimizer_node(state: TernionState) -> TernionState:
 
     baseline = state.get("baseline_file_snapshots") or {}
     modified_files = state.get("modified_files") or []
+    if not isinstance(modified_files, list):
+        modified_files = []
     writer_output_files = state.get("writer_output_files") or {}
 
     history = state.get("conversation_history", [])
@@ -4115,43 +4640,68 @@ async def optimizer_node(state: TernionState) -> TernionState:
         deliverable_policy_text,
         *topup_status_lines,
     ]
+    pytest_status = _format_last_pytest_status(state.get("tool_results_meta"))
+    if pytest_status:
+        content_parts.append(pytest_status)
+    retry_policy = _format_optimizer_verification_retry_policy(state.get("tool_results_meta"))
+    if retry_policy:
+        content_parts.append(retry_policy)
     if tool_context_digest:
-        content_parts.extend([
-            "\n\n[TERNION TOOL CONTEXT DIGEST]\n\n",
-            tool_context_digest,
-        ])
+        content_parts.extend(
+            [
+                "\n\n[TERNION TOOL CONTEXT DIGEST]\n\n",
+                tool_context_digest,
+            ]
+        )
 
     if modified_files:
-        content_parts.extend([
-            "\n\n[MODIFIED FILES]\n\n",
-            "\n".join(f"- {p}" for p in modified_files),
-        ])
+        content_parts.extend(
+            [
+                "\n\n[MODIFIED FILES]\n\n",
+                "\n".join(f"- {p}" for p in modified_files),
+            ]
+        )
+        ruff_commands = _build_scoped_ruff_verification_commands(modified_files)
+        if ruff_commands:
+            content_parts.extend(
+                [
+                    "\n\n[SCOPED VERIFICATION COMMANDS]\n\n",
+                    "Default Ruff verification (scoped to modified Python files; avoid `... .`):\n",
+                    "\n".join(f"- {cmd}" for cmd in ruff_commands),
+                ]
+            )
 
     if baseline:
         content_parts.append("\n\n[ORIGINAL CODE BASELINE - PRE-CHANGE]\n\n")
         for path, content in baseline.items():
-            content_parts.extend([
-                f"\n\nFILE: {path}\n",
-                "-----\n",
-                content,
-                "\n-----\n",
-            ])
+            content_parts.extend(
+                [
+                    f"\n\nFILE: {path}\n",
+                    "-----\n",
+                    content,
+                    "\n-----\n",
+                ]
+            )
 
     if writer_output_files:
         content_parts.append("\n\n[WRITER OUTPUT FILES - POST-CHANGE]\n\n")
         for path, content in writer_output_files.items():
-            content_parts.extend([
-                f"\n\nFILE: {path}\n",
-                "-----\n",
-                content,
-                "\n-----\n",
-            ])
+            content_parts.extend(
+                [
+                    f"\n\nFILE: {path}\n",
+                    "-----\n",
+                    content,
+                    "\n-----\n",
+                ]
+            )
 
     if generated_code:
-        content_parts.extend([
-            "\n\n[WRITER OUTPUT TEXT]\n\n",
-            generated_code,
-        ])
+        content_parts.extend(
+            [
+                "\n\n[WRITER OUTPUT TEXT]\n\n",
+                generated_code,
+            ]
+        )
 
     messages.append(
         ChatMessage(
@@ -4171,18 +4721,16 @@ async def optimizer_node(state: TernionState) -> TernionState:
             )
             return {
                 **state,
-                "errors": state.get("errors", []) + [
-                    error_msg
-                ],
-                "thinking_logs": thinking_logs + [
-                    t(MessageKey.FINAL_CHECK_ERROR, error=error_msg)
-                ],
+                "errors": state.get("errors", []) + [error_msg],
+                "thinking_logs": thinking_logs + [t(MessageKey.FINAL_CHECK_ERROR, error=error_msg)],
                 "current_phase": WorkflowPhase.COMPLETE.value,
             }
 
         supports_native_tools = getattr(provider, "supports_native_tool_calls", False) is True
         supports_text_tools = bool(cursor_tools) and not supports_native_tools
-        should_use_tool_calls = bool(cursor_tools) and (supports_native_tools or supports_text_tools)
+        should_use_tool_calls = bool(cursor_tools) and (
+            supports_native_tools or supports_text_tools
+        )
 
         if supports_text_tools and messages:
             last_msg = messages[-1]
@@ -4263,9 +4811,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
         )
 
         if response.tool_calls:
-            blocked_tools, blocked_shell = _detect_blocked_execution_tool_calls(
-                response.tool_calls
-            )
+            blocked_tools, blocked_shell = _detect_blocked_execution_tool_calls(response.tool_calls)
             if blocked_tools or blocked_shell:
                 log_manager.emit(
                     level="INFO",
@@ -4277,17 +4823,40 @@ async def optimizer_node(state: TernionState) -> TernionState:
                         f"blocked_shell={len(blocked_shell)}"
                     ),
                 )
+                try:
+                    blocked_shell_session: list[dict[str, str]] = []
+                    for item in blocked_shell:
+                        tool = str(item.get("tool") or "Shell")
+                        cmd = str(item.get("command") or "")
+                        reason = str(item.get("reason") or "")
+                        blocked_shell_session.append(
+                            {
+                                "tool": tool,
+                                "command_preview": redact_secrets(cmd),
+                                "reason": reason,
+                            }
+                        )
+                    session_store.update_session(
+                        session_id,
+                        append_guardrail_events=[
+                            {
+                                "type": "optimizer_tool_policy_soft_retry",
+                                "phase": "optimizer",
+                                "role": "optimizer",
+                                "blocked_tools": list(blocked_tools or []),
+                                "blocked_shell": blocked_shell_session,
+                            }
+                        ],
+                    )
+                except Exception:
+                    pass
                 last = messages[-1] if messages else None
                 feedback = _build_tool_policy_guardrail_feedback(
                     blocked_tools=blocked_tools,
                     blocked_shell=blocked_shell,
                     role_label="Optimizer (optimizer)",
                 )
-                if (
-                    last
-                    and last.role == MessageRole.USER
-                    and isinstance(last.content, str)
-                ):
+                if last and last.role == MessageRole.USER and isinstance(last.content, str):
                     last.content += "\n\n[TERNION TOOL POLICY GUARDRAIL]\n\n" + feedback
                 else:
                     messages.append(
@@ -4314,6 +4883,60 @@ async def optimizer_node(state: TernionState) -> TernionState:
                         response.content = ""
 
             if response.tool_calls:
+                malformed = _detect_malformed_execution_tool_calls(response.tool_calls)
+                if malformed:
+                    log_manager.emit(
+                        level="INFO",
+                        category="GUARDRAIL",
+                        message=(
+                            "optimizer_tool_call_validation_soft_retry | "
+                            f"session_id={session_id} | "
+                            f"issues={len(malformed)}"
+                        ),
+                    )
+                    with contextlib.suppress(Exception):
+                        session_store.update_session(
+                            session_id,
+                            append_guardrail_events=[
+                                {
+                                    "type": "optimizer_tool_call_validation_soft_retry",
+                                    "phase": "optimizer",
+                                    "role": "optimizer",
+                                    "issues": list(malformed[:20]),
+                                    "issues_truncated": len(malformed) > 20,
+                                }
+                            ],
+                        )
+                    last = messages[-1] if messages else None
+                    feedback = _build_tool_call_validation_guardrail_feedback(
+                        issues=malformed,
+                        role_label="Optimizer (optimizer)",
+                    )
+                    if last and last.role == MessageRole.USER and isinstance(last.content, str):
+                        last.content += "\n\n[TERNION TOOL CALL VALIDATION]\n\n" + feedback
+                    else:
+                        messages.append(
+                            ChatMessage(
+                                role=MessageRole.USER,
+                                content="[TERNION TOOL CALL VALIDATION]\n\n" + feedback,
+                            )
+                        )
+
+                    response = await _call_with_timeout(
+                        provider=provider,
+                        messages=messages,
+                        model=model,
+                        temperature=0.2,
+                        timeout_seconds=optimizer_timeout,
+                        **extra_kwargs,
+                    )
+                    if supports_text_tools and not response.tool_calls:
+                        parsed_tool_calls = extract_tool_calls_from_text(response.content)
+                        if parsed_tool_calls:
+                            response.tool_calls = parsed_tool_calls
+                            response.content = ""
+
+            if response.tool_calls:
                 return {
                     **state,
                     "current_phase": WorkflowPhase.OPTIMIZER.value,
@@ -4335,11 +4958,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
             topup_error = payload_error or policy_error
             if topup_error:
                 last = messages[-1] if messages else None
-                if (
-                    last
-                    and last.role == MessageRole.USER
-                    and isinstance(last.content, str)
-                ):
+                if last and last.role == MessageRole.USER and isinstance(last.content, str):
                     last.content += (
                         "\n\n[TERNION EVIDENCE TOP-UP GUARDRAIL]\n\n"
                         f"{sanitize_for_cursor_display(topup_error)}\n\n"
@@ -4389,9 +5008,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
                 )
                 if retry_block is not None:
                     used_round = int(state.get("evidence_topup_round", 0) or 0)
-                    payload_error = _validate_evidence_requests_payload(
-                        retry_block.requests_text
-                    )
+                    payload_error = _validate_evidence_requests_payload(retry_block.requests_text)
                     policy_error = _validate_evidence_topup_request(
                         used_round=used_round,
                         final_request=retry_block.final_request,
@@ -4432,7 +5049,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
             # wrapper markers were missing or not detected during streaming.
             for i in range(0, len(user_summary_safe), 128):
                 await stream_queue.put_token(
-                    delta=user_summary_safe[i:i + 128],
+                    delta=user_summary_safe[i : i + 128],
                     phase="optimizer",
                     message_id=session_id,
                 )
