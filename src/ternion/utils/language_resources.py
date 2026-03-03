@@ -58,7 +58,7 @@ def _read_language_resources() -> dict[str, Any]:
             data = json.load(handle)
             if isinstance(data, dict):
                 return data
-    except Exception as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         logger.error(
             "language_resources_load_failed",
             error=str(exc),
@@ -69,7 +69,12 @@ def _read_language_resources() -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def load_language_resources() -> dict[str, Any]:
-    """Load language resources from the bundled JSON file."""
+    """
+    Load language resources from the bundled JSON file.
+
+    Returns:
+        Parsed JSON dictionary. Returns an empty dict on read/parse failure.
+    """
     return _read_language_resources()
 
 

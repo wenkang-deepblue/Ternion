@@ -25,7 +25,6 @@ def setup_logging(
     """
     log_level = getattr(logging, level.upper(), logging.INFO)
 
-    # Configure standard library logging
     handlers: list[logging.Handler] = [
         RichHandler(
             console=Console(stderr=True),
@@ -48,7 +47,6 @@ def setup_logging(
         force=True,
     )
 
-    # Configure structlog
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -66,5 +64,13 @@ def setup_logging(
 
 
 def get_logger(name: str) -> structlog.BoundLogger:
-    """Get a logger instance for the given name."""
+    """
+    Return a structlog logger instance for the given name.
+
+    Args:
+        name: Logger name, usually `__name__`.
+
+    Returns:
+        A bound logger instance.
+    """
     return structlog.get_logger(name)

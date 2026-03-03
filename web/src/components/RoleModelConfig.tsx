@@ -8,12 +8,12 @@
  * - Reviewer: Code reviewer
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import api from '../api/client';
 import type { Config, RoleConfig, ModelsData, ModelInfo } from '../api/client';
 import { useToast } from './toastContext';
 import type { Translations } from '../i18n';
-import { getErrorMessage } from '../i18n';
+import { getErrorMessage, isCJKLanguage } from '../i18n';
 import type { Language } from '../i18n';
 
 // Section icon
@@ -70,6 +70,7 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
   const [selectedRoles, setSelectedRoles] = useState<Record<string, RoleConfig>>({});
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const unsavedSeparator = isCJKLanguage(language) ? '，' : ', ';
 
   // Check if role is disabled based on execution mode
   const isRoleDisabled = (role: string) => {
@@ -155,13 +156,18 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
     reviewer: t.reviewerName,
   };
 
-  useEffect(() => {
-    loadModels();
+  const loadModels = useCallback(async () => {
+    try {
+      const data = await api.getModels();
+      setModelsData(data);
+    } catch (error) {
+      console.error('Failed to load models:', error);
+    }
   }, []);
 
   useEffect(() => {
-    loadModels();
-  }, [config]);
+    void loadModels();
+  }, [config, loadModels]);
 
   useEffect(() => {
     if (!config) return;
@@ -196,15 +202,6 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
       setSelectedRoles(config.roles);
     }
   }, [config, hasChanges]);
-
-  const loadModels = async () => {
-    try {
-      const data = await api.getModels();
-      setModelsData(data);
-    } catch (error) {
-      console.error('Failed to load models:', error);
-    }
-  };
 
   const handleProviderChange = (role: string, provider: string) => {
     setSelectedRoles(prev => {
@@ -448,7 +445,7 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
                     {(!config?.roles?.[role] ||
                       config?.roles?.[role]?.provider !== roleConfig?.provider ||
                       config?.roles?.[role]?.model !== roleConfig?.model)
-                      ? `，${t.unsavedLabel}`
+                      ? `${unsavedSeparator}${t.unsavedLabel}`
                       : ''}
                   </>
                 )}

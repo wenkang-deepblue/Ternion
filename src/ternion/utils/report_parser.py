@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from ternion.utils.i18n import MessageKey, t
+
 _H2_RE = re.compile(r"(?m)^##\s+(?P<title>.+?)\s*$")
 _MD_HEADING_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s+")
 _MD_BLOCKQUOTE_RE = re.compile(r"(?m)^\s{0,3}>\s?")
@@ -171,12 +173,8 @@ def format_report_for_display(report: str) -> str:
     def section(title: str, body: str) -> str:
         body_clean = _strip_markdown_for_display(body).strip()
         if not body_clean:
-            from ternion.utils.i18n import MessageKey, t
-
             body_clean = t(MessageKey.REPORT_SECTION_MISSING_PLACEHOLDER)
         return f"【{title}】\n{body_clean}"
-
-    from ternion.utils.i18n import MessageKey, t
 
     parts = [
         section(t(MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE), parsed.root_cause),

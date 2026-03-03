@@ -93,7 +93,7 @@ def parse_session_marker(messages: list[dict]) -> str | None:
         role = msg.get("role", "")
         content = msg.get("content", "")
 
-        if role == "assistant" and content:
+        if role == "assistant" and isinstance(content, str) and content:
             match = re.search(session_id_pattern, content)
             if match:
                 session_id = match.group(1)
@@ -123,7 +123,7 @@ def parse_report_hash_marker(messages: list[dict]) -> str | None:
         role = msg.get("role", "")
         content = msg.get("content", "")
 
-        if role == "assistant" and content:
+        if role == "assistant" and isinstance(content, str) and content:
             match = re.search(report_hash_pattern, content)
             if match:
                 report_hash = match.group(1)

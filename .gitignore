@@ -107,10 +107,9 @@ temp/
 
 # Design docs
 docs/
-SKILL.md
 usage_test.json
 
-# Ignore README until ready for release (user will manage this)
+# Ignore README until ready for release
 README.md
 
 # Secret files
@@ -131,6 +130,9 @@ App.css
 *capture*.py
 reviewer*.py
 *workflow_integration.py
+*cursor/
+*aud*.*
 
 # Development-only testing tools (not for open source)
 scripts/*e2e*.*
+validate_i18n.py

@@ -32,14 +32,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const id = nextIdRef.current++;
     setToasts(prev => [...prev, { id, message, type, exiting: false }]);
 
-    // Start fade-out after 4.5 seconds (visible for ~5s total including animations)
+    // Start fade-out after 2 seconds.
     setTimeout(() => {
       setToasts(prev =>
         prev.map(t => (t.id === id ? { ...t, exiting: true } : t))
       );
     }, 2000);
 
-    // Remove from DOM after fade-out animation (0.5s)
+    // Remove from DOM after fade-out animation (~0.5s).
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 2500);

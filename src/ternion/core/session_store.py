@@ -221,6 +221,17 @@ def _append_capped(
     *,
     max_items: int,
 ) -> list[dict[str, Any]]:
+    """
+    Append new items and cap the merged list length.
+
+    Args:
+        items: Existing items (treated as empty when falsy)
+        new_items: Items to append (non-dict entries are ignored)
+        max_items: Maximum number of items to keep (keeps newest items)
+
+    Returns:
+        The merged list capped to `max_items` from the end.
+    """
     if not new_items:
         return items
     merged = list(items or [])
@@ -542,12 +553,44 @@ class SessionStore:
         Update a session with new values.
 
         Args:
-            session_id: The session identifier
-            stage: New stage (optional)
-            last_user_feedback: User's rejection/clarification feedback (optional)
-            generated_code: Generated code from Writer (optional)
-            review_feedback: Feedback from Reviewer (optional)
-            hash_verified: Report hash verification result (optional, for offline analysis)
+            session_id: The session identifier.
+            stage: New session stage (optional).
+            last_user_feedback: Latest user rejection/clarification feedback (optional).
+            generated_code: Generated code from Writer (optional).
+            review_feedback: Feedback from Reviewer/Optimizer (optional).
+            hash_verified: Report hash verification result (optional, for offline analysis).
+            ternion_report_raw: Raw report content used for internal phases (optional).
+            cursor_system_prompt: Captured Cursor system prompt (optional).
+            cursor_tools: Captured Cursor tools schema (optional).
+            cursor_tool_choice: Captured Cursor tool_choice payload (optional).
+            execution_messages: Execution-time conversation messages (optional).
+            pending_tool_calls: Tool calls awaiting execution (optional).
+            deferred_tool_calls: Tool calls deferred for later execution (optional).
+            tool_call_index: tool_call_id -> meta index for traceability (optional).
+            tool_results_raw: tool_call_id -> raw tool output string (optional).
+            tool_results_meta: tool_call_id -> metadata dict (optional).
+            tool_loop_pre_git_status: Workspace state snapshot before tool loop (optional).
+            round_index: Workflow round index (optional).
+            revision_count: Number of user-driven revisions (optional).
+            workflow_phase: Current workflow phase label (optional).
+            modified_files: Files modified during execution (optional).
+            baseline_file_snapshots: Filepath -> baseline content snapshots (optional).
+            writer_output_files: Writer-produced output file index (optional).
+            optimizer_review_report: Optimizer review report text (optional).
+            todo_written: Whether a TodoWrite list has been created (optional).
+            optimizer_todo_written: Whether Optimizer TodoWrite list has been created (optional).
+            optimizer_phase_announced: Whether Optimizer phase was announced (optional).
+            execution_phase_announced: Whether execution phase was announced (optional).
+            confirmation_reason: Explanation for confirmation gate decision (optional).
+            evidence_bundle: Phase 1.5 evidence bundle content (optional).
+            evidence_gaps: Phase 1.5 evidence gaps content (optional).
+            evidence_requests: Phase 1.5 evidence requests content (optional).
+            evidence_chain_index: Evidence chain index entries (optional).
+            evidence_topup_round: Execution-time evidence top-up round counter (optional).
+            report_evidence_resume_phase: Phase to resume after report_evidence (optional).
+            ternion_analyses: Divergence/convergence analyses payload (optional).
+            append_guardrail_events: Events appended to guardrail event log (optional).
+            append_external_outputs_index: Events appended to external outputs index (optional).
 
         Returns:
             Updated Session object, or None if not found
@@ -744,7 +787,7 @@ class SessionStore:
         """
         from datetime import timedelta
 
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(UTC) - timedelta(days=days)
         deleted = 0
 
         for path in self.sessions_dir.glob("*.json"):
@@ -752,7 +795,9 @@ class SessionStore:
             if session is not None:
                 try:
                     created = datetime.fromisoformat(session.created_at.replace("Z", "+00:00"))
-                    if created.replace(tzinfo=None) < cutoff:
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=UTC)
+                    if created < cutoff:
                         self.delete_session(session.session_id)
                         deleted += 1
                 except ValueError:

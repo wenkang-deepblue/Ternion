@@ -132,6 +132,15 @@ class AnthropicProvider(BaseProvider):
             total_tokens=total_tokens,
         )
 
+        budget_manager.record_usage(
+            provider="anthropic",
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            thoughts_tokens=thinking_tokens,
+            context_length=total_tokens,
+        )
+
         return ProviderResponse(
             content=content,
             finish_reason=response.stop_reason,
@@ -343,6 +352,11 @@ class AnthropicProvider(BaseProvider):
                                         "data": image_data["data"],
                                     },
                                 }
+                            )
+                        else:
+                            logger.warning(
+                                "anthropic_image_extract_failed",
+                                url=part.image_url.url[:50],
                             )
                 result.append(
                     {

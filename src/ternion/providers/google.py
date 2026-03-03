@@ -106,7 +106,6 @@ class GoogleProvider(BaseProvider):
         )
 
         # Generate response using new SDK async method
-        # Note: contents contains the full history + last message in order
         response = await self._client.aio.models.generate_content(
             model=model_name,
             contents=contents,
@@ -114,16 +113,13 @@ class GoogleProvider(BaseProvider):
         )
 
         # Extract token counts
-        # New SDK usage_metadata structure might slightly differ, checking docs
-        # usually usage_metadata is pydantic object
+        # Usage metadata fields are optional; default to 0 when missing.
         usage_metadata = response.usage_metadata
         prompt_tokens = (usage_metadata.prompt_token_count or 0) if usage_metadata else 0
         candidates_tokens = (usage_metadata.candidates_token_count or 0) if usage_metadata else 0
-        # thoughts_tokens might be available in future or specialized models
-        # For now, check if it exists or default to 0
-        thoughts_tokens = 0  # New SDK standardization pending on this field
+        # Some models may provide thought-token usage; treat it as optional.
+        thoughts_tokens = 0
         if usage_metadata:
-            # Try getting it safely if it exists in schema
             thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
 
         total_tokens = (usage_metadata.total_token_count or 0) if usage_metadata else 0
@@ -146,6 +142,15 @@ class GoogleProvider(BaseProvider):
             completion_tokens=output_tokens,
             thoughts_tokens=thoughts_tokens,
             total_tokens=total_tokens,
+        )
+
+        budget_manager.record_usage(
+            provider="google",
+            model=model_name,
+            input_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            thoughts_tokens=thoughts_tokens,
+            context_length=total_tokens,
         )
 
         text_content = response.text or ""
@@ -230,7 +235,7 @@ class GoogleProvider(BaseProvider):
                 "gemini_token_usage",
                 model=model_name,
                 prompt_tokens=prompt_tokens,
-                candidates_tokens=output_tokens,
+                candidates_tokens=candidates_tokens,
                 thoughts_tokens=thoughts_tokens,
                 total_tokens=total_tokens,
             )
@@ -292,11 +297,16 @@ class GoogleProvider(BaseProvider):
             # List models to check availability using new SDK
             # returns a specific iterable object, need to check if empty
             pager = await self._client.aio.models.list()
-            # Just awaiting the first page/item is enough
-            # Async pager logic:
-            async for _ in pager:
+            aiter = pager.__aiter__()
+            try:
+                await aiter.__anext__()
                 return True
-            return False  # Empty list
+            except StopAsyncIteration:
+                return False
+            finally:
+                aclose = getattr(aiter, "aclose", None)
+                if aclose is not None:
+                    await aclose()
         except Exception as e:
             logger.warning("google_unavailable", error=str(e))
             return False
@@ -328,6 +338,12 @@ class GoogleProvider(BaseProvider):
             # Convert role names
             # 'user' -> 'user'
             # 'assistant' -> 'model'
+            if msg.role == MessageRole.TOOL:
+                logger.warning(
+                    "google_tool_role_mapped_to_model",
+                    message_name=msg.name,
+                    tool_call_id=getattr(msg, "tool_call_id", None),
+                )
             role = "user" if msg.role == MessageRole.USER else "model"
             parts = self._convert_content_to_parts(msg.content)
 
@@ -369,6 +385,11 @@ class GoogleProvider(BaseProvider):
                                     "data": image_data["data"],
                                 }
                             }
+                        )
+                    else:
+                        logger.warning(
+                            "google_image_extract_failed",
+                            url=part.image_url.url[:50],
                         )
             return parts
 

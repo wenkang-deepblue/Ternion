@@ -6,7 +6,7 @@ Holds the decomposed message context extracted by MessageRouter.
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from ternion.core.models import ChatMessage
 
@@ -20,7 +20,10 @@ class DiscussionPhase(Enum):
     DIVERGENCE = auto()  # Parallel root cause analysis
     CONVERGENCE = auto()  # Arbiter synthesis
     EXECUTION = auto()  # Writer generates code
-    FINAL_CHECK = auto()  # Reviewer verification
+    FINAL_CHECK = auto()  # Optimizer: applies targeted improvements to meet acceptance criteria
+
+
+ExecutionMode = Literal["ternion_full", "cursor_handoff", ""]
 
 
 @dataclass
@@ -55,11 +58,11 @@ class TernionContext:
     session_id: str = ""  # Existing session ID for follow-up requests
     await_confirmation: bool = True  # If True, stop after convergence for confirmation
     # Execution mode is intentionally empty by default. Must be explicitly configured in Web UI.
-    execution_mode: str = ""  # "ternion_full" | "cursor_handoff" | ""
+    execution_mode: ExecutionMode = ""
     rejection_context: str = ""  # User's rejection feedback for re-analysis
 
     # Streaming event queue (internal, for real-time output forwarding)
-    _stream_queue: "StreamEventQueue | None" = None
+    _stream_queue: "StreamEventQueue | None" = field(default=None, init=False, repr=False)
 
     @property
     def is_empty(self) -> bool:
@@ -75,10 +78,18 @@ class TernionContext:
         return count
 
     def get_user_messages(self) -> list[ChatMessage]:
-        """Get only user messages from history."""
+        """Get only user messages from history.
+
+        Returns:
+            List of messages whose role is ``user``.
+        """
         return [m for m in self.conversation_history if m.role.value == "user"]
 
     def get_last_user_message(self) -> ChatMessage | None:
-        """Get the most recent user message."""
+        """Get the most recent user message.
+
+        Returns:
+            The most recent user message if present. Otherwise, ``None``.
+        """
         user_messages = self.get_user_messages()
         return user_messages[-1] if user_messages else None

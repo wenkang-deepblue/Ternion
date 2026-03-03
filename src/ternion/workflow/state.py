@@ -17,16 +17,8 @@ class WorkflowPhase(str, Enum):
     REPORT_EVIDENCE = "report_evidence"  # Phase 1.5: collect evidence for council requests
     CONVERGENCE = "convergence"
     EXECUTION = "execution"
-    FINAL_CHECK = "final_check"
     OPTIMIZER = "optimizer"
     COMPLETE = "complete"
-
-
-class ReviewResult(str, Enum):
-    """Result from the reviewer."""
-
-    APPROVED = "approved"
-    REVISION_NEEDED = "revision_needed"
 
 
 @dataclass
@@ -96,8 +88,7 @@ class TernionState(TypedDict, total=False):
     generated_code: str
     pending_tool_calls: list[dict[str, Any]]
 
-    # Step 4: Final Check outputs (legacy; may be bypassed in dev override)
-    review_result: str  # "approved" or "revision_needed"
+    # Execution review metadata (used for session traceability / external outputs)
     review_feedback: str
     revision_count: int
 

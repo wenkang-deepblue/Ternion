@@ -9,17 +9,19 @@ No automatic fallback - user must configure all roles.
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import asyncio
 import structlog
 
 from ternion.core.config import settings
 from ternion.core.config_store import config_store
-from ternion.core.exceptions import AllProvidersUnavailable, ProviderError
+from ternion.core.exceptions import AllProvidersUnavailable, ProviderError, TernionTimeoutError
 from ternion.core.models import ChatMessage
 from ternion.providers.anthropic import AnthropicProvider
 from ternion.providers.base import BaseProvider, ProviderResponse
 from ternion.providers.google import GoogleProvider
 from ternion.providers.openai import OpenAIProvider
 from ternion.utils.i18n import MessageKey, t
+from ternion.utils.log_manager import log_manager
 
 logger = structlog.get_logger(__name__)
 
@@ -174,12 +176,6 @@ class ProviderManager:
             TimeoutError: If request times out (CR-030)
             ValueError: If provider not found
         """
-        import asyncio
-
-        from ternion.core.config import settings
-        from ternion.core.exceptions import TimeoutError as TernionTimeout
-        from ternion.utils.log_manager import log_manager
-
         provider = self.get_provider(provider_name)
         if not provider:
             raise ValueError(f"Provider not configured: {provider_name}")
@@ -198,15 +194,16 @@ class ProviderManager:
                 ),
                 timeout=timeout,
             )
-        except TimeoutError:
+        except asyncio.TimeoutError:
+            assert timeout is not None
             log_manager.emit(
                 "ERROR",
                 "LLM",
                 f"Provider timeout: {provider_name} did not respond within {timeout}s",
             )
-            raise TernionTimeout(
+            raise TernionTimeoutError(
                 operation=f"chat_completion ({provider_name})",
-                timeout_seconds=timeout,
+                timeout_seconds=int(timeout),
             ) from None
         except Exception as e:
             raise ProviderError(str(e), provider_name) from e
@@ -243,14 +240,37 @@ class ProviderManager:
             raise ValueError(f"Provider not configured: {provider_name}")
 
         try:
-            async for chunk in provider.chat_completion_stream(
-                messages=messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                **kwargs,
-            ):
-                yield chunk
+            timeout = settings.discussion.timeout_seconds
+            if timeout is None:
+                async for chunk in provider.chat_completion_stream(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                ):
+                    yield chunk
+            else:
+                async with asyncio.timeout(timeout):
+                    async for chunk in provider.chat_completion_stream(
+                        messages=messages,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        **kwargs,
+                    ):
+                        yield chunk
+        except asyncio.TimeoutError:
+            assert timeout is not None
+            log_manager.emit(
+                "ERROR",
+                "LLM",
+                f"Provider stream timeout: {provider_name} did not respond within {timeout}s",
+            )
+            raise TernionTimeoutError(
+                operation=f"chat_completion_stream ({provider_name})",
+                timeout_seconds=int(timeout),
+            ) from None
         except Exception as e:
             raise ProviderError(str(e), provider_name) from e
 

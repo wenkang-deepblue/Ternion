@@ -33,7 +33,7 @@ def estimate_interrupted_response(
     prompt_tokens: int,
     received_text: str,
     is_thinking_model: bool = False,
-) -> dict:
+) -> dict[str, object]:
     """
     Estimate token usage for an interrupted response.
 
@@ -45,10 +45,8 @@ def estimate_interrupted_response(
     Returns:
         Dict with estimated token counts and metadata
     """
-    # Estimate received output tokens
     received_output_tokens = estimate_tokens_from_text(received_text)
 
-    # Calculate expected totals based on ratios
     if is_thinking_model:
         expected_total_output = int(prompt_tokens * (OUTPUT_RATIO + THOUGHTS_RATIO))
         estimated_thoughts = int(prompt_tokens * THOUGHTS_RATIO)
@@ -56,7 +54,6 @@ def estimate_interrupted_response(
         expected_total_output = int(prompt_tokens * OUTPUT_RATIO)
         estimated_thoughts = 0
 
-    # Estimate remaining (undelivered) tokens
     estimated_remaining = max(0, expected_total_output - received_output_tokens)
 
     return {
@@ -87,7 +84,7 @@ def is_thinking_model(model: str) -> bool:
         # OpenAI reasoning models
         "o1",
         "o3",
-        "gpt-5",  # Assuming GPT 5.x series uses reasoning
+        "gpt-5",
     ]
     model_lower = model.lower()
     return any(tm in model_lower for tm in thinking_models)

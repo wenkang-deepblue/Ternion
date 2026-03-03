@@ -8,7 +8,7 @@
  * - Monthly usage chart with year selector
  */
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   ComposedChart,
   Bar,
@@ -196,11 +196,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
     }
   };
 
-  useEffect(() => {
-    loadUsage();
-  }, []);
-
-  const loadUsage = async () => {
+  const loadUsage = useCallback(async () => {
     try {
       const data = await api.getUsage();
       setUsage(data);
@@ -216,7 +212,11 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    void loadUsage();
+  }, [loadUsage]);
 
   // Helper to calculate cost from separate fields
   const calcProviderCost = (prov: { input_cost?: number; output_cost?: number; thoughts_cost?: number } | undefined): number => {
@@ -480,7 +480,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
                     disabled={budgetSaving}
                     className="px-4 py-2 text-sm bg-[#1871e6] hover:bg-[#145ab4] text-white rounded-lg transition-all duration-200 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                   >
-                    {budgetSaving ? t.loading : t.usageConfirm}
+                    {budgetSaving ? t.saving : t.usageConfirm}
                   </button>
                 </div>
               </div>

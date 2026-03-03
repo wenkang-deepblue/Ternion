@@ -14,6 +14,7 @@ import type { PortsConfig } from '../api/client';
 import { useToast } from './toastContext';
 import type { Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
+import type { Language } from '../i18n';
 
 // Port settings icons
 import portIconLight from '../assets/icons/port_light_mode_50dp.svg';
@@ -24,9 +25,10 @@ import warningIconDark from '../assets/icons/warning_dark_mode_50dp.svg';
 interface PortsSettingsProps {
   t: Translations;
   isDarkMode: boolean;
+  language: Language;
 }
 
-export function PortsSettings({ t, isDarkMode }: PortsSettingsProps) {
+export function PortsSettings({ t, isDarkMode, language }: PortsSettingsProps) {
   const { showToast } = useToast();
   const [ports, setPorts] = useState<PortsConfig>({
     backend: 9110,
@@ -87,14 +89,15 @@ export function PortsSettings({ t, isDarkMode }: PortsSettingsProps) {
       setHasChanges(false);
 
       // Show success toast with new port values and URLs
+      const restartNote = result.restart_required ? `\n${t.portsRestartNote}` : '';
       showToast(
-        `${t.portsSaved}\n${t.portsBackendLabel}: ${result.ports.backend} | ${t.portsWebLabel}: ${result.ports.web}`,
+        `${t.portsSaved}${restartNote}\n${t.portsBackendLabel}: ${result.ports.backend} | ${t.portsWebLabel}: ${result.ports.web}`,
         'success'
       );
     } catch (error) {
       console.error('Failed to save ports:', error);
       const errorCode = error instanceof Error ? error.message : String(error);
-      showToast(getErrorMessage(t, errorCode), 'error');
+      showToast(getErrorMessage(t, errorCode, language), 'error');
     } finally {
       setSaving(false);
     }

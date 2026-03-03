@@ -4,11 +4,14 @@ API routes for Ternion gateway.
 Implements OpenAI-compatible endpoints for chat completions and models listing.
 """
 
+import asyncio
 import contextlib
 import json
 import re
 import subprocess
-from collections.abc import Iterable
+import time
+import uuid
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -28,13 +31,16 @@ from ternion.core.intent_classifier import (
     parse_session_marker,
 )
 from ternion.core.models import (
+    ChatCompletionChunk,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatMessage,
     Choice,
+    ChoiceDelta,
     MessageRole,
     ModelInfo,
     ModelsListResponse,
+    StreamChoice,
 )
 from ternion.core.session_store import (
     ExecutionMode,
@@ -66,7 +72,7 @@ from ternion.utils.tool_policy import (
 from ternion.utils.tool_policy import (
     SHELL_TOOL_CANONICAL as _SHELL_TOOL_CANONICAL,
 )
-from ternion.workflow.streaming_events import StreamEventQueue
+from ternion.workflow.streaming_events import StreamEventQueue, StreamEventType
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -111,10 +117,82 @@ _REPORT_SECTION_TITLE_KEYS = {
 
 
 def _get_report_section_title(key: str) -> str:
+    """Return the localized display title for a structured report section.
+
+    Args:
+        key: Internal section key (e.g. "root_cause", "evidence").
+
+    Returns:
+        Translated title string, or the raw key if no mapping exists.
+    """
     message_key = _REPORT_SECTION_TITLE_KEYS.get(key)
     if message_key is None:
         return key
     return t(message_key)
+
+
+async def _sse_heartbeat_event(chunk_id: str, created: int, model: str) -> str:
+    """Build a keep-alive SSE heartbeat chunk string.
+
+    Heartbeats prevent proxy/client idle timeouts during long non-streaming
+    workflow phases (e.g. evidence collection, divergence).
+
+    Args:
+        chunk_id: The SSE stream chunk identifier.
+        created: Unix timestamp for the chunk.
+        model: Model name to embed in the chunk.
+
+    Returns:
+        Formatted SSE data line string ready to yield.
+    """
+    heartbeat = ChatCompletionChunk(
+        id=chunk_id,
+        created=created,
+        model=model,
+        choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
+    )
+    return f"data: {heartbeat.model_dump_json()}\n\n"
+
+
+async def _consume_sse_events(
+    *,
+    stream_queue: StreamEventQueue,
+    heartbeat_interval_seconds: int,
+    on_timeout: Callable[[], Awaitable[str]],
+    on_event: Callable[[Any], AsyncGenerator[str, None]],
+) -> AsyncGenerator[str, None]:
+    """Consume StreamEventQueue events with keep-alive heartbeats.
+
+    This helper centralizes the common SSE event-consumption loop:
+    - wait on the stream queue with a timeout
+    - emit a heartbeat on idle timeout
+    - stop when the queue yields None
+    - delegate event-specific handling to the provided callback
+
+    Args:
+        stream_queue: The StreamEventQueue providing streaming events.
+        heartbeat_interval_seconds: Heartbeat interval (seconds) for idle keep-alive.
+        on_timeout: Async callable returning a single SSE chunk string for heartbeat.
+        on_event: Async generator callback that yields SSE chunk strings for a given event.
+
+    Yields:
+        SSE-formatted chunk strings to forward to clients.
+    """
+    while True:
+        try:
+            event = await asyncio.wait_for(
+                stream_queue.get(),
+                timeout=heartbeat_interval_seconds,
+            )
+        except TimeoutError:
+            yield await on_timeout()
+            continue
+
+        if event is None:
+            break
+
+        async for sse_chunk in on_event(event):
+            yield sse_chunk
 
 
 def _append_stream_safe_cursor_text(
@@ -1807,11 +1885,7 @@ async def _run_discussion_streaming(
     Returns:
         StreamingResponse with real-time SSE events
     """
-    import asyncio
-    from collections.abc import AsyncGenerator
-
     from ternion.workflow.graph import run_discussion
-    from ternion.workflow.streaming_events import StreamEventType
 
     # Create event queue for streaming
     stream_queue = StreamEventQueue()
@@ -1821,11 +1895,6 @@ async def _run_discussion_streaming(
 
     async def generate_sse() -> AsyncGenerator[str, None]:
         """SSE generator that consumes events from the queue."""
-        import time
-        import uuid
-
-        from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
-
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
         final_state: dict = {}
@@ -1846,8 +1915,6 @@ async def _run_discussion_streaming(
 
         # Send budget warning first if present
         if budget_warning:
-            from ternion.core.budget import budget_manager
-
             warning_text = budget_manager.format_budget_warning(budget_warning)
             chunk = ChatCompletionChunk(
                 id=chunk_id,
@@ -1870,25 +1937,14 @@ async def _run_discussion_streaming(
             # Heartbeats keep the SSE connection alive even when the workflow has
             # long non-streaming steps (e.g., evidence/divergence).
             heartbeat_interval_seconds = 10
-            while True:
-                try:
-                    event = await asyncio.wait_for(
-                        stream_queue.get(),
-                        timeout=heartbeat_interval_seconds,
-                    )
-                except TimeoutError:
-                    heartbeat = ChatCompletionChunk(
-                        id=chunk_id,
-                        created=created,
-                        model=model,
-                        choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
-                    )
-                    yield f"data: {heartbeat.model_dump_json()}\n\n"
-                    continue
+            async def on_timeout() -> str:
+                return await _sse_heartbeat_event(chunk_id, created, model)
 
-                if event is None:
-                    break
-
+            async def on_event(event: Any) -> AsyncGenerator[str, None]:
+                nonlocal convergence_pending_raw
+                nonlocal pending_phase_indicator
+                nonlocal streamed_any_convergence
+                nonlocal streamed_content
                 if event.event_type == StreamEventType.TOKEN_DELTA:
                     # Forward token delta as SSE chunk
                     if event.delta:
@@ -1923,7 +1979,7 @@ async def _run_discussion_streaming(
                                     choices=[StreamChoice(delta=ChoiceDelta(content=safe_text))],
                                 )
                                 yield f"data: {chunk.model_dump_json()}\n\n"
-                            continue
+                            return
 
                         if pending_phase_indicator:
                             chunk = ChatCompletionChunk(
@@ -1946,8 +2002,9 @@ async def _run_discussion_streaming(
                             choices=[StreamChoice(delta=ChoiceDelta(content=event.delta))],
                         )
                         yield f"data: {chunk.model_dump_json()}\n\n"
+                    return
 
-                elif event.event_type == StreamEventType.PHASE_START:
+                if event.event_type == StreamEventType.PHASE_START:
                     if show_phase_indicators and event.phase:
                         phase_lower = str(event.phase or "").strip().lower()
                         if convergence_pending_raw and phase_lower != "convergence":
@@ -1982,8 +2039,9 @@ async def _run_discussion_streaming(
                             )
                             yield f"data: {chunk.model_dump_json()}\n\n"
                             pending_phase_indicator = None
+                    return
 
-                elif event.event_type == StreamEventType.ERROR:
+                if event.event_type == StreamEventType.ERROR:
                     # Forward error
                     error_text = t(MessageKey.STREAM_ERROR_GENERIC)
                     chunk = ChatCompletionChunk(
@@ -1993,6 +2051,15 @@ async def _run_discussion_streaming(
                         choices=[StreamChoice(delta=ChoiceDelta(content=error_text))],
                     )
                     yield f"data: {chunk.model_dump_json()}\n\n"
+                    return
+
+            async for sse_chunk in _consume_sse_events(
+                stream_queue=stream_queue,
+                heartbeat_interval_seconds=heartbeat_interval_seconds,
+                on_timeout=on_timeout,
+                on_event=on_event,
+            ):
+                yield sse_chunk
 
             # Wait for workflow to complete
             await workflow_task
@@ -2414,11 +2481,7 @@ async def _run_implementation_streaming(
     Returns:
         StreamingResponse with real-time SSE events
     """
-    import asyncio
-    from collections.abc import AsyncGenerator
-
     from ternion.workflow.implementation_stage import run_implementation_stage
-    from ternion.workflow.streaming_events import StreamEventType
 
     # Create event queue for streaming
     stream_queue = StreamEventQueue()
@@ -2428,11 +2491,6 @@ async def _run_implementation_streaming(
 
     async def generate_sse() -> AsyncGenerator[str, None]:
         """SSE generator that consumes events from the queue."""
-        import time
-        import uuid
-
-        from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
-
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
         final_state: dict = {}
@@ -2467,25 +2525,12 @@ async def _run_implementation_streaming(
         try:
             # Consume events from queue with periodic keep-alive heartbeats.
             heartbeat_interval_seconds = 10
-            while True:
-                try:
-                    event = await asyncio.wait_for(
-                        stream_queue.get(),
-                        timeout=heartbeat_interval_seconds,
-                    )
-                except TimeoutError:
-                    heartbeat = ChatCompletionChunk(
-                        id=chunk_id,
-                        created=created,
-                        model=model,
-                        choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
-                    )
-                    yield f"data: {heartbeat.model_dump_json()}\n\n"
-                    continue
+            async def on_timeout() -> str:
+                return await _sse_heartbeat_event(chunk_id, created, model)
 
-                if event is None:
-                    break
-
+            async def on_event(event: Any) -> AsyncGenerator[str, None]:
+                nonlocal pending_phase_indicator
+                nonlocal streamed_content
                 if event.event_type == StreamEventType.TOKEN_DELTA:
                     if event.delta:
                         if pending_phase_indicator:
@@ -2509,8 +2554,9 @@ async def _run_implementation_streaming(
                             choices=[StreamChoice(delta=ChoiceDelta(content=event.delta))],
                         )
                         yield f"data: {chunk.model_dump_json()}\n\n"
+                    return
 
-                elif event.event_type == StreamEventType.PHASE_START:
+                if event.event_type == StreamEventType.PHASE_START:
                     if show_phase_indicators and event.phase:
                         indicator = _phase_start_indicator_text(event.phase, session_id=session_id)
                         if indicator:
@@ -2526,8 +2572,9 @@ async def _run_implementation_streaming(
                             )
                             yield f"data: {chunk.model_dump_json()}\n\n"
                             pending_phase_indicator = None
+                    return
 
-                elif event.event_type == StreamEventType.ERROR:
+                if event.event_type == StreamEventType.ERROR:
                     error_text = t(MessageKey.STREAM_ERROR_GENERIC)
                     chunk = ChatCompletionChunk(
                         id=chunk_id,
@@ -2536,6 +2583,15 @@ async def _run_implementation_streaming(
                         choices=[StreamChoice(delta=ChoiceDelta(content=error_text))],
                     )
                     yield f"data: {chunk.model_dump_json()}\n\n"
+                    return
+
+            async for sse_chunk in _consume_sse_events(
+                stream_queue=stream_queue,
+                heartbeat_interval_seconds=heartbeat_interval_seconds,
+                on_timeout=on_timeout,
+                on_event=on_event,
+            ):
+                yield sse_chunk
 
             # Wait for implementation to complete
             await impl_task
@@ -3874,22 +3930,12 @@ async def handle_report_evidence_followup(
     )
 
     if request.stream:
-        import asyncio
-        from collections.abc import AsyncGenerator
-
-        from ternion.workflow.streaming_events import StreamEventType
-
         show_phase_indicators = bool(getattr(user_config, "show_phase_indicators", True))
         stream_queue = StreamEventQueue()
         evidence_context._stream_queue = stream_queue  # type: ignore[attr-defined]
 
         async def generate_sse() -> AsyncGenerator[str, None]:
             """SSE generator for Phase 1.5 resume with real-time output."""
-            import time
-            import uuid
-
-            from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
-
             chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
             final_state: dict = {}
@@ -3929,25 +3975,14 @@ async def handle_report_evidence_followup(
 
             try:
                 heartbeat_interval_seconds = 10
-                while True:
-                    try:
-                        event = await asyncio.wait_for(
-                            stream_queue.get(),
-                            timeout=heartbeat_interval_seconds,
-                        )
-                    except TimeoutError:
-                        heartbeat = ChatCompletionChunk(
-                            id=chunk_id,
-                            created=created,
-                            model=request.model,
-                            choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
-                        )
-                        yield f"data: {heartbeat.model_dump_json()}\n\n"
-                        continue
+                async def on_timeout() -> str:
+                    return await _sse_heartbeat_event(chunk_id, created, request.model)
 
-                    if event is None:
-                        break
-
+                async def on_event(event: Any) -> AsyncGenerator[str, None]:
+                    nonlocal convergence_pending_raw
+                    nonlocal pending_phase_indicator
+                    nonlocal streamed_any_convergence
+                    nonlocal streamed_content
                     if event.event_type == StreamEventType.TOKEN_DELTA:
                         if event.delta:
                             phase_lower = str(event.phase or "").strip().lower()
@@ -3985,7 +4020,7 @@ async def handle_report_evidence_followup(
                                         ],
                                     )
                                     yield f"data: {chunk.model_dump_json()}\n\n"
-                                continue
+                                return
 
                             if pending_phase_indicator:
                                 chunk = ChatCompletionChunk(
@@ -4010,8 +4045,9 @@ async def handle_report_evidence_followup(
                                 choices=[StreamChoice(delta=ChoiceDelta(content=event.delta))],
                             )
                             yield f"data: {chunk.model_dump_json()}\n\n"
+                        return
 
-                    elif event.event_type == StreamEventType.PHASE_START:
+                    if event.event_type == StreamEventType.PHASE_START:
                         if show_phase_indicators and event.phase:
                             phase_lower = str(event.phase or "").strip().lower()
                             if convergence_pending_raw and phase_lower != "convergence":
@@ -4046,8 +4082,9 @@ async def handle_report_evidence_followup(
                                 )
                                 yield f"data: {chunk.model_dump_json()}\n\n"
                                 pending_phase_indicator = None
+                        return
 
-                    elif event.event_type == StreamEventType.ERROR:
+                    if event.event_type == StreamEventType.ERROR:
                         error_text = t(MessageKey.STREAM_ERROR_GENERIC)
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
@@ -4056,6 +4093,15 @@ async def handle_report_evidence_followup(
                             choices=[StreamChoice(delta=ChoiceDelta(content=error_text))],
                         )
                         yield f"data: {chunk.model_dump_json()}\n\n"
+                        return
+
+                async for sse_chunk in _consume_sse_events(
+                    stream_queue=stream_queue,
+                    heartbeat_interval_seconds=heartbeat_interval_seconds,
+                    on_timeout=on_timeout,
+                    on_event=on_event,
+                ):
+                    yield sse_chunk
 
                 await workflow_task
 
@@ -4766,7 +4812,11 @@ async def handle_report_evidence_followup(
             ),
         )
     except Exception:
-        pass
+        logger.warning(
+            "session_update_failed",
+            session_id=session.session_id,
+            exc_info=True,
+        )
     is_patch_output = _is_patch_or_diff_output(final_code)
     _emit_thinking_logs_to_observability(
         thinking_logs,
@@ -4980,22 +5030,12 @@ async def handle_evidence_followup(
     )
 
     if request.stream:
-        import asyncio
-        from collections.abc import AsyncGenerator
-
-        from ternion.workflow.streaming_events import StreamEventType
-
         show_phase_indicators = bool(getattr(user_config, "show_phase_indicators", True))
         stream_queue = StreamEventQueue()
         evidence_context._stream_queue = stream_queue  # type: ignore[attr-defined]
 
         async def generate_sse() -> AsyncGenerator[str, None]:
             """SSE generator for Phase 0 follow-up with real-time output."""
-            import time
-            import uuid
-
-            from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
-
             chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
             final_state: dict = {}
@@ -5022,25 +5062,14 @@ async def handle_evidence_followup(
 
             try:
                 heartbeat_interval_seconds = 10
-                while True:
-                    try:
-                        event = await asyncio.wait_for(
-                            stream_queue.get(),
-                            timeout=heartbeat_interval_seconds,
-                        )
-                    except TimeoutError:
-                        heartbeat = ChatCompletionChunk(
-                            id=chunk_id,
-                            created=created,
-                            model=request.model,
-                            choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
-                        )
-                        yield f"data: {heartbeat.model_dump_json()}\n\n"
-                        continue
+                async def on_timeout() -> str:
+                    return await _sse_heartbeat_event(chunk_id, created, request.model)
 
-                    if event is None:
-                        break
-
+                async def on_event(event: Any) -> AsyncGenerator[str, None]:
+                    nonlocal convergence_pending_raw
+                    nonlocal pending_phase_indicator
+                    nonlocal streamed_any_convergence
+                    nonlocal streamed_content
                     if event.event_type == StreamEventType.TOKEN_DELTA:
                         if event.delta:
                             phase_lower = str(event.phase or "").strip().lower()
@@ -5078,7 +5107,7 @@ async def handle_evidence_followup(
                                         ],
                                     )
                                     yield f"data: {chunk.model_dump_json()}\n\n"
-                                continue
+                                return
 
                             if pending_phase_indicator:
                                 chunk = ChatCompletionChunk(
@@ -5103,8 +5132,9 @@ async def handle_evidence_followup(
                                 choices=[StreamChoice(delta=ChoiceDelta(content=event.delta))],
                             )
                             yield f"data: {chunk.model_dump_json()}\n\n"
+                        return
 
-                    elif event.event_type == StreamEventType.PHASE_START:
+                    if event.event_type == StreamEventType.PHASE_START:
                         if show_phase_indicators and event.phase:
                             phase_lower = str(event.phase or "").strip().lower()
                             if convergence_pending_raw and phase_lower != "convergence":
@@ -5139,8 +5169,9 @@ async def handle_evidence_followup(
                                 )
                                 yield f"data: {chunk.model_dump_json()}\n\n"
                                 pending_phase_indicator = None
+                        return
 
-                    elif event.event_type == StreamEventType.ERROR:
+                    if event.event_type == StreamEventType.ERROR:
                         error_text = t(MessageKey.STREAM_ERROR_GENERIC)
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
@@ -5149,6 +5180,15 @@ async def handle_evidence_followup(
                             choices=[StreamChoice(delta=ChoiceDelta(content=error_text))],
                         )
                         yield f"data: {chunk.model_dump_json()}\n\n"
+                        return
+
+                async for sse_chunk in _consume_sse_events(
+                    stream_queue=stream_queue,
+                    heartbeat_interval_seconds=heartbeat_interval_seconds,
+                    on_timeout=on_timeout,
+                    on_event=on_event,
+                ):
+                    yield sse_chunk
 
                 await workflow_task
 
@@ -6282,11 +6322,6 @@ async def handle_execution_followup(
     }
 
     if request.stream:
-        import asyncio
-        from collections.abc import AsyncGenerator
-
-        from ternion.workflow.streaming_events import StreamEventType
-
         cfg = config_store.load()
         show_phase_indicators = bool(getattr(cfg, "show_phase_indicators", True))
 
@@ -6295,11 +6330,6 @@ async def handle_execution_followup(
 
         async def generate_sse() -> AsyncGenerator[str, None]:
             """SSE generator that consumes events from the queue (execution follow-up)."""
-            import time
-            import uuid
-
-            from ternion.core.models import ChatCompletionChunk, ChoiceDelta, StreamChoice
-
             chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
             final_state: dict = {}
@@ -6326,25 +6356,14 @@ async def handle_execution_followup(
 
             try:
                 heartbeat_interval_seconds = 10
-                while True:
-                    try:
-                        event = await asyncio.wait_for(
-                            stream_queue.get(),
-                            timeout=heartbeat_interval_seconds,
-                        )
-                    except TimeoutError:
-                        heartbeat = ChatCompletionChunk(
-                            id=chunk_id,
-                            created=created,
-                            model=request.model,
-                            choices=[StreamChoice(delta=ChoiceDelta(role=MessageRole.ASSISTANT))],
-                        )
-                        yield f"data: {heartbeat.model_dump_json()}\n\n"
-                        continue
+                async def on_timeout() -> str:
+                    return await _sse_heartbeat_event(chunk_id, created, request.model)
 
-                    if event is None:
-                        break
-
+                async def on_event(event: Any) -> AsyncGenerator[str, None]:
+                    nonlocal first_stream_delta_logged
+                    nonlocal last_phase_start_emitted
+                    nonlocal pending_phase_indicator
+                    nonlocal streamed_content
                     if event.event_type == StreamEventType.TOKEN_DELTA:
                         if event.delta:
                             if not first_stream_delta_logged:
@@ -6383,7 +6402,9 @@ async def handle_execution_followup(
                                 choices=[StreamChoice(delta=ChoiceDelta(content=event.delta))],
                             )
                             yield f"data: {chunk.model_dump_json()}\n\n"
-                    elif event.event_type == StreamEventType.PHASE_START:
+                        return
+
+                    if event.event_type == StreamEventType.PHASE_START:
                         if show_phase_indicators and event.phase:
                             phase_lower = str(event.phase or "").strip().lower()
                             should_emit_phase = phase_lower != last_phase_start_emitted
@@ -6406,7 +6427,9 @@ async def handle_execution_followup(
                                 pending_phase_indicator = None
                             if phase_lower:
                                 last_phase_start_emitted = phase_lower
-                    elif event.event_type == StreamEventType.ERROR:
+                        return
+
+                    if event.event_type == StreamEventType.ERROR:
                         error_text = t(MessageKey.STREAM_ERROR_GENERIC)
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
@@ -6415,6 +6438,15 @@ async def handle_execution_followup(
                             choices=[StreamChoice(delta=ChoiceDelta(content=error_text))],
                         )
                         yield f"data: {chunk.model_dump_json()}\n\n"
+                        return
+
+                async for sse_chunk in _consume_sse_events(
+                    stream_queue=stream_queue,
+                    heartbeat_interval_seconds=heartbeat_interval_seconds,
+                    on_timeout=on_timeout,
+                    on_event=on_event,
+                ):
+                    yield sse_chunk
 
                 await impl_task
 
@@ -7613,47 +7645,30 @@ async def handle_clarify_request(
     report_for_search = session.ternion_report_raw or session.ternion_report_safe
     excerpt = _extract_relevant_report_excerpt(report_for_search, question)
 
-    mode_desc = (
-        "code implementation by Ternion"
+    mode_desc = t(
+        MessageKey.EXECUTION_MODE_DESC_TERNION_FULL
         if session.execution_mode == ExecutionMode.TERNION_FULL
-        else "implementation handoff to Cursor"
+        else MessageKey.EXECUTION_MODE_DESC_CURSOR_HANDOFF
     )
 
     answer_text = (
-        "Below is the most relevant excerpt from the existing analysis report."
+        t(MessageKey.CLARIFY_ANSWER_WITH_EXCERPT)
         if excerpt
-        else (
-            "I couldn't locate a specific passage in the existing report that directly answers your question. "
-            "Please tell me which part you want to clarify (root cause / impact / plan / verification / rollback), "
-            "or rephrase your question."
-        )
+        else t(MessageKey.CLARIFY_ANSWER_NO_EXCERPT)
     )
-    excerpt_block = f"""\n\n### Relevant excerpt from the report\n\n{excerpt}""" if excerpt else ""
+    excerpt_block = f"\n\n### Relevant excerpt from the report\n\n{excerpt}" if excerpt else ""
 
     # Build a response that addresses the question without re-running RCA
-    clarification_response = f"""## Clarification
-
-Based on the analysis report above, I'll address your question:
-
-### Your question
-{_as_blockquote(safe_question)}
-
----
-
-### Answer (based on the existing report)
-{answer_text}{excerpt_block}
-
-### Next Steps
-
-Please review the analysis and let me know how you'd like to proceed:
-- **Confirm**: Reply with "yes", "proceed", or similar to continue with {mode_desc}
-- **Reject**: Reply with "no", "wrong", or describe what's incorrect for me to re-analyze
-- **Clarify**: Ask more questions (I won't generate code changes until you confirm)
-
-TERNION_SESSION_ID={session.session_id}
-TERNION_SESSION_STAGE=AWAITING_CONFIRMATION
-TERNION_EXECUTION_MODE={session.execution_mode.value}
-TERNION_REPORT_HASH={session.report_hash}"""
+    clarification_response = t(
+        MessageKey.CLARIFY_RESPONSE_TEMPLATE,
+        blockquote=_as_blockquote(safe_question),
+        answer_text=answer_text,
+        excerpt_block=excerpt_block,
+        mode_desc=mode_desc,
+        session_id=session.session_id,
+        execution_mode=session.execution_mode.value,
+        report_hash=session.report_hash or "",
+    )
 
     logger.info(
         "clarify_request_handled",
@@ -7723,19 +7738,11 @@ TERNION_EXECUTION_MODE={session.execution_mode.value}"""
         handoff_output = generate_handoff_package(session.ternion_report_safe)
 
         # User-visible reminder message (CURSOR_HANDOFF).
-        reminder = f"""## 📋 Reminder: Please Switch to a Non-Ternion Model
-
-This session has already been confirmed. To proceed with code implementation, please:
-
-1. **Switch your model** from `ternion-team` to a direct model (e.g., `claude-3-5-sonnet-latest`, `gpt-4o`, or `gemini-2.0-flash`)
-2. Then send your implementation request
-
-The Ternion council provides analysis only - code generation should be done by a dedicated coding model.
-
----
-
-{handoff_output}
-{session_markers}"""
+        reminder = t(
+            MessageKey.POST_EXEC_CURSOR_HANDOFF_REMINDER,
+            handoff_output=handoff_output,
+            session_markers=session_markers,
+        )
 
         if request.stream:
             return StreamingResponse(
@@ -7759,19 +7766,12 @@ The Ternion council provides analysis only - code generation should be done by a
             )
     else:
         # TERNION_FULL: Session is complete
-        completion_notice = f"""## ✅ Session Complete
-
-This Ternion session has already been executed. The code has been generated and reviewed.
-
-If you need to make additional changes or start a new analysis, please send a new request describing what you need.
-
----
-
-**Previous Session Summary**:
-- Session ID: `{session.session_id}`
-- Status: {session.stage.value.replace("_", " ").title()}
-- Mode: Ternion Full (code generated by Ternion)
-{session_markers}"""
+        completion_notice = t(
+            MessageKey.POST_EXEC_TERNION_FULL_COMPLETE,
+            session_id=session.session_id,
+            stage_display=session.stage.value.replace("_", " ").title(),
+            session_markers=session_markers,
+        )
 
         if request.stream:
             return StreamingResponse(
@@ -7826,30 +7826,17 @@ TERNION_EXECUTION_MODE={session.execution_mode.value}"""
     # Include last user feedback if available
     feedback_section = ""
     if session.last_user_feedback:
-        feedback_section = f"""
-**Your Previous Feedback**:
-> {session.last_user_feedback[:200]}{"..." if len(session.last_user_feedback) > 200 else ""}
-"""
+        truncated = session.last_user_feedback[:200]
+        ellipsis = "..." if len(session.last_user_feedback) > 200 else ""
+        feedback_section = f"\n**Your Previous Feedback**:\n> {truncated}{ellipsis}\n"
 
-    guidance = f"""## ⚠️ Session Previously Rejected
-
-This Ternion session was rejected based on your previous feedback. The analysis is no longer active.
-{feedback_section}
-### What Would You Like to Do?
-
-**Option 1: Start Fresh Analysis**
-Send a new request describing your problem, and Ternion will perform a fresh root cause analysis.
-
-**Option 2: Clarify Your Concerns**
-If you'd like to explain what was wrong with the previous analysis, please describe the specific issues and I'll initiate a new analysis with that context.
-
----
-
-**Previous Session Info**:
-- Session ID: `{session.session_id}`
-- Original Mode: {session.execution_mode.value.replace("_", " ").title()}
-- Status: Rejected
-{session_markers}"""
+    guidance = t(
+        MessageKey.REJECTED_SESSION_GUIDANCE,
+        feedback_section=feedback_section,
+        session_id=session.session_id,
+        mode_display=session.execution_mode.value.replace("_", " ").title(),
+        session_markers=session_markers,
+    )
 
     if request.stream:
         return StreamingResponse(
@@ -7887,23 +7874,19 @@ async def handle_unknown_intent(
     Returns:
         Clarification prompt
     """
-    mode_desc = (
-        "code implementation by Ternion"
+    mode_desc = t(
+        MessageKey.EXECUTION_MODE_DESC_TERNION_FULL
         if session.execution_mode == ExecutionMode.TERNION_FULL
-        else "implementation handoff to Cursor"
+        else MessageKey.EXECUTION_MODE_DESC_CURSOR_HANDOFF
     )
 
-    clarification = f"""I couldn't determine your intent from your response.
-
-Please let me know how you'd like to proceed:
-- **Confirm**: Reply with "yes", "proceed", or similar to continue with {mode_desc}
-- **Reject**: Reply with "no", "wrong", or describe what's incorrect for me to re-analyze
-- **Clarify**: Ask any questions about the analysis
-
-TERNION_SESSION_ID={session.session_id}
-TERNION_SESSION_STAGE=AWAITING_CONFIRMATION
-TERNION_EXECUTION_MODE={session.execution_mode.value}
-TERNION_REPORT_HASH={session.report_hash}"""
+    clarification = t(
+        MessageKey.UNKNOWN_INTENT_RESPONSE,
+        mode_desc=mode_desc,
+        session_id=session.session_id,
+        execution_mode=session.execution_mode.value,
+        report_hash=session.report_hash or "",
+    )
 
     if request.stream:
         return StreamingResponse(
@@ -7944,66 +7927,34 @@ def generate_handoff_package(ternion_report_safe: str) -> str:
     # Note: Caller is expected to pass session.ternion_report_safe
     # No additional sanitization needed
 
+    missing = t(MessageKey.REPORT_SECTION_MISSING_PLACEHOLDER)
     parsed = parse_structured_report(ternion_report_safe)
     if parsed.is_structured:
-        structured_body = f"""### Root Cause
-
-{parsed.root_cause or "- (Missing) Root cause section not found in report."}
-
----
-
-### Evidence / Logs
-
-{parsed.evidence or "- (Missing) Evidence section not found in report."}
-
----
-
-### Scope & Non-Goals
-
-{parsed.scope or "- (Missing) Scope section not found in report."}
-
----
-
-### Fix Plan / Recommendation
-
-{parsed.fix_plan or "- (Missing) Fix plan section not found in report."}
-
----
-
-### Verification
-
-{parsed.verification or "- (Missing) Verification section not found in report."}
-
----
-
-### Risks & Rollback
-
-{parsed.risks or "- (Missing) Risks section not found in report."}
-
----
-
-### If not effective, then what?
-
-{parsed.if_not_effective or "- (Missing) Fallback section not found in report."}"""
+        structured_body = (
+            f"### {_get_report_section_title('root_cause')}\n\n"
+            f"{parsed.root_cause or f'- ({missing}) Root cause section not found in report.'}\n\n"
+            f"---\n\n"
+            f"### {_get_report_section_title('evidence')}\n\n"
+            f"{parsed.evidence or f'- ({missing}) Evidence section not found in report.'}\n\n"
+            f"---\n\n"
+            f"### {_get_report_section_title('scope')}\n\n"
+            f"{parsed.scope or f'- ({missing}) Scope section not found in report.'}\n\n"
+            f"---\n\n"
+            f"### {_get_report_section_title('fix_plan')}\n\n"
+            f"{parsed.fix_plan or f'- ({missing}) Fix plan section not found in report.'}\n\n"
+            f"---\n\n"
+            f"### {_get_report_section_title('verification')}\n\n"
+            f"{parsed.verification or f'- ({missing}) Verification section not found in report.'}\n\n"
+            f"---\n\n"
+            f"### {_get_report_section_title('risks')}\n\n"
+            f"{parsed.risks or f'- ({missing}) Risks section not found in report.'}\n\n"
+            f"---\n\n"
+            f"### {_get_report_section_title('if_not_effective')}\n\n"
+            f"{parsed.if_not_effective or f'- ({missing}) Fallback section not found in report.'}"
+        )
     else:
-        structured_body = f"""### Confirmed Analysis Report (Unstructured)
+        structured_body = f"### Confirmed Analysis Report (Unstructured)\n\n{ternion_report_safe}"
 
-{ternion_report_safe}"""
-
-    return f"""## Ternion Analysis Confirmed — Cursor Handoff Package
-
-The Ternion council has completed the root cause analysis and the user has confirmed the findings. Please implement the solution based on the following structured analysis.
-
----
-
-{structured_body}
-
----
-
-### Next Action
-
-> **IMPORTANT**: Switch your model from `ternion-team` to a dedicated coding model
-> (e.g., `claude-3-5-sonnet-latest`, `gpt-4o`, or `gemini-2.0-flash`)
-> and then implement the plan above.
-
-The Ternion council provides analysis only. Code generation should be done by a dedicated implementation model."""
+    header = t(MessageKey.HANDOFF_PACKAGE_HEADER)
+    next_action = t(MessageKey.HANDOFF_PACKAGE_NEXT_ACTION)
+    return f"{header}\n\n---\n\n{structured_body}\n\n---\n\n{next_action}"

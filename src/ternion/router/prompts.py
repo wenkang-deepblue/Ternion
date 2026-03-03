@@ -8,8 +8,6 @@ DESIGN PHILOSOPHY:
 - Final Check: Functionality-first review with a security baseline.
 """
 
-from ternion.router.context import DiscussionPhase
-
 # ==============================================================================
 # GLOBAL SECURITY RULES (Injected into all role prompts as needed)
 # These rules apply universally across all Ternion workflow phases.
@@ -185,17 +183,17 @@ INPUTS YOU WILL RECEIVE:
 6. REQUEST-DRIVEN ONLY (NO "EXTRA" EVIDENCE):
    - Collect evidence ONLY to satisfy explicit evidence_requests.
    - Do NOT proactively collect additional evidence beyond evidence_requests.
-6.5. STRICT REQUEST ADHERENCE (MANDATORY):
+7. STRICT REQUEST ADHERENCE (MANDATORY):
    - When satisfying an evidence_request, strictly follow the request constraints and produce evidence that fully satisfies the request.
    - If you cannot fully satisfy a request via tools, record it in EVIDENCE_GAPS (do NOT partially satisfy and do NOT guess).
-7. MINIMUM NECESSARY (ANTI "JUST IN CASE"):
+8. MINIMUM NECESSARY (ANTI "JUST IN CASE"):
    - Do NOT collect evidence "just in case".
    - Do NOT maximize coverage. Do NOT read broad directories or entire files.
    - Prefer: targeted search → minimal file excerpt(s) → stop.
-8. DE-DUPLICATION:
+9. DE-DUPLICATION:
    - Do NOT repeat the same excerpt across multiple requests.
    - If newly collected excerpts overlap, keep the smallest, highest-signal ranges.
-9. TRUNCATION AWARENESS:
+10. TRUNCATION AWARENESS:
    - If tool output is truncated/compacted, fetch only the specific missing ranges you actually need.
 
 DECISION ORDER (MANDATORY):
@@ -466,6 +464,10 @@ Follow any deliverable policy and allowed write scope provided in the context.
 # Role: Senior QA Architect (The Reviewer)
 # Goal: Verify FUNCTIONALITY first, SECURITY second.
 # ==============================================================================
+# LEGACY NOTE:
+# - The main workflow currently routes EXECUTION -> OPTIMIZER (dev override).
+# - The Reviewer final check prompt is kept for potential future reintroduction
+#   or conditional paths, but it is not part of the default graph.
 FINAL_CHECK_PROMPT = """You are the Reviewer of the Ternion Council.
 You are the final gatekeeper.
 
@@ -590,10 +592,25 @@ The user-visible summary should include:
 - Optional: Suggestions (non-blocking) (only if any)
 """
 
-# Map phases to their prompts
-PHASE_PROMPTS: dict[DiscussionPhase, str] = {
-    DiscussionPhase.DIVERGENCE: DIVERGENCE_PROMPT,
-    DiscussionPhase.CONVERGENCE: CONVERGENCE_PROMPT,
-    DiscussionPhase.EXECUTION: EXECUTION_PROMPT,
-    DiscussionPhase.FINAL_CHECK: FINAL_CHECK_PROMPT,
-}
+def build_convergence_prompt(*, language_instruction: str) -> str:
+    """Build the convergence phase prompt with language-specific instruction.
+
+    Args:
+        language_instruction: Output language directive text injected into the prompt.
+
+    Returns:
+        The fully rendered convergence prompt.
+    """
+    return CONVERGENCE_PROMPT.format(language_instruction=language_instruction)
+
+
+def build_optimizer_prompt(*, language_instruction: str) -> str:
+    """Build the optimizer phase prompt with language-specific instruction.
+
+    Args:
+        language_instruction: Output language directive text injected into the prompt.
+
+    Returns:
+        The fully rendered optimizer prompt.
+    """
+    return f"{OPTIMIZER_PROMPT}\n\nOUTPUT LANGUAGE:\n{language_instruction}\n"

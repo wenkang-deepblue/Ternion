@@ -12,13 +12,13 @@ import re
 # Note: Order matters! More specific patterns must come before generic ones.
 _SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Anthropic API keys: sk-ant-... (must come before OpenAI pattern)
-    (re.compile(r"sk-ant-[A-Za-z0-9\-]{20,}"), "[REDACTED:Anthropic-Key]"),
+    (re.compile(r"sk-ant-[A-Za-z0-9\-]{20,}"), r"[REDACTED:Anthropic-Key]"),
     # OpenAI API keys: sk-... and sk-proj-... (includes hyphen for new formats)
-    (re.compile(r"sk-[A-Za-z0-9_\-]{20,}"), "[REDACTED:OpenAI-Key]"),
+    (re.compile(r"sk-[A-Za-z0-9_\-]{20,}"), r"[REDACTED:OpenAI-Key]"),
     # Google API keys: AIza... (39 chars total)
-    (re.compile(r"AIza[A-Za-z0-9_\-]{30,}"), "[REDACTED:Google-Key]"),
+    (re.compile(r"AIza[A-Za-z0-9_\-]{30,}"), r"[REDACTED:Google-Key]"),
     # Generic bearer tokens in error messages
-    (re.compile(r"Bearer\s+[A-Za-z0-9\-_.]+"), "Bearer [REDACTED]"),
+    (re.compile(r"Bearer\s+[A-Za-z0-9\-_.]+"), r"Bearer [REDACTED]"),
     # API key in URL query params: api_key=..., key=..., apikey=...
     (re.compile(r"(api_?key|key)=[A-Za-z0-9\-_]{10,}", re.IGNORECASE), r"\1=[REDACTED]"),
 ]

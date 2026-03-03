@@ -32,17 +32,21 @@ from ternion.utils.secrets import redact_secrets
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["control-panel"])
 
-# Sync budget settings from config_store to budget_manager on module load
-# This ensures user-configured budget persists across server restarts
-_init_config = config_store.load()
-if _init_config and _init_config.budget:
-    budget_manager.settings.monthly_limit_usd = _init_config.budget.monthly_limit_usd
-    budget_manager.settings.alert_threshold = _init_config.budget.alert_threshold
-    logger.info(
-        "budget_settings_loaded",
-        monthly_limit_usd=_init_config.budget.monthly_limit_usd,
-        alert_threshold=_init_config.budget.alert_threshold,
-    )
+# Sync budget settings from config_store to budget_manager on module load.
+# This ensures user-configured budget persists across server restarts.
+# Wrapped in try/except to prevent module import failure on corrupt or missing config.
+try:
+    _init_config = config_store.load()
+    if _init_config and _init_config.budget:
+        budget_manager.settings.monthly_limit_usd = _init_config.budget.monthly_limit_usd
+        budget_manager.settings.alert_threshold = _init_config.budget.alert_threshold
+        logger.info(
+            "budget_settings_loaded",
+            monthly_limit_usd=_init_config.budget.monthly_limit_usd,
+            alert_threshold=_init_config.budget.alert_threshold,
+        )
+except Exception:
+    logger.warning("budget_settings_load_failed", exc_info=True)
 
 
 # Request/Response Models
@@ -530,9 +534,12 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
         if request.provider == "google":
             from google import genai
 
-            # Use list models API - no LLM call, most cost-effective
+            # Use list models API - no LLM call, most cost-effective.
+            # Run in executor to avoid blocking the async event loop.
             google_client = genai.Client(api_key=request.api_key)
-            list(google_client.models.list())
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: list(google_client.models.list())
+            )
             log_manager.emit("INFO", "USER_ACTION", f"API Key test successful: {provider_display}")
             return TestProviderResponse(
                 success=True, message="Google API connected", code="SUCCESS"
@@ -541,9 +548,9 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
         elif request.provider == "anthropic":
             import anthropic
 
-            # Use lightweight Haiku model with minimal tokens
-            client = anthropic.Anthropic(api_key=request.api_key)
-            client.messages.create(
+            # Use async client to avoid blocking the event loop.
+            async_client = anthropic.AsyncAnthropic(api_key=request.api_key)
+            await async_client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=1,
                 messages=[{"role": "user", "content": "hi"}],
@@ -556,9 +563,9 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
         elif request.provider == "openai":
             import openai
 
-            # Use list models API - no LLM call, most cost-effective
-            openai_client = openai.OpenAI(api_key=request.api_key)
-            openai_client.models.list()
+            # Use async client to avoid blocking the event loop.
+            async_openai_client = openai.AsyncOpenAI(api_key=request.api_key)
+            await async_openai_client.models.list()
             log_manager.emit("INFO", "USER_ACTION", f"API Key test successful: {provider_display}")
             return TestProviderResponse(
                 success=True, message="OpenAI API connected", code="SUCCESS"
@@ -830,18 +837,20 @@ async def reveal_file(request: RevealFileRequest) -> dict:
             detail="PATH_NOT_ALLOWED",
         ) from None
 
-    if not os.path.exists(path):
+    # Use resolved_path for all subsequent operations to prevent symlink traversal.
+    if not resolved_path.exists():
         raise HTTPException(status_code=404, detail="FILE_NOT_FOUND")
 
+    resolved_str = str(resolved_path)
     try:
         system = platform.system()
         if system == "Darwin":  # macOS
-            subprocess.run(["open", "-R", path], check=True)
+            subprocess.run(["open", "-R", resolved_str], check=True)
         elif system == "Windows":
-            subprocess.run(["explorer", "/select,", path], check=True)
+            subprocess.run(["explorer", "/select,", resolved_str], check=True)
         else:  # Linux
             # Try xdg-open on the parent directory
-            parent = os.path.dirname(path)
+            parent = str(resolved_path.parent)
             subprocess.run(["xdg-open", parent], check=True)
 
         return {"success": True}

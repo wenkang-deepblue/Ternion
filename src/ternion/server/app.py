@@ -60,7 +60,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     Handles startup and shutdown events using the modern FastAPI lifespan pattern.
     """
-    # Startup
+    # Startup — CORS origins were already fixed at import time; this is informational only.
     allowed_origins = get_allowed_origins()
     logger.info(
         "ternion_starting",
@@ -86,8 +86,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add CORS middleware with restricted origins (security fix for CR-025)
-# Only allows requests from configured local origins, not arbitrary websites
+# CORS origins are computed once at process start and fixed for the process lifetime.
+# Changing port configuration via the Control Panel requires a server restart to take effect.
+# Only allows requests from configured local origins, not arbitrary websites.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_origins(),

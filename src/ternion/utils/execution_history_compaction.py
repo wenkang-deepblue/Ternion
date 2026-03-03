@@ -17,13 +17,13 @@ from typing import Any
 class ExecutionHistoryCompactionConfig:
     """Configuration for execution history compaction."""
 
-    # Keep more recent raw history to reduce re-reads in long tool loops.
+    # Prefer retaining more recent raw history to reduce repeated reads in long tool loops.
     max_history_chars: int = 160_000
     max_tail_messages: int = 80
     max_digest_chars: int = 500_000
     max_args_chars: int = 600
-    # Include more content per tool result in the digest so the Writer can
-    # avoid repeating the same reads after history truncation.
+    # Keep more tool-result detail in the digest so the Writer can avoid repeating reads
+    # after history truncation.
     max_result_chars: int = 1200
 
 
@@ -140,8 +140,7 @@ def _build_tool_context_digest(
             (tool_call_id, parsed_args, result_summary)
         )
 
-    # Keep substantially more than the last 10 calls/tool. In long loops,
-    # retaining only 10 makes the Writer re-read the same files repeatedly.
+    # Keep substantially more than the last 10 calls/tool to reduce repeated reads.
     max_calls_per_tool = 200
 
     for tool_name, items in sorted(by_tool.items(), key=lambda kv: kv[0]):

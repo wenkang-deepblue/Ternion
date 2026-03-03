@@ -155,11 +155,11 @@ export function ExecutionModeSelector({
   // Determine if a mode is pending save
   const isPendingSave = selectedMode !== '' && selectedMode !== savedMode;
 
-  const getModeDisplayName = (mode: ExecutionMode): string => {
+  const getModeDisplayName = useCallback((mode: ExecutionMode): string => {
     return mode === 'cursor_handoff' 
-      ? 'Ternion + Cursor'
-      : 'All in Ternion';
-  };
+      ? t.execModeCursorTitle
+      : t.execModeTernionTitle;
+  }, [t.execModeCursorTitle, t.execModeTernionTitle]);
 
   const handleCardClick = useCallback(async (mode: ExecutionMode) => {
     if (!mode) return;
@@ -184,7 +184,7 @@ export function ExecutionModeSelector({
     } catch {
       // ignore logging errors
     }
-  }, [savedMode, isPendingSave, onLogMessage]);
+  }, [savedMode, isPendingSave, onLogMessage, getModeDisplayName]);
 
   const handleSave = useCallback(async () => {
     if (!selectedMode || selectedMode === savedMode) return;
@@ -203,7 +203,7 @@ export function ExecutionModeSelector({
     } finally {
       setIsSaving(false);
     }
-  }, [selectedMode, savedMode, onConfigUpdate, onLogMessage]);
+  }, [selectedMode, savedMode, onConfigUpdate, onLogMessage, getModeDisplayName]);
 
   // Click outside -> cancel pending selection (do not change saved state)
   useEffect(() => {

@@ -12,7 +12,7 @@ import json
 import os
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -160,7 +160,7 @@ class ConfigStore:
         """Ensure config directory exists."""
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _migrate_config(self, data: dict) -> dict:
+    def _migrate_config(self, data: dict[str, Any]) -> dict[str, Any]:
         """Migrate old config format to new format."""
         if "providers" in data:
             for provider_name, provider_data in data["providers"].items():
@@ -232,7 +232,7 @@ class ConfigStore:
         - Backup files are easily captured by cloud sync/backup tools
         """
         self._ensure_dir()
-        config.updated_at = datetime.utcnow().isoformat()
+        config.updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
         # Atomic write using temp file + replace
         fd, tmp_path = tempfile.mkstemp(

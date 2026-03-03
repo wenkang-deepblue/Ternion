@@ -10,10 +10,12 @@ from typing import Any
 import structlog
 from openai import AsyncOpenAI
 
+from ternion.core.budget import budget_manager
 from ternion.core.config import settings
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
 from ternion.providers.base import BaseProvider, ProviderResponse
 from ternion.utils.log_manager import log_manager
+from ternion.utils.token_estimator import estimate_tokens_from_text
 from ternion.utils.tool_calls_parser import encode_stream_tool_calls
 
 logger = structlog.get_logger(__name__)
@@ -225,7 +227,9 @@ class OpenAIProvider(BaseProvider):
         )
 
         return ProviderResponse(
-            content=choice.message.content or "",
+            content=(
+                (choice.message.content if getattr(choice, "message", None) is not None else "") or ""
+            ),
             finish_reason=choice.finish_reason,
             tool_calls=tool_calls,
             usage={
@@ -501,8 +505,6 @@ class OpenAIProvider(BaseProvider):
                 total_tokens=usage_dict.get("total_tokens", 0),
             )
 
-            from ternion.core.budget import budget_manager
-
             budget_manager.record_usage(
                 provider="openai",
                 model=model,
@@ -511,8 +513,6 @@ class OpenAIProvider(BaseProvider):
                 thoughts_tokens=usage_dict.get("reasoning_tokens", 0),
             )
         elif received_text:
-            from ternion.utils.token_estimator import estimate_tokens_from_text
-
             estimated_output = estimate_tokens_from_text(received_text)
             logger.warning(
                 "openai_token_usage_estimated",
@@ -528,8 +528,6 @@ class OpenAIProvider(BaseProvider):
                 estimated_remaining=0,
                 estimated_total=estimated_output,
             )
-
-            from ternion.core.budget import budget_manager
 
             budget_manager.record_usage(
                 provider="openai",
@@ -659,8 +657,6 @@ class OpenAIProvider(BaseProvider):
                 total_tokens=total_tokens,
             )
 
-            from ternion.core.budget import budget_manager
-
             budget_manager.record_usage(
                 provider="openai",
                 model=model,
@@ -674,8 +670,6 @@ class OpenAIProvider(BaseProvider):
             return
 
         if usage_data is None and received_text:
-            from ternion.utils.token_estimator import estimate_tokens_from_text
-
             estimated_output = estimate_tokens_from_text(received_text)
             logger.warning(
                 "openai_token_usage_estimated",
@@ -691,8 +685,6 @@ class OpenAIProvider(BaseProvider):
                 estimated_remaining=0,
                 estimated_total=estimated_output,
             )
-
-            from ternion.core.budget import budget_manager
 
             budget_manager.record_usage(
                 provider="openai",

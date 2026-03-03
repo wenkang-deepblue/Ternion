@@ -168,7 +168,7 @@ class BaseProvider(ABC):
                     }
                 )
             elif isinstance(msg.content, list):
-                # Handle multimodal content - override in subclasses
+                # Multimodal content passthrough; subclasses must override for provider-specific encoding.
                 result.append(
                     {
                         "role": msg.role.value,

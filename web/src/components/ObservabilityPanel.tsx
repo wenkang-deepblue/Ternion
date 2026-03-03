@@ -174,7 +174,7 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
   const formatTimestamp = (iso: string): string => {
     try {
       const date = new Date(iso);
-      return date.toLocaleTimeString('en-US', {
+      return date.toLocaleTimeString(undefined, {
         hour12: false,
         hour: '2-digit',
         minute: '2-digit',

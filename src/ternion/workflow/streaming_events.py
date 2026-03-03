@@ -50,6 +50,10 @@ class StreamEventQueue:
     """
     Async queue for streaming events between workflow nodes and SSE output.
 
+    This queue is designed for a single consumer (one `async for` loop). If multiple
+    consumers iterate the same queue concurrently, only one consumer will receive
+    the sentinel close event and others may block indefinitely.
+
     Usage:
         # In routes.py:
         queue = StreamEventQueue()
@@ -151,7 +155,13 @@ class StreamEventQueue:
         )
 
     async def put_phase_start(self, phase: str, **metadata: Any) -> None:
-        """Signal the start of a workflow phase."""
+        """
+        Signal the start of a workflow phase.
+
+        Args:
+            phase: Workflow phase label.
+            **metadata: Additional metadata.
+        """
         await self.put(
             StreamEvent(
                 event_type=StreamEventType.PHASE_START,
@@ -161,7 +171,13 @@ class StreamEventQueue:
         )
 
     async def put_phase_end(self, phase: str, **metadata: Any) -> None:
-        """Signal the end of a workflow phase."""
+        """
+        Signal the end of a workflow phase.
+
+        Args:
+            phase: Workflow phase label.
+            **metadata: Additional metadata.
+        """
         await self.put(
             StreamEvent(
                 event_type=StreamEventType.PHASE_END,
@@ -197,7 +213,12 @@ class StreamEventQueue:
         if not self._closed:
             self._closed = True
             # Put None as sentinel to signal end
-            self._queue.put_nowait(None)
+            try:
+                self._queue.put_nowait(None)
+            except asyncio.QueueFull:
+                # If the queue is full (maxsize > 0), the sentinel may not fit.
+                # Consumers should also rely on the `is_closed` flag.
+                pass
 
     async def get(self) -> StreamEvent | None:
         """

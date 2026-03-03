@@ -33,15 +33,6 @@ class MessageRouter:
     Note: Phase-specific message assembly is handled by workflow nodes.
     """
 
-    def __init__(self) -> None:
-        """Initialize the message router."""
-        self._current_context: TernionContext | None = None
-
-    @property
-    def context(self) -> TernionContext | None:
-        """Get the current context."""
-        return self._current_context
-
     def extract_context(self, messages: list[ChatMessage]) -> TernionContext:
         """
         Extract and decompose the incoming message list.
@@ -65,7 +56,7 @@ class MessageRouter:
         has_images = False
 
         for i, msg in enumerate(messages):
-            # First system message is the Cursor system prompt
+            # Position-0 system message is assumed to be the Cursor system prompt
             if i == 0 and msg.role == MessageRole.SYSTEM:
                 cursor_system_prompt = msg
                 logger.debug(
@@ -85,8 +76,6 @@ class MessageRouter:
             has_images=has_images,
         )
 
-        self._current_context = context
-
         logger.info(
             "context_extracted",
             has_system_prompt=cursor_system_prompt is not None,
@@ -104,6 +93,7 @@ class MessageRouter:
             return False
         if isinstance(content, list):
             return any(isinstance(item, ImageContent) for item in content)
+        # Fallback for unexpected content types; new types should be handled explicitly.
         return False
 
     def _get_content_preview(self, content: MessageContent | None, max_length: int = 50) -> str:

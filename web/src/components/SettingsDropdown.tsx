@@ -60,6 +60,7 @@ export function SettingsDropdown({
 
   // Close dropdown on outside click
   useEffect(() => {
+    if (!isOpen) return;
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsOpen(false);
@@ -67,7 +68,7 @@ export function SettingsDropdown({
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  }, [isOpen]);
 
   // Calculate glider position based on theme
   const getGliderPosition = () => {

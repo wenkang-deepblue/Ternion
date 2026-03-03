@@ -9,7 +9,7 @@ import json
 import time
 import uuid
 from collections.abc import AsyncGenerator, Generator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -80,7 +80,7 @@ def create_sse_stream(
 
 def create_sse_tool_calls_stream(
     model: str,
-    tool_calls: list[dict],
+    tool_calls: list[dict[str, Any]],
     *,
     content: str | None = None,
 ) -> Generator[str, None, None]:

@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import shlex
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ from ternion.core.deliverable_policy import (
     format_deliverable_policy_for_prompt,
     resolve_deliverable_policy,
 )
-from ternion.core.exceptions import TimeoutError as TernionTimeout
+from ternion.core.exceptions import TernionTimeoutError as TernionTimeout
 from ternion.core.intent_classifier import get_latest_user_message
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.core.session_store import (
@@ -35,12 +36,11 @@ from ternion.providers.manager import provider_manager
 from ternion.router.prompts import (
     ARBITER_EVIDENCE_PROMPT,
     ARBITER_REPORT_EVIDENCE_PROMPT,
-    CONVERGENCE_PROMPT,
     DIVERGENCE_PROMPT,
     EXECUTION_PROMPT,
-    FINAL_CHECK_PROMPT,
     GLOBAL_SECURITY_RULES,
-    OPTIMIZER_PROMPT,
+    build_convergence_prompt,
+    build_optimizer_prompt,
 )
 from ternion.utils.cursor_safety import sanitize_for_cursor_display, sanitize_for_preview
 from ternion.utils.evidence_chain import (
@@ -77,7 +77,7 @@ from ternion.utils.workflow_prompt_capture import (
     build_workflow_prompt_payload,
     schedule_workflow_prompt_capture,
 )
-from ternion.workflow.state import ReviewResult, TernionState, WorkflowPhase
+from ternion.workflow.state import TernionState, WorkflowPhase
 from ternion.workflow.streaming_events import StreamEventQueue
 
 logger = structlog.get_logger(__name__)
@@ -1294,38 +1294,6 @@ def _append_global_security_rules(prompt: str) -> str:
     return f"{prompt}\n\n{rules}"
 
 
-def _parse_review_status(review_content: str) -> ReviewResult:
-    """
-    Parse the review status from the reviewer output.
-
-    The primary protocol is a strict first-line status marker:
-    - TERNION_REVIEW_STATUS=APPROVED
-    - TERNION_REVIEW_STATUS=REVISION_NEEDED
-
-    Falls back to legacy markers for backward compatibility.
-    """
-    text = (review_content or "").strip()
-    first_line = ""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped:
-            first_line = stripped
-            break
-
-    if first_line == "TERNION_REVIEW_STATUS=APPROVED":
-        return ReviewResult.APPROVED
-    if first_line == "TERNION_REVIEW_STATUS=REVISION_NEEDED":
-        return ReviewResult.REVISION_NEEDED
-
-    lowered = text.lower()
-    if "status: approved" in lowered or "lgtm" in lowered:
-        return ReviewResult.APPROVED
-    if "status: revision needed" in lowered:
-        return ReviewResult.REVISION_NEEDED
-
-    return ReviewResult.REVISION_NEEDED
-
-
 def _format_role_names(role_ids: list[str]) -> str:
     names = [_ROLE_DISPLAY_NAMES.get(role_id, role_id) for role_id in role_ids]
     return ", ".join([name for name in names if name])
@@ -1621,6 +1589,7 @@ async def evidence_node(state: TernionState) -> TernionState:
             return {
                 **state,
                 "errors": state.get("errors", []) + [error_msg],
+                "final_output": sanitize_for_cursor_display(error_msg),
                 "thinking_logs": thinking_logs + [t(MessageKey.CONVERGENCE_ERROR, error=error_msg)],
             }
 
@@ -1738,11 +1707,12 @@ async def evidence_node(state: TernionState) -> TernionState:
             category="WORKFLOW",
             message=f"Evidence collection failed: {str(e)[:120]}",
         )
+        error_msg = t(MessageKey.EVIDENCE_COLLECTION_FAILED, error=str(e))
         return {
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
-            "errors": state.get("errors", [])
-            + [t(MessageKey.EVIDENCE_COLLECTION_FAILED, error=str(e))],
+            "errors": state.get("errors", []) + [error_msg],
+            "final_output": sanitize_for_cursor_display(error_msg),
             "thinking_logs": thinking_logs,
         }
 
@@ -1776,11 +1746,6 @@ def _split_optimizer_output(text: str) -> tuple[str, str]:
 
     # Safety fallback: never leak the raw optimizer output to the user if the wrapper is missing.
     return internal or raw, ""
-
-
-# Note: sanitize_for_preview and sanitize_for_cursor_display are imported from
-# ternion.utils.cursor_safety. Use sanitize_for_preview for short previews in
-# thinking logs, and sanitize_for_cursor_display for full report/handoff output.
 
 
 async def divergence_node(state: TernionState) -> TernionState:
@@ -1850,7 +1815,7 @@ async def divergence_node(state: TernionState) -> TernionState:
             missing_roles=_format_role_names(unconfigured),
         )
         logger.warning("ternion_not_configured", unconfigured=unconfigured)
-        thinking_logs.append(f"⚠️ {error_msg}")
+        thinking_logs.append(error_msg)
         return {
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
@@ -1859,7 +1824,7 @@ async def divergence_node(state: TernionState) -> TernionState:
             "thinking_logs": thinking_logs,
         }
 
-    async def analyze(ternion_cfg: dict) -> dict[str, Any]:
+    async def analyze(ternion_cfg: dict[str, Any]) -> dict[str, Any]:
         ternion_id = ternion_cfg["ternion_id"]
         provider_name = ternion_cfg["provider"]
         model = ternion_cfg["model"]
@@ -2895,9 +2860,7 @@ async def convergence_node(state: TernionState) -> TernionState:
     )
 
     # Build synthesis prompt with language instruction
-    convergence_prompt_with_lang = CONVERGENCE_PROMPT.format(
-        language_instruction=language_instruction
-    )
+    convergence_prompt_with_lang = build_convergence_prompt(language_instruction=language_instruction)
 
     evidence_bundle = state.get("evidence_bundle") or "EVIDENCE_BUNDLE:\n- None"
     evidence_gaps = state.get("evidence_gaps") or "EVIDENCE_GAPS:\n- None"
@@ -3465,7 +3428,7 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 "await_confirmation": True,
                 "final_output": final_output,
                 "final_output_suffix": final_output_suffix,
-                "errors": state.get("errors", []) + [error_msg],
+                "errors": state.get("errors", []) + [all_arbiters_failed_msg],
             }
         else:
             session_id_str = str(state.get("session_id") or "").strip()
@@ -3480,7 +3443,7 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 "ternion_report": fallback_report,
                 "is_consensus": False,
                 "thinking_logs": thinking_logs,
-                "errors": state.get("errors", []) + [error_msg],
+                "errors": state.get("errors", []) + [all_arbiters_failed_msg],
             }
 
 
@@ -3812,7 +3775,6 @@ async def execution_node(state: TernionState) -> TernionState:
                 extra_kwargs["tools"] = cursor_tools
                 if cursor_tool_choice is not None:
                     extra_kwargs["tool_choice"] = cursor_tool_choice
-            import time
 
             started = time.monotonic()
             if stream_queue:
@@ -4303,236 +4265,6 @@ async def execution_node(state: TernionState) -> TernionState:
         }
 
 
-async def final_check_node(state: TernionState) -> TernionState:
-    """
-    Step 4: The Final Check - Reviewer Verification.
-
-    The Reviewer checks the generated code for security
-    and logic issues. May approve or request revision.
-
-    Args:
-        state: Current workflow state with generated code
-
-    Returns:
-        Updated state with review result
-    """
-    logger.info("workflow_final_check_start")
-    log_manager.emit(
-        level="INFO",
-        category="WORKFLOW",
-        message="Final check phase started | Reviewer verifying code",
-    )
-
-    thinking_logs = list(state.get("thinking_logs", []))
-    thinking_logs.append(t(MessageKey.REVIEW_START))
-
-    generated_code = state.get("generated_code", "")
-    revision_count = state.get("revision_count", 0)
-    max_revisions = settings.discussion.max_revision_rounds
-
-    # Check revision limit
-    if revision_count >= max_revisions:
-        logger.warning("max_revisions_reached", count=revision_count)
-        log_manager.emit(
-            level="INFO",
-            category="WORKFLOW",
-            message=(
-                "Final check skipped | max revisions reached | "
-                f"revision_count={revision_count} | max_revisions={max_revisions}"
-            ),
-        )
-        return {
-            **state,
-            "current_phase": WorkflowPhase.COMPLETE.value,
-            "review_result": ReviewResult.APPROVED.value,
-            "review_feedback": t(MessageKey.REVIEW_MAX_REVISIONS_REACHED),
-            "final_output": generated_code,
-            "thinking_logs": thinking_logs,
-        }
-
-    # Build review messages with analysis context
-    ternion_report = state.get("ternion_report", "")
-
-    # Build review content with analysis context for proper validation
-    review_content_parts = [
-        "[TERNION ANALYSIS REPORT]\n\n",
-        ternion_report,
-        "\n\n[IMPLEMENTATION TO REVIEW]\n\n",
-        generated_code,
-        "\n\nReview the implementation above for:\n",
-        "1. Correctness: Does it properly address the issues identified in the analysis?\n",
-        "2. Security: Are there any security vulnerabilities?\n",
-        "3. Logic: Are there any logical errors or edge cases not handled?\n",
-    ]
-
-    messages = [
-        ChatMessage(
-            role=MessageRole.SYSTEM,
-            content=_prepend_global_security_rules(FINAL_CHECK_PROMPT),
-        ),
-        ChatMessage(
-            role=MessageRole.USER,
-            content="".join(review_content_parts),
-        ),
-    ]
-
-    # Use Reviewer (GPT with fallback)
-    try:
-        provider = provider_manager.get_provider_for_role("reviewer")
-
-        # Get user-configured model from config_store
-        role_cfg = config_store.get_role_config("reviewer")
-        model = role_cfg.model if role_cfg and role_cfg.model else None
-
-        # Hard validation: model must be explicitly configured
-        if not model:
-            logger.error("reviewer_model_not_configured")
-            error_msg = t(
-                MessageKey.ROLE_CONFIG_INCOMPLETE,
-                missing_roles=_format_role_names(["reviewer"]),
-            )
-            return {
-                **state,
-                "errors": state.get("errors", []) + [error_msg],
-                "thinking_logs": thinking_logs + [t(MessageKey.FINAL_CHECK_ERROR, error=error_msg)],
-            }
-
-        response = await _call_with_timeout(
-            provider=provider,
-            messages=messages,
-            model=model,
-            temperature=0.2,  # Low temperature for critical review
-        )
-        usage = response.usage or {}
-        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
-        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
-        thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
-        output_for_cost = (
-            completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
-        )
-        if input_tokens or output_for_cost or thoughts_tokens:
-            budget_manager.record_usage(
-                provider=provider.name,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_for_cost,
-                thoughts_tokens=thoughts_tokens,
-                context_length=usage.get("total_tokens", 0),
-            )
-            log_manager.emit(
-                level="INFO",
-                category="WORKFLOW",
-                message=(
-                    f"final_check_usage | provider={provider.name} | "
-                    f"model={model} | "
-                    f"input={input_tokens} | output={output_for_cost} | thoughts={thoughts_tokens} | "
-                    f"total={usage.get('total_tokens', input_tokens + output_for_cost)}"
-                ),
-            )
-
-        review_status = _parse_review_status(response.content)
-
-        if review_status == ReviewResult.APPROVED:
-            try:
-                from ternion.utils.reviewer_output_capture import (
-                    build_reviewer_capture_payload,
-                    schedule_reviewer_output_capture,
-                )
-
-                schedule_reviewer_output_capture(
-                    build_reviewer_capture_payload(
-                        session_id=str(state.get("session_id") or ""),
-                        stage=str(state.get("current_phase") or ""),
-                        provider=provider.name,
-                        model=model,
-                        review_status="APPROVED",
-                        review_feedback=response.content,
-                        revision_count=revision_count,
-                        generated_code=generated_code,
-                    )
-                )
-            except Exception:
-                pass
-            thinking_logs.append(t(MessageKey.REVIEW_APPROVED))
-            return {
-                **state,
-                "current_phase": WorkflowPhase.COMPLETE.value,
-                "review_result": ReviewResult.APPROVED.value,
-                "review_feedback": response.content,
-                "final_output": generated_code,
-                "thinking_logs": thinking_logs,
-            }
-        else:
-            try:
-                from ternion.utils.reviewer_output_capture import (
-                    build_reviewer_capture_payload,
-                    schedule_reviewer_output_capture,
-                )
-
-                schedule_reviewer_output_capture(
-                    build_reviewer_capture_payload(
-                        session_id=str(state.get("session_id") or ""),
-                        stage=str(state.get("current_phase") or ""),
-                        provider=provider.name,
-                        model=model,
-                        review_status="REVISION_NEEDED",
-                        review_feedback=response.content,
-                        revision_count=revision_count,
-                        generated_code=generated_code,
-                    )
-                )
-            except Exception:
-                pass
-            # Revision needed - will loop back to execution
-            thinking_logs.append(t(MessageKey.REVIEW_REVISION))
-            return {
-                **state,
-                "current_phase": WorkflowPhase.EXECUTION.value,
-                "review_result": ReviewResult.REVISION_NEEDED.value,
-                "review_feedback": response.content,
-                "revision_count": revision_count + 1,
-                "thinking_logs": thinking_logs,
-            }
-    except Exception as e:
-        logger.warning("review_failed", error=str(e))
-        log_manager.emit(
-            level="WARN",
-            category="WORKFLOW",
-            message=f"Final check failed (skipped) | error={str(e)}",
-        )
-        error_msg = t(MessageKey.REVIEW_SKIPPED, error=str(e))
-        try:
-            from ternion.utils.reviewer_output_capture import (
-                build_reviewer_capture_payload,
-                schedule_reviewer_output_capture,
-            )
-
-            schedule_reviewer_output_capture(
-                build_reviewer_capture_payload(
-                    session_id=str(state.get("session_id") or ""),
-                    stage=str(state.get("current_phase") or ""),
-                    provider="(unknown)",
-                    model="(unknown)",
-                    review_status="SKIPPED",
-                    review_feedback=error_msg,
-                    revision_count=revision_count,
-                    generated_code=generated_code,
-                )
-            )
-        except Exception:
-            pass
-        # Skip review on failure, approve the code
-        return {
-            **state,
-            "current_phase": WorkflowPhase.COMPLETE.value,
-            "review_result": ReviewResult.APPROVED.value,
-            "review_feedback": error_msg,
-            "final_output": generated_code,
-            "errors": state.get("errors", []) + [error_msg],
-            "thinking_logs": thinking_logs + [t(MessageKey.FINAL_CHECK_ERROR, error=str(e))],
-        }
-
-
 async def optimizer_node(state: TernionState) -> TernionState:
     """
     Development override: Optimizer phase (replaces Reviewer gate).
@@ -4561,7 +4293,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
     language_instruction = (
         instruction_template.format(language_name=language_name) if instruction_template else ""
     )
-    optimizer_prompt_with_lang = f"{OPTIMIZER_PROMPT}\n\nOUTPUT LANGUAGE:\n{language_instruction}\n"
+    optimizer_prompt_with_lang = build_optimizer_prompt(language_instruction=language_instruction)
 
     ternion_report = state.get("ternion_report", "")
     generated_code = state.get("generated_code", "")
@@ -4764,8 +4496,6 @@ async def optimizer_node(state: TernionState) -> TernionState:
             extra_kwargs["tools"] = cursor_tools
             if cursor_tool_choice is not None:
                 extra_kwargs["tool_choice"] = cursor_tool_choice
-
-        import time
 
         started = time.monotonic()
         optimizer_timeout = WRITER_TIMEOUT_SECONDS

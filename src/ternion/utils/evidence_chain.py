@@ -117,6 +117,9 @@ def _normalize_path(path: str | None) -> str:
     return cleaned
 
 
+# These regexes trim trailing annotations that frequently appear in evidence targets, e.g.:
+# - `path=src/foo.py（some note）` (fullwidth Chinese parentheses)
+# - `path=src/foo.py (some note)` (whitespace + ASCII parentheses)
 _CN_PAREN_TAIL_RE = re.compile(r"（.*$")
 _WS_PAREN_TAIL_RE = re.compile(r"\s+\(.*$")
 _TRAILING_PUNCT_CHARS = "，,。.;；"

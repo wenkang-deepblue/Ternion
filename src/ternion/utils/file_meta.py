@@ -43,12 +43,12 @@ def _resolve_repo_internal_path(repo_root: Path, raw_path: str) -> Path | None:
         p = repo_root / p
     try:
         resolved = p.resolve(strict=False)
-    except Exception:
+    except OSError:
         resolved = p.absolute()
 
     try:
         resolved.relative_to(repo_root)
-    except Exception:
+    except ValueError:
         return None
     return resolved
 

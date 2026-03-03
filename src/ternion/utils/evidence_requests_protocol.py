@@ -108,6 +108,16 @@ def extract_evidence_requests_block(
 
 
 def _parse_key_value(line: str, key: str) -> str | None:
+    """
+    Parse a `KEY: value` or `KEY=value` line.
+
+    Args:
+        line: Raw line text.
+        key: Expected key prefix (case-insensitive).
+
+    Returns:
+        The parsed value string, or None if not a match.
+    """
     normalized = line.strip()
     match = re.match(rf"^{re.escape(key)}\s*[:=]\s*(.+)$", normalized, flags=re.IGNORECASE)
     if not match:
@@ -117,6 +127,15 @@ def _parse_key_value(line: str, key: str) -> str | None:
 
 
 def _parse_bool(value: str | None) -> bool:
+    """
+    Parse a boolean value from the protocol metadata.
+
+    Args:
+        value: Raw value string.
+
+    Returns:
+        True for common truthy values; otherwise False.
+    """
     if not value:
         return False
     normalized = value.strip().lower()

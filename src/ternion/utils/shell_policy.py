@@ -124,18 +124,45 @@ def _split_shell_parts(command: str) -> list[str]:
 
 
 def _has_pipe_or_redirect(command: str) -> bool:
-    in_pipe = False
+    in_single = False
+    in_double = False
+    escape = False
     idx = 0
     while idx < len(command):
         ch = command[idx]
-        if ch == "|":
-            if idx + 1 < len(command) and command[idx + 1] == "|":
-                idx += 2
-                continue
-            in_pipe = True
-            break
+
+        if escape:
+            escape = False
+            idx += 1
+            continue
+
+        if ch == "\\" and not in_single:
+            escape = True
+            idx += 1
+            continue
+
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            idx += 1
+            continue
+
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            idx += 1
+            continue
+
+        if not in_single and not in_double:
+            if ch == "|":
+                # Treat `||` as a sequential operator, not a pipe.
+                if idx + 1 < len(command) and command[idx + 1] == "|":
+                    idx += 2
+                    continue
+                return True
+            if ch in {">", "<"}:
+                return True
+
         idx += 1
-    return in_pipe or ">" in command or "<" in command
+    return False
 
 
 def _has_command_substitution(command: str) -> bool:

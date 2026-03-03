@@ -9,9 +9,7 @@ import re
 
 ZWSP = "\u200b"  # Zero-width space for breaking trigger patterns
 
-# Use lookalike characters to avoid creating Markdown code spans while breaking triggers.
-# - U+FF40 FULLWIDTH GRAVE ACCENT looks like a backtick but is not Markdown syntax.
-# - U+FF5E FULLWIDTH TILDE looks like a tilde but is not a Markdown fence trigger.
+# Use lookalike characters so the output stays readable while avoiding Cursor triggers.
 FULLWIDTH_BACKTICK = "｀"
 FULLWIDTH_TILDE = "～"
 
@@ -66,7 +64,7 @@ def sanitize_for_cursor_display(text: str) -> str:
     out = out.replace("*** Add File:", f"*** Add Fi{ZWSP}le:")
     out = out.replace("diff --git", f"diff{ZWSP} --git")
 
-    # Break leading diff markers (+++/--- at line start)
+    # Break leading diff markers at line start to avoid diff detection.
     out = re.sub(
         r"(?m)^(\+\+\+|---)\s",
         lambda m: m.group(1)[0] + ZWSP + m.group(1)[1:] + " ",

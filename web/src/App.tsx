@@ -95,7 +95,7 @@ function AppContent() {
     document.documentElement.classList.toggle('dark', isDarkMode);
   }, [isDarkMode]);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
       const [configData, statusData] = await Promise.all([
         api.getConfig(),
@@ -123,13 +123,13 @@ function AppContent() {
     } catch (error) {
       console.error('Failed to load data:', error);
     }
-  };
+  }, []);
 
   // Load initial data and preferences
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadData();
-  }, []);
+    void loadData();
+  }, [loadData]);
 
   // Poll config periodically so backend-initiated changes (e.g. auto-switch execution_mode)
   // become visible without requiring a manual page refresh.
@@ -298,7 +298,7 @@ function AppContent() {
           </div>
         </div>
         <div style={{ display: activeTab === 'ports' ? 'block' : 'none' }}>
-          <PortsSettings t={t} isDarkMode={isDarkMode} />
+          <PortsSettings t={t} isDarkMode={isDarkMode} language={effectiveLanguage} />
         </div>
         <div style={{ display: activeTab === 'usage' ? 'block' : 'none' }}>
           <UsageDashboard t={t} isDarkMode={isDarkMode} onConfigUpdate={handleConfigUpdate} />

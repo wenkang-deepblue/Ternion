@@ -95,7 +95,11 @@ class TestNodesImportSmoke:
 
     def test_i18n_message_keys_used_by_nodes(self) -> None:
         """All MessageKeys used by nodes should be defined."""
-        from ternion.utils.i18n import TRANSLATIONS, MessageKey
+        from ternion.utils import i18n
+        from ternion.utils.i18n import MessageKey
+
+        translations = i18n._load_translations()
+        en = translations.get("en") or {}
 
         # Keys used in nodes.py
         required_keys = [
@@ -108,9 +112,6 @@ class TestNodesImportSmoke:
             MessageKey.EXECUTION_COMPLETE,
             MessageKey.EXECUTION_ERROR,
             MessageKey.OPTIMIZER_START,
-            MessageKey.REVIEW_START,
-            MessageKey.REVIEW_APPROVED,
-            MessageKey.REVIEW_REVISION,
             MessageKey.FINAL_CHECK_ERROR,
         ]
 
@@ -118,7 +119,7 @@ class TestNodesImportSmoke:
             # Should exist in enum
             assert key in MessageKey.__members__.values()
             # Should have English translation
-            assert key in TRANSLATIONS["en"]
+            assert key.value in en
 
 
 class TestNodesHelperFunctions:
@@ -145,26 +146,6 @@ class TestNodesHelperFunctions:
         assert isinstance(result, str)
         assert len(result) > len(prompt)
         assert prompt in result
-
-    def test_parse_review_status_approved(self) -> None:
-        """_parse_review_status should parse APPROVED status."""
-        from ternion.workflow.nodes import _parse_review_status
-        from ternion.workflow.state import ReviewResult
-
-        content = "TERNION_REVIEW_STATUS=APPROVED\n\nThe code looks good."
-        result = _parse_review_status(content)
-
-        assert result == ReviewResult.APPROVED
-
-    def test_parse_review_status_revision_needed(self) -> None:
-        """_parse_review_status should parse REVISION_NEEDED status."""
-        from ternion.workflow.nodes import _parse_review_status
-        from ternion.workflow.state import ReviewResult
-
-        content = "TERNION_REVIEW_STATUS=REVISION_NEEDED\n\nPlease fix the bug."
-        result = _parse_review_status(content)
-
-        assert result == ReviewResult.REVISION_NEEDED
 
 
 class TestWorkflowGraphTopupRoutingSmoke:

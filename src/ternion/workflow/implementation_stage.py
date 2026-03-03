@@ -1,7 +1,7 @@
 """
 Implementation Stage runner for Ternion TERNION_FULL mode.
 
-Provides a standalone execution path for running Writer + Reviewer
+Provides a standalone execution path for running Writer + Optimizer
 without going through the full LangGraph workflow. This is used after
 user confirms the analysis report to avoid re-running RCA.
 """
@@ -19,6 +19,15 @@ logger = structlog.get_logger(__name__)
 
 
 def _read_file_snapshots(paths: list[str]) -> dict[str, str]:
+    """
+    Read text snapshots for a list of file paths.
+
+    Args:
+        paths: Absolute or relative file paths to read.
+
+    Returns:
+        Mapping of normalized path string to file content.
+    """
     snapshots: dict[str, str] = {}
     for path in paths or []:
         if not isinstance(path, str) or not path.strip():
@@ -67,10 +76,12 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
             session_id=state.get("session_id", "unknown"),
         )
         # Return error state instead of silently failing
-        state["current_phase"] = WorkflowPhase.COMPLETE.value
-        state["errors"] = state.get("errors", []) + [error_msg]
-        state["final_output"] = error_msg
-        return state
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "errors": state.get("errors", []) + [error_msg],
+            "final_output": error_msg,
+        }
 
     # Default to EXECUTION unless caller provides a specific resume phase.
     phase = state.get("current_phase") or WorkflowPhase.EXECUTION.value
@@ -83,7 +94,26 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
     state["current_phase"] = phase
 
     # Run execution + optimizer loop
+    max_iterations = 50
+    iterations = 0
     while True:
+        iterations += 1
+        if iterations > max_iterations:
+            error_msg = t(
+                MessageKey.EXECUTION_FAILED,
+                error="implementation_stage_max_iterations_exceeded",
+            )
+            logger.error(
+                "implementation_stage_max_iterations_exceeded",
+                max_iterations=max_iterations,
+                session_id=state.get("session_id", "unknown"),
+            )
+            return {
+                **state,
+                "current_phase": WorkflowPhase.COMPLETE.value,
+                "errors": state.get("errors", []) + [error_msg],
+                "final_output": error_msg,
+            }
         phase = state.get("current_phase") or WorkflowPhase.EXECUTION.value
 
         if phase == WorkflowPhase.REPORT_EVIDENCE.value:

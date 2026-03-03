@@ -17,7 +17,7 @@ class LogManager:
     """Manages log entries for SSE streaming to observability panel."""
 
     def __init__(self, max_history: int = 500):
-        self._history: deque = deque(maxlen=max_history)
+        self._history: deque[dict[str, object]] = deque(maxlen=max_history)
         self._subscribers: list[asyncio.Queue] = []
 
     def emit(self, level: str, category: str, message: str) -> None:
@@ -25,17 +25,16 @@ class LogManager:
         Emit a log entry to all subscribers.
 
         Note: Messages are automatically sanitized to redact API keys and
-        other secrets before being stored or broadcast (CR-027 security fix).
+        other secrets before being stored or broadcast.
 
         Args:
             level: Log level (INFO, WARN, ERROR, DEBUG)
             category: Log category (SYSTEM, LLM, USER_ACTION, TOKEN_USAGE)
             message: Log message content
         """
-        # Redact secrets from message before logging (CR-027)
         safe_message = redact_secrets(message)
 
-        entry = {
+        entry: dict[str, object] = {
             "timestamp": datetime.now(UTC).isoformat(),
             "level": level,
             "category": category,
@@ -66,8 +65,7 @@ class LogManager:
             thoughts_tokens: Number of thinking tokens (Gemini 2.5+)
             total_tokens: Total token count
         """
-        # Build detailed message
-        parts = [f"{model}"]
+        parts = [model]
         parts.append(f"input_token={prompt_tokens:,}")
         parts.append(f"output_token={completion_tokens:,}")
         if thoughts_tokens > 0:
@@ -98,8 +96,7 @@ class LogManager:
             estimated_remaining: Estimated tokens not received
             estimated_total: Estimated total token count
         """
-        # Build message with estimation indicators
-        parts = [f"{model}"]
+        parts = [model]
         parts.append(f"input_token={prompt_tokens:,}")
         parts.append(f"output_token=~{received_output_tokens:,} (received)")
         parts.append(f"~estimated_total={estimated_total:,}")
@@ -120,7 +117,7 @@ class LogManager:
         if queue in self._subscribers:
             self._subscribers.remove(queue)
 
-    def get_history(self) -> list:
+    def get_history(self) -> list[dict[str, object]]:
         """Get recent log history."""
         return list(self._history)
 

@@ -45,7 +45,7 @@ class ConfigurationError(TernionError):
         super().__init__(message, status_code=500)
 
 
-class TimeoutError(TernionError):
+class TernionTimeoutError(TernionError):
     """Operation timed out."""
 
     def __init__(self, operation: str, timeout_seconds: int) -> None:

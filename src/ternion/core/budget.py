@@ -6,12 +6,14 @@ to a local file. Provides alerts when approaching budget thresholds.
 """
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
 from ternion.utils.i18n import MessageKey, t
@@ -87,7 +89,7 @@ class CostControlSettings(BaseSettings):
     alert_threshold: float = 0.9  # 90% threshold for warnings
 
 
-class UsageEntry(BaseSettings):
+class UsageEntry(BaseModel):
     """Single API request usage record."""
 
     timestamp: str = ""
@@ -101,7 +103,7 @@ class UsageEntry(BaseSettings):
     thoughts_cost: float = 0.0
 
 
-class ProviderDayUsage(BaseSettings):
+class ProviderDayUsage(BaseModel):
     """Per-provider daily usage totals."""
 
     input_tokens: int = 0
@@ -110,7 +112,7 @@ class ProviderDayUsage(BaseSettings):
     cost: float = 0.0
 
 
-class DailySummary(BaseSettings):
+class DailySummary(BaseModel):
     """Aggregated daily usage."""
 
     date: str = ""
@@ -118,7 +120,7 @@ class DailySummary(BaseSettings):
     total_cost: float = 0.0
 
 
-class MonthlyTotal(BaseSettings):
+class MonthlyTotal(BaseModel):
     """Monthly usage totals."""
 
     total_cost: float = 0.0
@@ -127,7 +129,7 @@ class MonthlyTotal(BaseSettings):
     thoughts_tokens: int = 0
 
 
-class UsageStore(BaseSettings):
+class UsageStore(BaseModel):
     """Complete usage data store."""
 
     today: str = ""
@@ -216,8 +218,20 @@ class BudgetManager:
 
         try:
             self.usage_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.usage_file, "w") as f:
-                json.dump(self._store.model_dump(), f, indent=2)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=self.usage_file.parent, suffix=".tmp", prefix="usage_"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(self._store.model_dump(), f, indent=2, ensure_ascii=False)
+                os.replace(tmp_path, self.usage_file)
+            except Exception:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.error("budget_save_error", error=str(e))
 
@@ -453,6 +467,7 @@ class BudgetManager:
 
         # Calculate costs
         rates = MODEL_PRICING.get(model, DEFAULT_PRICING)
+        clamped_thoughts_tokens = max(0, min(thoughts_tokens, output_tokens))
         if model in GEMINI_PRICING:
             pricing = GEMINI_PRICING[model]
             if model == "gemini-3-pro-preview":
@@ -465,20 +480,20 @@ class BudgetManager:
                     output_rate = pricing["output_extended"]
                 # Gemini: thoughts are separate, charged at output rate
                 input_cost = (input_tokens / 1000) * input_rate
-                output_cost = ((output_tokens - thoughts_tokens) / 1000) * output_rate
-                thoughts_cost = (thoughts_tokens / 1000) * output_rate
+                output_cost = ((output_tokens - clamped_thoughts_tokens) / 1000) * output_rate
+                thoughts_cost = (clamped_thoughts_tokens / 1000) * output_rate
             else:
                 # Flash models
                 text_tokens = input_tokens - audio_input_tokens
                 input_cost = (text_tokens / 1000) * pricing["input_text"] + (
                     audio_input_tokens / 1000
                 ) * pricing["input_audio"]
-                output_cost = ((output_tokens - thoughts_tokens) / 1000) * pricing["output"]
-                thoughts_cost = (thoughts_tokens / 1000) * pricing["output"]
+                output_cost = ((output_tokens - clamped_thoughts_tokens) / 1000) * pricing["output"]
+                thoughts_cost = (clamped_thoughts_tokens / 1000) * pricing["output"]
         else:
             input_cost = (input_tokens / 1000) * rates["input"]
-            output_cost = ((output_tokens - thoughts_tokens) / 1000) * rates["output"]
-            thoughts_cost = (thoughts_tokens / 1000) * rates["output"]
+            output_cost = ((output_tokens - clamped_thoughts_tokens) / 1000) * rates["output"]
+            thoughts_cost = (clamped_thoughts_tokens / 1000) * rates["output"]
 
         total_cost = input_cost + output_cost + thoughts_cost
 
@@ -489,7 +504,7 @@ class BudgetManager:
             "model": model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
-            "thoughts_tokens": thoughts_tokens,
+            "thoughts_tokens": clamped_thoughts_tokens,
             "input_cost": round(input_cost, 8),
             "output_cost": round(output_cost, 8),
             "thoughts_cost": round(thoughts_cost, 8),

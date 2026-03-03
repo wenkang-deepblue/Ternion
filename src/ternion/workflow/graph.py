@@ -5,6 +5,7 @@ Defines the state machine graph that orchestrates the 4-step discussion flow
 with conditional edges for review loops.
 """
 
+import threading
 from typing import Any
 
 import structlog
@@ -31,17 +32,16 @@ def should_continue_or_await_confirmation(state: TernionState) -> str:
     Determine next step after convergence.
 
     If await_confirmation is True, stop workflow and return report to user.
-    Otherwise, proceed to execution if we have a report.
+    Otherwise, proceed to execution unless the workflow has errors.
     """
     # Human-in-the-loop: stop for user confirmation
     if state.get("await_confirmation"):
         logger.info("workflow_awaiting_confirmation", session_id=state.get("session_id"))
         return "await_confirmation"
 
-    # Legacy behavior: proceed if we have a report
-    if state.get("ternion_report"):
-        return "execution"
-    return END
+    if state.get("errors"):
+        return END
+    return "execution"
 
 
 def should_continue_after_evidence(state: TernionState) -> str:
@@ -108,11 +108,13 @@ def create_workflow(*, entry_point: str = "evidence") -> CompiledStateGraph:
     """
     Create the Ternion discussion workflow graph.
 
-    The workflow follows the 4-step diamond strategy:
-    1. Divergence: Parallel analysis by council
-    2. Convergence: Arbiter synthesis
-    3. Execution: Writer generates code
-    4. Optimizer: Evidence-based improvement and delivery (dev override)
+    The workflow implements an evidence-first discussion pipeline:
+    - Phase 0: Evidence gathering
+    - Phase 1: Divergence (parallel analysis by council)
+    - Phase 1.5: Report evidence (top-up for council requests)
+    - Phase 2: Convergence (arbiter synthesis)
+    - Phase 3: Execution (Writer generates deliverables)
+    - Phase 4: Optimizer (evidence-based improvement and delivery)
 
     Returns:
         Compiled LangGraph workflow
@@ -199,13 +201,17 @@ def create_workflow(*, entry_point: str = "evidence") -> CompiledStateGraph:
 # Global compiled workflow
 _workflow: CompiledStateGraph | None = None
 _report_evidence_workflow: CompiledStateGraph | None = None
+_workflow_lock = threading.Lock()
+_report_evidence_workflow_lock = threading.Lock()
 
 
 def get_workflow() -> CompiledStateGraph:
     """Get or create the compiled workflow."""
     global _workflow
     if _workflow is None:
-        _workflow = create_workflow(entry_point="evidence")
+        with _workflow_lock:
+            if _workflow is None:
+                _workflow = create_workflow(entry_point="evidence")
     return _workflow
 
 
@@ -213,7 +219,9 @@ def get_report_evidence_workflow() -> CompiledStateGraph:
     """Get or create the compiled workflow starting from Phase 1.5."""
     global _report_evidence_workflow
     if _report_evidence_workflow is None:
-        _report_evidence_workflow = create_workflow(entry_point="report_evidence")
+        with _report_evidence_workflow_lock:
+            if _report_evidence_workflow is None:
+                _report_evidence_workflow = create_workflow(entry_point="report_evidence")
     return _report_evidence_workflow
 
 
@@ -284,7 +292,6 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         "modified_files": [],
         "writer_output_files": {},
         "optimizer_review_report": "",
-        "review_result": "",
         "review_feedback": "",
         "revision_count": 0,
         "errors": [],
@@ -397,7 +404,6 @@ async def resume_report_evidence(
         "modified_files": [],
         "writer_output_files": {},
         "optimizer_review_report": "",
-        "review_result": "",
         "review_feedback": "",
         "revision_count": 0,
         "errors": [],
