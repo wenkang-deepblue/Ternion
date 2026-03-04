@@ -18,11 +18,19 @@ import type { Language } from '../i18n';
 import budgetIconLight from '../assets/icons/budget_light_mode_50dp.svg';
 import budgetIconDark from '../assets/icons/budget_dark_mode_50dp.svg';
 
+/**
+ * Props for the BudgetSettings component.
+ */
 interface BudgetSettingsProps {
+  /** The current global configuration object, containing budget settings. */
   config: Config | null;
+  /** Callback fired when the configuration is successfully updated on the server. */
   onConfigUpdate: (config: Config) => void;
+  /** Translation function/object for localized strings. */
   t: Translations;
+  /** Whether the application is currently in dark mode. */
   isDarkMode: boolean;
+  /** The currently selected language code. */
   language: Language;
 }
 

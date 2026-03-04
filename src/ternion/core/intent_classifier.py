@@ -49,8 +49,7 @@ def classify_intent(text: str) -> Intent:
 
     text_normalized = text.strip().lower()
 
-    # Check for rejection first (higher priority than confirm)
-    # This handles cases like "No, this is wrong"
+    # Rejection takes precedence over confirmation
     for pattern in _INTENT_PATTERNS.reject:
         if re.search(pattern, text_normalized, re.IGNORECASE | re.UNICODE):
             logger.debug("intent_classified", intent="reject", pattern=pattern[:30])
@@ -68,7 +67,6 @@ def classify_intent(text: str) -> Intent:
             logger.debug("intent_classified", intent="clarify", pattern=pattern[:30])
             return Intent.CLARIFY
 
-    # No clear match - return unknown
     logger.debug("intent_classified", intent="unknown", text_preview=text[:50])
     return Intent.UNKNOWN
 
@@ -273,10 +271,8 @@ async def classify_intent_with_fallback(text: str) -> Intent:
     Returns:
         Intent enum value (CONFIRM, REJECT, CLARIFY, or UNKNOWN)
     """
-    # Step 1: Try heuristic classification (instant, zero-cost)
     heuristic_result = classify_intent(text)
 
-    # If heuristic found a match, return immediately
     if heuristic_result != Intent.UNKNOWN:
         logger.debug(
             "intent_resolved_heuristic",
@@ -284,7 +280,6 @@ async def classify_intent_with_fallback(text: str) -> Intent:
         )
         return heuristic_result
 
-    # Step 2: Fall back to LLM classification for ambiguous cases
     logger.info("intent_fallback_to_llm", text_preview=text[:50])
     llm_result = await classify_intent_with_llm(text)
 

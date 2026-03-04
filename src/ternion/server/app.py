@@ -56,9 +56,10 @@ def get_allowed_origins() -> list[str]:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     """
-    Application lifespan context manager.
+    Application lifespan: logs startup banner with version/CORS info, emits
+    lifecycle events for the Observability panel, and logs shutdown.
 
-    Handles startup and shutdown events using the modern FastAPI lifespan pattern.
+    Uses the modern FastAPI lifespan pattern (replaces on_event).
     """
     # Startup — CORS origins were already fixed at import time; this is informational only.
     allowed_origins = get_allowed_origins()
@@ -130,10 +131,11 @@ async def ternion_error_handler(request: Request, exc: TernionError) -> JSONResp
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """
-    Handle request validation errors (CR-031).
+    Handle request validation errors.
 
-    Returns OpenAI-compatible error response for invalid requests,
-    ensuring Cursor and other clients receive a consistent error structure.
+    Returns a simplified OpenAI-compatible JSON error instead of Pydantic's
+    default 422 with a detail array, because Cursor does not display the
+    raw Pydantic format to users.
     """
     # Build user-friendly error message from validation errors
     errors = exc.errors()

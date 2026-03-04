@@ -1,7 +1,12 @@
 """
 API routes for Ternion gateway.
 
-Implements OpenAI-compatible endpoints for chat completions and models listing.
+Implements:
+- OpenAI-compatible endpoints (chat completions, models listing, health/probe)
+- Session lifecycle management (create → confirm/reject → execute → complete)
+- Tool-loop orchestration for Cursor Agent execution follow-ups
+- Guardrail enforcement (tool policy, deliverable policy, budget, shell safety)
+- Phase-specific follow-up handlers (evidence, report_evidence, execution, optimizer)
 """
 
 import asyncio
@@ -77,6 +82,9 @@ from ternion.workflow.streaming_events import StreamEventQueue, StreamEventType
 logger = structlog.get_logger(__name__)
 router = APIRouter()
 
+# Strings that indicate the output is a Cursor auto-apply patch.
+# When detected, thinking logs are suppressed from chat output to avoid
+# breaking Cursor's patch parser.
 _PATCHLIKE_TRIGGERS = (
     "*** Begin Patch",
     "*** End Patch",
@@ -87,6 +95,9 @@ _PATCHLIKE_TRIGGERS = (
 
 _TERNION_TOOL_CALL_ID_SESSION_RE = re.compile(r"\bternion_([a-f0-9]{12})_", re.IGNORECASE)
 
+# Default/max line limits for read_file pagination. Keeps context window
+# usage bounded. Evidence phase allows a higher limit because evidence
+# collection benefits from wider file reads.
 _READ_FILE_DEFAULT_LIMIT = 300
 _READ_FILE_MAX_LIMIT = 400
 _READ_FILE_EVIDENCE_MAX_LIMIT = 2000
@@ -98,7 +109,13 @@ _SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+# Number of raw characters to buffer at chunk boundary to prevent
+# cross-chunk formation of patch triggers during streaming sanitization.
 _STREAM_SANITIZE_TAIL_KEEP = 32
+
+# Maps workflow phase names to the SessionStage used when a follow-up
+# completes without producing final output. Allows the tool loop to
+# continue rather than prematurely closing the session.
 _RESUMABLE_PHASE_STAGE_MAP = {
     "report_evidence": SessionStage.EXECUTION_IN_PROGRESS,
     "execution": SessionStage.EXECUTION_IN_PROGRESS,
@@ -274,6 +291,14 @@ def _request_contains_case_insensitive(request: ChatCompletionRequest, needle: s
 
 
 def _build_session_markers(session: Session, *, stage: SessionStage | None = None) -> str:
+    """Build session-marker block appended to chat responses.
+
+    These markers (TERNION_SESSION_ID, TERNION_SESSION_STAGE, etc.) are
+    echoed back by the client in subsequent turns and parsed by
+    ``parse_session_marker()`` to re-attach follow-up messages to the
+    correct session. Changing the format here requires a coordinated
+    update in ``core/intent_classifier.py``.
+    """
     stage_value = stage.value if stage is not None else session.stage.value
     return (
         f"TERNION_SESSION_ID={session.session_id}\n"
@@ -289,6 +314,7 @@ def _build_guardrail_response(
     content: str,
     stage: SessionStage = SessionStage.AWAITING_CONFIRMATION,
 ) -> str:
+    """Wrap guardrail/gate content with session markers for HITL routing."""
     markers = _build_session_markers(session, stage=stage)
     return f"{content}\n{markers}"
 
@@ -719,15 +745,16 @@ def _enforce_read_file_pagination(arguments_json: str, *, max_limit: int) -> str
     return json.dumps(args, ensure_ascii=False)
 
 
+# Post-canonicalization names (all lowercase, alphanumeric only).
+# Older Cursor clients use snake_case; newer versions use TitleCase.
+# Both map to the same canonical form here.
 _MUTATING_TOOL_NAMES = {
-    # Legacy snake_case (older Cursor clients / some tests)
     "write",
     "writefile",
     "strreplace",
     "searchreplace",
     "deletefile",
     "editnotebook",
-    # Newer Cursor TitleCase tools
     "applypatch",
     "delete",
 }
@@ -1395,6 +1422,8 @@ def _resolve_project_root() -> Path:
         return Path.cwd()
 
 
+# Timeout for local git subprocess calls (status, show).
+# Kept short to avoid blocking request handling on slow filesystems.
 _GIT_CMD_TIMEOUT_SECONDS = 2.0
 
 
@@ -1887,10 +1916,8 @@ async def _run_discussion_streaming(
     """
     from ternion.workflow.graph import run_discussion
 
-    # Create event queue for streaming
     stream_queue = StreamEventQueue()
 
-    # Inject queue into context so workflow can access it
     context._stream_queue = stream_queue  # type: ignore[attr-defined]
 
     async def generate_sse() -> AsyncGenerator[str, None]:
@@ -1899,7 +1926,6 @@ async def _run_discussion_streaming(
         created = int(time.time())
         final_state: dict = {}
 
-        # Start workflow in background task
         async def run_workflow() -> None:
             nonlocal final_state
             try:
@@ -1910,10 +1936,8 @@ async def _run_discussion_streaming(
             finally:
                 stream_queue.close()
 
-        # Launch workflow task
         workflow_task = asyncio.create_task(run_workflow())
 
-        # Send budget warning first if present
         if budget_warning:
             warning_text = budget_manager.format_budget_warning(budget_warning)
             chunk = ChatCompletionChunk(
@@ -2483,10 +2507,8 @@ async def _run_implementation_streaming(
     """
     from ternion.workflow.implementation_stage import run_implementation_stage
 
-    # Create event queue for streaming
     stream_queue = StreamEventQueue()
 
-    # Inject queue into state so nodes can access it
     initial_state["_stream_queue"] = stream_queue
 
     async def generate_sse() -> AsyncGenerator[str, None]:
@@ -2495,7 +2517,6 @@ async def _run_implementation_streaming(
         created = int(time.time())
         final_state: dict = {}
 
-        # Start implementation stage in background task
         async def run_impl() -> None:
             nonlocal final_state
             try:
@@ -2506,10 +2527,8 @@ async def _run_implementation_streaming(
             finally:
                 stream_queue.close()
 
-        # Launch implementation task
         impl_task = asyncio.create_task(run_impl())
 
-        # Send budget prefix first if present
         if budget_prefix:
             chunk = ChatCompletionChunk(
                 id=chunk_id,
@@ -3118,7 +3137,7 @@ async def chat_completions(
     Handle chat completion requests (OpenAI-compatible).
 
     Routes requests based on the model name:
-    - ternion-team: Full 4-step discussion flow
+    - ternion-team: Full Ternion multi-phase workflow (evidence → divergence → convergence → execution → review → optimizer)
     - (All other models are rejected to avoid accidental passthrough/BYOK costs)
     """
     logger.info(

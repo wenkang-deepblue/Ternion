@@ -1790,7 +1790,6 @@ async def divergence_node(state: TernionState) -> TernionState:
             )
         )
 
-    # Read ternion configurations from config_store
     ternion_ids = ["ternion_a", "ternion_b", "ternion_c"]
     ternion_configs = []
     unconfigured = []
@@ -1808,7 +1807,6 @@ async def divergence_node(state: TernionState) -> TernionState:
         else:
             unconfigured.append(ternion_id)
 
-    # Check if any ternions are not configured
     if unconfigured:
         error_msg = t(
             MessageKey.ROLE_CONFIG_INCOMPLETE,
@@ -1937,11 +1935,9 @@ async def divergence_node(state: TernionState) -> TernionState:
                 "error": str(e),
             }
 
-    # Execute concurrently using user-configured ternions
     tasks = [analyze(cfg) for cfg in ternion_configs]
     analyses = await asyncio.gather(*tasks)
 
-    # Filter successful analyses
     successful = [a for a in analyses if not a.get("error")]
     logger.info(
         "workflow_divergence_complete",
@@ -1949,7 +1945,6 @@ async def divergence_node(state: TernionState) -> TernionState:
         total_count=len(analyses),
     )
 
-    # Add thinking logs for each analysis
     for a in successful:
         preview = sanitize_for_preview(a["analysis"], max_length=100)
         thinking_logs.append(
@@ -1968,7 +1963,6 @@ async def divergence_node(state: TernionState) -> TernionState:
             )
         )
 
-    # Extract evidence requests from all analyses for Phase 1.5
     evidence_requests = _extract_evidence_requests(successful)
 
     return {
@@ -2190,7 +2184,6 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         else WorkflowPhase.CONVERGENCE.value
     )
 
-    # Skip if no real evidence requests
     if not _has_real_evidence_requests(evidence_requests):
         logger.info("report_evidence_skip", reason="no_real_requests")
         log_manager.emit(
@@ -2736,7 +2729,6 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                 "thinking_logs": thinking_logs,
             }
 
-        # Parse and append evidence
         new_bundle, new_gaps = _parse_evidence_output(response.content)
         existing_bundle = state.get("evidence_bundle") or ""
         existing_gaps = state.get("evidence_gaps") or ""
@@ -2847,7 +2839,6 @@ async def convergence_node(state: TernionState) -> TernionState:
             "is_consensus": False,
         }
 
-    # Get effective language for report generation
     user_config = config_store.load()
     language_code = user_config.language
     if language_code == "auto":
@@ -2859,7 +2850,6 @@ async def convergence_node(state: TernionState) -> TernionState:
         instruction_template.format(language_name=language_name) if instruction_template else ""
     )
 
-    # Build synthesis prompt with language instruction
     convergence_prompt_with_lang = build_convergence_prompt(language_instruction=language_instruction)
 
     evidence_bundle = state.get("evidence_bundle") or "EVIDENCE_BUNDLE:\n- None"
@@ -2902,11 +2892,9 @@ async def convergence_node(state: TernionState) -> TernionState:
     try:
         provider = provider_manager.get_provider_for_role("arbiter")
 
-        # Get user-configured model from config_store
         role_cfg = config_store.get_role_config("arbiter")
         model = role_cfg.model if role_cfg and role_cfg.model else None
 
-        # Hard validation: model must be explicitly configured
         if not model:
             logger.error("arbiter_model_not_configured")
             error_msg = t(
@@ -2919,11 +2907,9 @@ async def convergence_node(state: TernionState) -> TernionState:
                 "thinking_logs": thinking_logs + [t(MessageKey.CONVERGENCE_ERROR, error=error_msg)],
             }
 
-        # Get stream queue from state for real-time output (if available)
         stream_queue: StreamEventQueue | None = state.get("_stream_queue")
         session_id = state.get("session_id", "")
 
-        # Use streaming call if queue is available, otherwise fall back to non-streaming
         schedule_workflow_prompt_capture(
             build_workflow_prompt_payload(
                 phase="convergence",
@@ -3165,7 +3151,6 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 fallback_provider_name = fallback_provider.name
                 fallback_model = fallback_cfg["model"]
 
-                # Record usage for fallback
                 usage = fallback_response.usage or {}
                 input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
                 completion_tokens = (
@@ -3221,7 +3206,6 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 )
                 continue  # Try next fallback
 
-        # If fallback succeeded, use the synthesized report
         if fallback_response:
             thinking_logs.append(
                 t(
@@ -3232,7 +3216,6 @@ TERNION_REPORT_HASH={session.report_hash}"""
             preview = sanitize_for_preview(fallback_response.content, max_length=80)
             thinking_logs.append(t(MessageKey.CONVERGENCE_COMPLETE, preview=preview))
 
-            # Continue with normal flow using fallback response
             execution_mode_str = (
                 state.get("execution_mode", "") or config_store.load().execution_mode
             )
@@ -3530,7 +3513,6 @@ async def execution_node(state: TernionState) -> TernionState:
     # when a client system prompt is present.
     writer_instructions = _prepend_global_security_rules(EXECUTION_PROMPT)
 
-    # Build the final user instruction content
     revision_count = state.get("revision_count", 0)
     review_feedback = state.get("review_feedback", "")
     previous_code = state.get("generated_code", "")
@@ -3588,10 +3570,7 @@ async def execution_node(state: TernionState) -> TernionState:
                 ]
             )
 
-    # If this is a revision round, always include reviewer feedback section
-    # Even if feedback is empty, provide a placeholder to prevent Writer confusion
     if revision_count > 0:
-        # Use placeholder if feedback is empty (e.g., truncated or missing)
         feedback_content = (
             review_feedback.strip()
             if review_feedback
@@ -3601,7 +3580,6 @@ async def execution_node(state: TernionState) -> TernionState:
                 "the original analysis report."
             )
         )
-        # Use placeholder if previous code is empty (edge case)
         code_content = (
             previous_code.strip()
             if previous_code
@@ -3641,7 +3619,6 @@ async def execution_node(state: TernionState) -> TernionState:
             ]
         )
 
-    # Add the Ternion Analysis Report + Writer instructions as the final instruction.
     messages.append(
         ChatMessage(
             role=MessageRole.USER,
@@ -3653,10 +3630,8 @@ async def execution_node(state: TernionState) -> TernionState:
     try:
         provider = provider_manager.get_provider_for_role("writer")
 
-        # Get user-configured model from config_store
         model = role_cfg.model if role_cfg and role_cfg.model else None
 
-        # Hard validation: model must be explicitly configured
         if not model:
             logger.error("writer_model_not_configured")
             error_msg = t(
@@ -3669,7 +3644,6 @@ async def execution_node(state: TernionState) -> TernionState:
                 "thinking_logs": thinking_logs + [t(MessageKey.EXECUTION_ERROR, error=error_msg)],
             }
 
-        # Get stream queue from state for real-time output (if available)
         stream_queue: StreamEventQueue | None = state.get("_stream_queue")
         session_id = state.get("session_id", "")
 
@@ -4113,7 +4087,6 @@ async def execution_node(state: TernionState) -> TernionState:
                 "generated_code": response.content,
                 "thinking_logs": thinking_logs,
             }
-        # Use streaming call if queue is available, otherwise fall back to non-streaming
         response = await _call_with_stream(
             provider=provider,
             messages=messages,
@@ -4283,7 +4256,6 @@ async def optimizer_node(state: TernionState) -> TernionState:
 
     thinking_logs = list(state.get("thinking_logs", []))
 
-    # Use the Web UI language preference for Optimizer output (internal + user-visible summary).
     user_config = config_store.load()
     language_code = user_config.language
     if language_code == "auto":

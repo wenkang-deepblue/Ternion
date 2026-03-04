@@ -134,7 +134,8 @@ def _parse_bool(value: str | None) -> bool:
         value: Raw value string.
 
     Returns:
-        True for common truthy values; otherwise False.
+        True for common truthy values ("1", "true", "yes", "y").
+        "final" is also accepted as a truthy alias for FINAL_REQUEST metadata.
     """
     if not value:
         return False

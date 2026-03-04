@@ -33,11 +33,19 @@ import visibilityIconDark from '../assets/icons/visibility_dark_mode_50dp.svg';
 import deleteIconLight from '../assets/icons/delete_light_mode_50dp.svg';
 import deleteIconDark from '../assets/icons/delete_dark_mode_50dp.svg';
 
+/**
+ * Props for the ApiKeyManager component.
+ */
 interface ApiKeyManagerProps {
+  /** The current global configuration object, containing provider settings. */
   config: Config | null;
+  /** Callback fired when the configuration is successfully updated on the server. */
   onConfigUpdate: (config: Config) => void;
+  /** Translation function/object for localized strings. */
   t: Translations;
+  /** Whether the application is currently in dark mode. */
   isDarkMode: boolean;
+  /** The currently selected language code. */
   language: Language;
 }
 

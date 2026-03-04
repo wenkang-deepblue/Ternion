@@ -56,14 +56,13 @@ def _to_jsonable(value: Any) -> Any:
     if isinstance(value, set):
         return [_to_jsonable(v) for v in sorted(value, key=lambda x: str(x))]
 
-    # Pydantic v2 models (e.g., TextContent/ImageContent)
     if hasattr(value, "model_dump") and callable(value.model_dump):
         try:
             return _to_jsonable(value.model_dump())
         except Exception:
             return str(value)
 
-    # Pydantic v1 compatibility
+    # Pydantic v1 fallback for third-party model compatibility
     if hasattr(value, "dict") and callable(value.dict):
         try:
             return _to_jsonable(value.dict())
@@ -272,6 +271,14 @@ def _extract_tool_call_index_entries(
 ) -> dict[str, dict[str, Any]]:
     """
     Build a persistent tool_call_id -> meta index from tool call payloads.
+
+    Args:
+        tool_calls: List of tool call dictionaries from the LLM.
+        workflow_phase: Phase identifier (e.g., 'execution', 'optimizer').
+        round_index: The round index within the phase.
+
+    Returns:
+        A mapping of tool_call_id to its extracted metadata.
     """
     entries: dict[str, dict[str, Any]] = {}
     for tc in tool_calls or []:
@@ -610,8 +617,7 @@ class SessionStore:
         if hash_verified is not None:
             session.hash_verified = hash_verified
         if ternion_report_raw is not None:
-            # Some sessions are created before convergence (e.g., evidence tool loops in ternion_full),
-            # so the report may be initially empty and must be persisted later once available.
+            # Report may be empty at session creation; persisted once convergence completes.
             from ternion.utils.cursor_safety import sanitize_for_cursor_display
 
             session.ternion_report_raw = ternion_report_raw

@@ -64,6 +64,7 @@ class _DeliverableSignal:
 
 
 def _classify_signals(text: str, *, source: str) -> _DeliverableSignal:
+    """Classify text for deliverable signals and reason."""
     normalized = (text or "").strip()
     if not normalized:
         return _DeliverableSignal(None, False, DeliverableReason.EMPTY_INPUT.value, source)
@@ -171,6 +172,7 @@ def resolve_deliverable_policy(user_message: str, ternion_report: str) -> Delive
 
 
 def _build_policy(signal: _DeliverableSignal) -> DeliverablePolicy:
+    """Convert a signal into a fully resolved DeliverablePolicy."""
     deliverable_type = signal.deliverable_type or DeliverableType.CODE_CHANGE
     if deliverable_type == DeliverableType.ANALYSIS_ONLY:
         allowed_scope = "none"

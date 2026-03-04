@@ -56,6 +56,7 @@ class EvidenceRequest:
 
 
 def _strip_optional_bullet(line: str) -> str:
+    """Strip leading '- ' bullet from a line if present."""
     stripped = line.lstrip()
     if stripped.startswith("- "):
         return stripped[2:].lstrip()
@@ -63,6 +64,7 @@ def _strip_optional_bullet(line: str) -> str:
 
 
 def _extract_purpose(line: str) -> str | None:
+    """Extract PURPOSE value from a line, or None if not a purpose line."""
     normalized = _strip_optional_bullet(line).strip()
     if normalized.upper().startswith(_PURPOSE_PREFIX):
         return normalized[len(_PURPOSE_PREFIX) :].strip()
@@ -70,12 +72,14 @@ def _extract_purpose(line: str) -> str | None:
 
 
 def _strip_format_indent(line: str) -> str:
+    """Strip the 2-space format indent used inside EXCERPT blocks."""
     if line.startswith("  "):
         return line[2:]
     return line
 
 
 def _parse_header_fields(header: str) -> dict[str, str]:
+    """Parse 'key=value | key=value' header into a dict."""
     fields: dict[str, str] = {}
     for part in header.split("|"):
         part = part.strip()
@@ -86,6 +90,7 @@ def _parse_header_fields(header: str) -> dict[str, str]:
 
 
 def _parse_line_range(value: str | None) -> tuple[int, int] | None:
+    """Parse a 'start-end' line range string into a tuple, or None."""
     if not value:
         return None
     match = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*(?:$|\s)", value)
@@ -99,6 +104,7 @@ def _parse_line_range(value: str | None) -> tuple[int, int] | None:
 
 
 def _parse_total_lines(value: str | None) -> int | None:
+    """Parse a positive integer total_lines value, or None."""
     if not value:
         return None
     cleaned = value.strip()
@@ -111,15 +117,14 @@ def _parse_total_lines(value: str | None) -> int | None:
 
 
 def _normalize_path(path: str | None) -> str:
+    """Strip whitespace and surrounding quotes/backticks from a path."""
     if not path:
         return ""
     cleaned = path.strip().strip('"').strip("'").strip("`")
     return cleaned
 
 
-# These regexes trim trailing annotations that frequently appear in evidence targets, e.g.:
-# - `path=src/foo.py（some note）` (fullwidth Chinese parentheses)
-# - `path=src/foo.py (some note)` (whitespace + ASCII parentheses)
+# Strip trailing annotations: fullwidth parens "（...）" or whitespace+ASCII parens " (...)".
 _CN_PAREN_TAIL_RE = re.compile(r"（.*$")
 _WS_PAREN_TAIL_RE = re.compile(r"\s+\(.*$")
 _TRAILING_PUNCT_CHARS = "，,。.;；"

@@ -4,12 +4,18 @@
 
 const API_BASE = '/api';
 
+/**
+ * Basic information for a configured API key.
+ */
 export interface ApiKeyInfo {
   id: string;
   name: string;
   key_preview: string;
 }
 
+/**
+ * Status of a specific LLM provider, including its enabled state and available keys.
+ */
 export interface ProviderStatus {
   enabled: boolean;
   has_keys: boolean;
@@ -17,21 +23,35 @@ export interface ProviderStatus {
   keys: ApiKeyInfo[];
 }
 
+/**
+ * Configuration for a specific AI role (e.g., Ternion members, Arbiter, Writer),
+ * specifying which provider and model to use for that role.
+ */
 export interface RoleConfig {
   provider: string;
   model: string;
 }
 
+/**
+ * Cost control settings, defining monthly spending limits and alert thresholds.
+ */
 export interface BudgetConfig {
   monthly_limit_usd: number;
   alert_threshold: number;
 }
 
+/**
+ * Network port configuration for the backend and web services.
+ */
 export interface PortsConfig {
   backend: number;
   web: number;
 }
 
+/**
+ * Complete application configuration persisted in the backend.
+ * Captures all user settings including active models, budget limits, and UI preferences.
+ */
 export interface Config {
   providers: Record<string, ProviderStatus>;
   roles: Record<string, RoleConfig>;
@@ -47,6 +67,10 @@ export interface Config {
   updated_at?: string;
 }
 
+/**
+ * Detailed token usage and cost metrics for a single provider.
+ * thoughts_tokens/thoughts_cost represent internal reasoning steps (e.g., formatting, tool calling).
+ */
 export interface ProviderDetail {
   input_tokens: number;
   output_tokens: number;
@@ -56,6 +80,9 @@ export interface ProviderDetail {
   thoughts_cost?: number;
 }
 
+/**
+ * Aggregated usage and cost statistics for a specific date.
+ */
 export interface DailyUsageRecord {
   date: string;
   cost: number;
@@ -68,6 +95,9 @@ export interface DailyUsageRecord {
   providers?: Record<string, ProviderDetail>;
 }
 
+/**
+ * Aggregated usage and cost statistics for an entire month.
+ */
 export interface MonthlyUsageRecord {
   month: string;
   cost: number;
@@ -80,6 +110,10 @@ export interface MonthlyUsageRecord {
   providers?: Record<string, ProviderDetail>;
 }
 
+/**
+ * Comprehensive usage report for the dashboard, containing current usage,
+ * budget limits, and historical breakdowns by day/month and provider.
+ */
 export interface UsageData {
   month: string;
   total_cost_usd: number;
@@ -98,28 +132,44 @@ export interface UsageData {
   available_years: string[];
 }
 
+/**
+ * Basic identifier and display name for an LLM model.
+ */
 export interface ModelInfo {
   id: string;
   name: string;
 }
 
+/**
+ * Available models grouped by their respective providers.
+ */
 export interface ModelsData {
   models: Record<string, ModelInfo[]>;
   enabled_providers: string[];
 }
 
+/**
+ * Result of testing a newly added API key.
+ */
 export interface TestResult {
   success: boolean;
   message: string;
   code: string;
 }
 
+/**
+ * Current health and operational status of the backend server.
+ */
 export interface ServerStatus {
   server_status: string;
   active_providers: string[];
   provider_count: number;
 }
 
+/**
+ * API client responsible for all communication with the backend Server.
+ * Encapsulates fetch logic, error handling, and type-safe data contracts.
+ */
 class ApiClient {
   private baseUrl: string;
 
@@ -127,6 +177,10 @@ class ApiClient {
     this.baseUrl = baseUrl;
   }
 
+  /**
+   * Internal generic method to perform fetch requests and handle JSON responses.
+   * Throws an error with a unified message format upon non-2xx responses.
+   */
   private async request<T>(endpoint: string, options?: RequestInit): Promise<T> {
     const response = await fetch(`${this.baseUrl}${endpoint}`, {
       ...options,
@@ -137,6 +191,8 @@ class ApiClient {
     });
 
     if (!response.ok) {
+      // Note: Try to extract structured JSON error messages from FastAPI responses
+      // before falling back to a generic HTTP status error.
       const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
       throw new Error(error.detail || `HTTP ${response.status}`);
     }
@@ -144,10 +200,16 @@ class ApiClient {
     return response.json();
   }
 
+  /**
+   * Fetches the current application configuration.
+   */
   async getConfig(): Promise<Config> {
     return this.request<Config>('/config');
   }
 
+  /**
+   * Adds and validates a new API key for the specified provider.
+   */
   async addApiKey(
     provider: string,
     name: string,
@@ -159,6 +221,9 @@ class ApiClient {
     });
   }
 
+  /**
+   * Removes an existing API key from the given provider's configuration.
+   */
   async deleteApiKey(provider: string, keyId: string): Promise<{ success: boolean; config: Config }> {
     return this.request('/api-keys/delete', {
       method: 'POST',
@@ -166,6 +231,9 @@ class ApiClient {
     });
   }
 
+  /**
+   * Sets the active working API key for a specified provider.
+   */
   async selectApiKey(
     provider: string,
     keyId: string
@@ -176,6 +244,9 @@ class ApiClient {
     });
   }
 
+  /**
+   * Partially updates backend configuration settings (roles, budget, mode, preferences).
+   */
   async updateConfig(config: Partial<{
     roles?: Record<string, RoleConfig>;
     budget?: Partial<BudgetConfig>;
@@ -193,6 +264,9 @@ class ApiClient {
     return result.config;
   }
 
+  /**
+   * Logs or updates the selected provider and model for a specific AI agent role.
+   */
   async logRoleSelection(
     role: string,
     provider: string,
@@ -204,6 +278,9 @@ class ApiClient {
     });
   }
 
+  /**
+   * Updates the global execution mode (e.g., automated vs review).
+   */
   async logExecutionModeSelection(
     execution_mode: string
   ): Promise<{ success: boolean; pending: boolean }> {
@@ -213,11 +290,17 @@ class ApiClient {
     });
   }
 
+  /**
+   * Retrieves aggregated usage statistics, optionally filtered by a specific month (YYYY-MM).
+   */
   async getUsage(month?: string): Promise<UsageData> {
     const params = month ? `?month=${month}` : '';
     return this.request<UsageData>(`/usage${params}`);
   }
 
+  /**
+   * Conducts an immediate test API call to verify the validity of an API key.
+   */
   async testProvider(provider: string, apiKey: string): Promise<TestResult> {
     return this.request<TestResult>('/test-provider', {
       method: 'POST',
@@ -225,14 +308,23 @@ class ApiClient {
     });
   }
 
+  /**
+   * Checks the backend server's health and the number of active/ready providers.
+   */
   async getStatus(): Promise<ServerStatus> {
     return this.request<ServerStatus>('/status');
   }
 
+  /**
+   * Fetches the catalog of available models grouped by their enabled providers.
+   */
   async getModels(): Promise<ModelsData> {
     return this.request<ModelsData>('/models');
   }
 
+  /**
+   * Updates UI-specific settings like theme, language, and disclaimers.
+   */
   async updatePreferences(prefs: {
     theme?: string;
     language?: string;
@@ -245,6 +337,9 @@ class ApiClient {
     });
   }
 
+  /**
+   * Requests the native OS to reveal a file or directory in its file manager.
+   */
   async revealFile(path: string): Promise<{ success: boolean }> {
     return this.request('/reveal-file', {
       method: 'POST',
@@ -252,10 +347,16 @@ class ApiClient {
     });
   }
 
+  /**
+   * Retrieves the configured application network ports.
+   */
   async getPorts(): Promise<PortsConfig> {
     return this.request<PortsConfig>('/ports');
   }
 
+  /**
+   * Updates network port allocations for backend/web services. Requires restart to apply.
+   */
   async updatePorts(ports: Partial<PortsConfig>): Promise<{
     success: boolean;
     ports: PortsConfig;
@@ -268,6 +369,9 @@ class ApiClient {
     });
   }
 
+  /**
+   * Zips and downloads the system logs directly from the backend.
+   */
   async downloadLogs(): Promise<{
     success: boolean;
     file_path: string;

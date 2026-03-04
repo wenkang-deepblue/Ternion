@@ -1,7 +1,7 @@
 """
-Utilities module initialization.
+Utilities package initialization.
 
-Provides logging configuration and streaming utilities.
+Re-exports commonly used helpers (logging, streaming).
 """
 
 from ternion.utils.logging import setup_logging

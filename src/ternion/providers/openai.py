@@ -55,17 +55,15 @@ class OpenAIProvider(BaseProvider):
 
     @property
     def name(self) -> str:
-        """Return provider name."""
         return "openai"
 
     @property
     def default_model(self) -> str:
-        """Return default model."""
         return self._default_model
 
     @property
     def supports_native_tool_calls(self) -> bool:
-        """OpenAI supports native tool calling via `tools` / `tool_choice`."""
+        """Overrides base class default; OpenAI's /v1/chat/completions natively accepts `tools` and `tool_choice`."""
         return True
 
     async def chat_completion(
@@ -98,7 +96,6 @@ class OpenAIProvider(BaseProvider):
             message_count=len(messages),
         )
 
-        # Build API parameters - only include max_tokens if specified
         api_params: dict[str, Any] = {
             "model": model,
             "messages": converted,
@@ -193,12 +190,11 @@ class OpenAIProvider(BaseProvider):
                             }
                         )
 
-        # Extract token counts
         prompt_tokens = usage.prompt_tokens if usage else 0
         completion_tokens = usage.completion_tokens if usage else 0
         total_tokens = usage.total_tokens if usage else 0
 
-        # Extract reasoning tokens if available (included in completion_tokens)
+        # reasoning_tokens is a subset of completion_tokens; avoid double-counting in usage totals.
         reasoning_tokens = 0
         if (
             usage
@@ -216,7 +212,6 @@ class OpenAIProvider(BaseProvider):
             total_tokens=total_tokens,
         )
 
-        # Emit to UI log panel
         log_manager.emit_token_usage(
             provider="openai",
             model=model,
@@ -271,7 +266,6 @@ class OpenAIProvider(BaseProvider):
             message_count=len(messages),
         )
 
-        # Build API parameters - only include max_tokens if specified
         api_params: dict[str, Any] = {
             "model": model,
             "messages": converted,
@@ -312,7 +306,6 @@ class OpenAIProvider(BaseProvider):
             return False
 
         try:
-            # Make a minimal API call to check availability
             await self._client.models.list()
             return True
         except Exception as e:
@@ -337,7 +330,7 @@ class OpenAIProvider(BaseProvider):
             if msg.name:
                 out["name"] = msg.name
 
-            # Tool role messages must include tool_call_id for OpenAI compatibility.
+            # OpenAI rejects tool-role messages without tool_call_id; always include it even if empty.
             if msg.role == MessageRole.TOOL:
                 out["content"] = self._content_to_text(msg.content) or ""
                 if msg.tool_call_id:
@@ -348,7 +341,6 @@ class OpenAIProvider(BaseProvider):
             if isinstance(msg.content, str):
                 out["content"] = msg.content
             elif isinstance(msg.content, list):
-                # Multimodal content
                 content_parts = []
                 for part in msg.content:
                     if isinstance(part, TextContent):
@@ -393,6 +385,16 @@ class OpenAIProvider(BaseProvider):
         Generate a non-streaming completion using the OpenAI Responses API.
 
         This supports models that are not compatible with /v1/chat/completions (e.g. gpt-5, codex).
+
+        Args:
+            messages: List of chat messages
+            model: Model ID to use
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            **kwargs: Additional provider-specific parameters
+
+        Returns:
+            ProviderResponse with the generated content
         """
         input_items = self._convert_messages_to_responses_input(messages)
 
@@ -451,6 +453,16 @@ class OpenAIProvider(BaseProvider):
         Generate a streaming completion using the OpenAI Responses API.
 
         Yields only `response.output_text.delta` events.
+
+        Args:
+            messages: List of chat messages
+            model: Model ID to use
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            **kwargs: Additional provider-specific parameters
+
+        Yields:
+            Content chunks as they are generated
         """
         input_items = self._convert_messages_to_responses_input(messages)
 
@@ -551,7 +563,19 @@ class OpenAIProvider(BaseProvider):
         *,
         model: str,
     ) -> AsyncGenerator[str, None]:
-        """Consume a chat.completions streaming response and yield text deltas."""
+        """
+        Drain a streaming chat.completions response, aggregating tool call deltas and reporting usage.
+
+        Tool call chunks are accumulated by index and emitted as a single encoded payload after the
+        stream ends. Text content is suppressed once any tool_calls delta is observed.
+
+        Args:
+            stream: Async streaming response from openai.chat.completions.create.
+            model: Model name for token usage logging and budget recording.
+
+        Yields:
+            Text delta strings, followed by an encoded tool call payload if tool calls were present.
+        """
         received_text = ""
         usage_data = None
         tool_calls_by_index: dict[int, dict[str, Any]] = {}
@@ -697,9 +721,13 @@ class OpenAIProvider(BaseProvider):
     @staticmethod
     def _filter_responses_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         """
-        Filter kwargs for OpenAI Responses API.
+        Strip kwargs unsupported by the OpenAI Responses API (/v1/responses) before forwarding.
 
-        This prevents leaking chat-completions-only params into /v1/responses calls.
+        Args:
+            kwargs: Raw kwargs passed to chat_completion methods.
+
+        Returns:
+            Filtered dict containing only Responses API-compatible keys.
         """
         allowed = {
             "tools",
@@ -725,6 +753,15 @@ class OpenAIProvider(BaseProvider):
     ) -> list[dict[str, Any]]:
         """
         Convert ChatMessage objects into OpenAI Responses API `input` items.
+
+        Tool-role messages are mapped to `function_call_output` items; assistant tool_calls
+        are expanded into separate `function_call` items per the Responses API schema.
+
+        Args:
+            messages: Conversation history including any tool interaction turns.
+
+        Returns:
+            List of input items compatible with /v1/responses `input` parameter.
         """
         items: list[dict[str, Any]] = []
         for msg in messages:
@@ -802,7 +839,16 @@ class OpenAIProvider(BaseProvider):
 
     @staticmethod
     def _usage_dict_from_responses_usage(usage: Any) -> dict[str, int]:
-        """Normalize Responses API usage into the ProviderResponse usage format."""
+        """
+        Normalize Responses API usage object into the ProviderResponse usage dict format.
+
+        Args:
+            usage: Usage object from /v1/responses response, or None.
+
+        Returns:
+            Dict with keys: prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
+            input_tokens, output_tokens. Empty dict if usage is None.
+        """
         if not usage:
             return {}
         input_tokens = getattr(usage, "input_tokens", 0) or 0
@@ -825,7 +871,18 @@ class OpenAIProvider(BaseProvider):
 
     @staticmethod
     def _extract_tool_calls_from_responses(response: Any) -> list[dict[str, Any]] | None:
-        """Extract tool calls from a Responses API response and convert to chat tool_calls format."""
+        """
+        Extract function_call items from a Responses API response output list.
+
+        Converts Responses API `function_call` output items to the OpenAI chat/completions
+        `tool_calls` schema for downstream compatibility.
+
+        Args:
+            response: Completed response object from /v1/responses.
+
+        Returns:
+            List of tool call dicts in chat/completions format, or None if no function calls present.
+        """
         output = getattr(response, "output", None)
         if not isinstance(output, list):
             return None
@@ -859,10 +916,16 @@ class OpenAIProvider(BaseProvider):
     @staticmethod
     def _is_non_chat_model_error(error: Exception) -> bool:
         """
-        Detect errors that indicate a model is not compatible with /v1/chat/completions.
+        Detect errors indicating model incompatibility with /v1/chat/completions.
 
-        We intentionally keep this logic conservative and only trigger the fallback when the
-        provider explicitly indicates the endpoint mismatch.
+        Conservative by design: triggers the Responses API fallback only on explicit
+        endpoint-mismatch errors, not on general API failures.
+
+        Args:
+            error: Exception raised by the chat completions client.
+
+        Returns:
+            True if the error signals a non-chat model routing failure.
         """
         msg = str(error).lower()
         return ("not a chat model" in msg) and ("v1/chat/completions" in msg)
@@ -871,7 +934,12 @@ class OpenAIProvider(BaseProvider):
         """
         Convert chat messages into a single prompt string for /v1/completions fallback.
 
-        Returns None if messages contain images (unsupported for text completions fallback).
+        Args:
+            messages: Conversation history to format.
+
+        Returns:
+            Formatted prompt string, or None if any message contains image content
+            which is incompatible with the /v1/completions endpoint.
         """
         parts: list[str] = []
         for msg in messages:
@@ -885,7 +953,16 @@ class OpenAIProvider(BaseProvider):
 
     @staticmethod
     def _content_to_text(content: object) -> str | None:
-        """Best-effort conversion of message content into plain text."""
+        """
+        Convert message content to plain text on a best-effort basis.
+
+        Args:
+            content: Message content; may be str, list of content parts, or None.
+
+        Returns:
+            Plain text string, or None if the content contains image parts that cannot
+            be represented as text (signals to caller that fallback is not possible).
+        """
         if content is None:
             return ""
         if isinstance(content, str):

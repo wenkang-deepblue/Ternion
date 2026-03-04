@@ -1,5 +1,9 @@
 """
 Shell command policy for Execution/Optimizer verification.
+
+Implements a deny-by-default policy: only explicitly allowlisted commands
+(test runners, linters, version checks) are permitted. Pipes, redirects,
+command substitution, and read/search tools are blocked.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ _ALLOWED_SCRIPT_RE = re.compile(
 
 _DIR_OPT_KEYS = {"--prefix", "--cwd", "--dir", "-C"}
 
+# Commands that could exfiltrate file content or serve as read primitives.
 _BLOCKLIST_PATTERNS = [
     r"\b(cat|head|tail|less|more)\b",
     r"\b(grep|egrep|fgrep|rg|ripgrep|find|fd|locate)\b",

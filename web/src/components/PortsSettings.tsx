@@ -22,9 +22,15 @@ import portIconDark from '../assets/icons/port_dark_mode_50dp.svg';
 import warningIconLight from '../assets/icons/warning_light_mode_50dp.svg';
 import warningIconDark from '../assets/icons/warning_dark_mode_50dp.svg';
 
+/**
+ * Props for the PortsSettings component.
+ */
 interface PortsSettingsProps {
+  /** Translation function/object for localized strings. */
   t: Translations;
+  /** Whether the application is currently in dark mode. */
   isDarkMode: boolean;
+  /** The currently selected language code. */
   language: Language;
 }
 

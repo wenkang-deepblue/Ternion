@@ -152,7 +152,12 @@ class ConfigStore:
     """
 
     def __init__(self, config_path: Path | None = None) -> None:
-        """Initialize config store."""
+        """
+        Initialize config store.
+
+        Args:
+            config_path: Override default config file location. Defaults to ~/.ternion/config.json.
+        """
         self.config_path = config_path or DEFAULT_CONFIG_PATH
         self._config: UserConfig | None = None
 
@@ -161,7 +166,15 @@ class ConfigStore:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _migrate_config(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Migrate old config format to new format."""
+        """
+        Migrate old config format to new format.
+
+        Args:
+            data: Raw configuration dictionary.
+
+        Returns:
+            Migrated configuration dictionary.
+        """
         if "providers" in data:
             for provider_name, provider_data in data["providers"].items():
                 # Check if using old format (single api_key instead of api_keys list)
@@ -172,9 +185,7 @@ class ConfigStore:
                 ):
                     old_key = provider_data.get("api_key", "")
                     if old_key:
-                        # Migrate to new format
-                        # Note: selected_key_id is always None after migration
-                        # User must explicitly select which key to use in the Web UI
+                        # User must explicitly select which key after migration
                         new_entry_id = str(uuid.uuid4())[:8]
                         data["providers"][provider_name] = {
                             "api_keys": [
@@ -226,10 +237,8 @@ class ConfigStore:
         Uses temp file + os.replace for atomicity on POSIX systems.
         Sets file permissions to 0600 (owner read/write only) to protect API keys.
 
-        Note: Backup file was intentionally removed (CR-026) because:
-        - It doubled the API key exposure surface (two files with plaintext keys)
-        - Atomic write already provides sufficient crash safety
-        - Backup files are easily captured by cloud sync/backup tools
+        Atomic write (tmp + os.replace) provides crash safety without a secondary backup file,
+        which would double the API key exposure surface.
         """
         self._ensure_dir()
         config.updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")

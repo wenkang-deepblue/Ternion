@@ -34,6 +34,8 @@ async def test_report_evidence_followup_streaming_persists_final_stage() -> None
         ],
         stream=True,
     )
+    # Note: Mocking the final state showing the workflow has finished successfully.
+    # The 'complete' phase triggers the transition to EXECUTED stage.
     final_state = {
         "current_phase": "complete",
         "final_output": "OK",
@@ -111,6 +113,8 @@ async def test_report_evidence_followup_streaming_non_terminal_without_output_ke
         ],
         stream=True,
     )
+    # Note: Emulates a state where workflow pauses and hasn't produced final text yet.
+    # This prevents the stage from moving to EXECUTED.
     final_state = {
         "current_phase": "report_evidence",
         "final_output": "",
@@ -279,6 +283,8 @@ async def test_report_evidence_followup_passes_resume_metadata_to_resume_workflo
         ],
         stream=False,
     )
+    # Note: Mocking a resumed state that preserves the metadata necessary 
+    # to continue correctly in subsequent calls.
     final_state = {
         "current_phase": "report_evidence",
         "final_output": "",
@@ -354,6 +360,8 @@ async def test_report_evidence_followup_streaming_tool_calls_persists_topup_resu
         ],
         stream=True,
     )
+    # Note: Mocking the first round state returning new pending tool calls,
+    # which implies we should stay in the AWAITING_TOOL_RESULTS stage.
     final_state_round1 = {
         "current_phase": "report_evidence",
         "final_output": "",
@@ -480,6 +488,8 @@ async def test_report_evidence_followup_non_streaming_tool_calls_does_not_regres
         ],
         stream=False,
     )
+    # Note: Mocking the final state containing a pending tool call 
+    # ensuring the topup round and resume phase are persisted correctly.
     final_state = {
         "current_phase": "report_evidence",
         "final_output": "",

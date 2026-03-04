@@ -2,10 +2,12 @@
 Prompt templates for the Ternion Council discussion workflow.
 
 DESIGN PHILOSOPHY:
-- Divergence: Independent, deep analysis, strict "NO CODE" rule.
-- Convergence: Authoritative synthesis with clear decision logic.
-- Execution: Concise, modern coding, strictly adhering to Cursor's formatting.
-- Final Check: Functionality-first review with a security baseline.
+- Phase 0 (Evidence): Targeted tool-loop; gathers minimum necessary code evidence.
+- Phase 1 (Divergence): Independent, deep analysis; strict "NO CODE" rule.
+- Phase 1.5 (Report Evidence): Follow-up tool-loop to satisfy council evidence_requests.
+- Phase 2 (Convergence): Authoritative synthesis with clear decision logic.
+- Phase 3 (Execution): Concise, modern coding; strictly adheres to Cursor's formatting.
+- Phase 4 (Optimizer): Functionality-first review + improvement delivery. (Reviewer path inactive.)
 """
 
 # ==============================================================================
@@ -464,10 +466,10 @@ Follow any deliverable policy and allowed write scope provided in the context.
 # Role: Senior QA Architect (The Reviewer)
 # Goal: Verify FUNCTIONALITY first, SECURITY second.
 # ==============================================================================
-# LEGACY NOTE:
-# - The main workflow currently routes EXECUTION -> OPTIMIZER (dev override).
-# - The Reviewer final check prompt is kept for potential future reintroduction
-#   or conditional paths, but it is not part of the default graph.
+# DEPRECATED: FINAL_CHECK_PROMPT is not used in the default workflow
+# (EXECUTION -> OPTIMIZER path). Retained for potential future reintroduction.
+# Do not reference in new code without updating the workflow layer routing
+# (see workflow/nodes.py or equivalent).
 FINAL_CHECK_PROMPT = """You are the Reviewer of the Ternion Council.
 You are the final gatekeeper.
 

@@ -1,5 +1,8 @@
-from __future__ import annotations
+"""
+Tests for tool calls retry mechanics.
+"""
 
+from __future__ import annotations
 from collections.abc import AsyncIterator
 
 import pytest

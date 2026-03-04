@@ -132,10 +132,8 @@ def create_workflow(*, entry_point: str = "evidence") -> CompiledStateGraph:
             f"Invalid workflow entry point: {entry_point!r}. Must be one of: {sorted(valid_entry_points)}"
         )
 
-    # Create the graph
     workflow = StateGraph(TernionState)
 
-    # Add nodes for each step
     workflow.add_node("evidence", evidence_node)
     workflow.add_node("divergence", divergence_node)
     workflow.add_node("report_evidence", report_evidence_node)
@@ -143,10 +141,8 @@ def create_workflow(*, entry_point: str = "evidence") -> CompiledStateGraph:
     workflow.add_node("execution", execution_node)
     workflow.add_node("optimizer", optimizer_node)
 
-    # Set entry point
     workflow.set_entry_point(entry_point)
 
-    # Add edges
     workflow.add_conditional_edges(
         "evidence",
         should_continue_after_evidence,

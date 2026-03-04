@@ -16,27 +16,49 @@ import type { Translations } from '../i18n';
 import reasoningIconLight from '../assets/icons/reasoning_light_mode_50dp.svg';
 import reasoningIconDark from '../assets/icons/reasoning_dark_mode_50dp.svg';
 
+/**
+ * Props for the ExecutionModeSelector component.
+ */
 interface ExecutionModeSelectorProps {
+  /** The current global configuration object, containing the saved execution mode. */
   config: Config | null;
+  /** Callback fired when the configuration is successfully updated on the server. */
   onConfigUpdate: (config: Config) => void;
+  /** Optional callback to log messages (e.g., user selections) to the UI or parent component. */
   onLogMessage?: (message: string) => void;
+  /** Translation function/object for localized strings. */
   t: Translations;
+  /** Whether the application is currently in dark mode. */
   isDarkMode: boolean;
 }
 
 type ExecutionMode = 'cursor_handoff' | 'ternion_full' | '';
 
+/**
+ * Props for the individual ModeCard child component.
+ */
 interface ModeCardProps {
+  /** The title of the execution mode card. */
   title: string;
+  /** An optional subtitle or badge text (e.g., 'Recommended'). */
   subtitle?: string;
+  /** A list of advantages for this mode. */
   pros: string[];
+  /** A list of disadvantages for this mode. */
   cons: string[];
+  /** Localized label for the 'pros' section. */
   prosLabel: string;
+  /** Localized label for the 'cons' section. */
   consLabel: string;
+  /** True if this card represents the currently clicked/pending selection. */
   isSelected: boolean;
+  /** True if this card represents the mode saved in backend configuration. */
   isSaved: boolean;
+  /** True if the user has selected a mode but hasn't saved it to the backend yet. */
   isPendingSave: boolean;
+  /** Callback fired when the card is clicked. */
   onClick: () => void;
+  /** Whether the application is currently in dark mode. */
   isDarkMode: boolean;
 }
 

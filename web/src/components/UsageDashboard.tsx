@@ -24,9 +24,15 @@ import api from '../api/client';
 import type { UsageData, Config } from '../api/client';
 import type { Translations } from '../i18n';
 
+/**
+ * Props for the UsageDashboard component.
+ */
 interface UsageDashboardProps {
+  /** Translation function/object for localized strings. */
   t: Translations;
+  /** Whether the application is currently in dark mode. */
   isDarkMode?: boolean;
+  /** Optional callback fired when budget configuration is updated from within the dashboard. */
   onConfigUpdate?: (config: Config) => void;
 }
 

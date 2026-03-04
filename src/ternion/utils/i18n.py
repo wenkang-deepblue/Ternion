@@ -13,6 +13,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, cast
 
+# When adding a language, update this Literal AND the checks in
+# _load_translations() and get_user_language().
 Language = Literal["en", "zh", "es", "fr", "de", "ja", "ko"]
 
 _TRANSLATIONS_PATH = Path(__file__).with_name("i18n_translations.json")

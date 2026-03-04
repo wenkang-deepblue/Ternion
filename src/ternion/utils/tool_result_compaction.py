@@ -32,6 +32,7 @@ class ToolResultCompactionConfig:
 
 
 _NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
+# Regexes to detect code definitions (functions, classes, etc.) for index generation.
 _DEF_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^\s*def\s+([A-Za-z_]\w*)\s*\("), "def"),
     (re.compile(r"^\s*class\s+([A-Za-z_]\w*)\b"), "class"),

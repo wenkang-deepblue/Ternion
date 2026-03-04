@@ -46,12 +46,10 @@ class AnthropicProvider(BaseProvider):
 
     @property
     def name(self) -> str:
-        """Return provider name."""
         return "anthropic"
 
     @property
     def default_model(self) -> str:
-        """Return default model."""
         return self._default_model
 
     async def chat_completion(
@@ -93,7 +91,6 @@ class AnthropicProvider(BaseProvider):
             **kwargs,
         )
 
-        # Extract text from response content and estimate thinking tokens
         content = ""
         thinking_text = ""
         for block in response.content:
@@ -105,12 +102,12 @@ class AnthropicProvider(BaseProvider):
             elif hasattr(block, "text"):
                 content += block.text
 
-        # Extract token counts
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
         total_tokens = input_tokens + output_tokens
 
-        # Estimate thinking tokens (4 chars = 1 token, included in output_tokens)
+        # Anthropic does not report thinking tokens separately; estimate from UTF-8 byte length
+        # (4 bytes/token heuristic). This count is already subsumed in output_tokens.
         thinking_tokens = len(thinking_text.encode("utf-8")) // 4 if thinking_text else 0
 
         logger.info(
@@ -122,7 +119,6 @@ class AnthropicProvider(BaseProvider):
             total_tokens=total_tokens,
         )
 
-        # Emit to UI log panel
         log_manager.emit_token_usage(
             provider="anthropic",
             model=model,
@@ -196,14 +192,12 @@ class AnthropicProvider(BaseProvider):
                 received_text += text
                 yield text
 
-            # Get final message for token usage
             final_message = await stream.get_final_message()
             if final_message and final_message.usage:
                 input_tokens = final_message.usage.input_tokens
                 output_tokens = final_message.usage.output_tokens
                 total_tokens = input_tokens + output_tokens
 
-                # Estimate thinking tokens from content blocks
                 thinking_tokens = 0
                 if final_message.content:
                     for block in final_message.content:
@@ -232,7 +226,6 @@ class AnthropicProvider(BaseProvider):
                     total_tokens=total_tokens,
                 )
 
-                # Record usage for cost tracking
                 budget_manager.record_usage(
                     provider="anthropic",
                     model=model,
@@ -242,7 +235,7 @@ class AnthropicProvider(BaseProvider):
                     context_length=total_tokens,
                 )
             elif received_text:
-                # Fallback: estimate tokens from received content
+                # Usage metadata unavailable; estimate token count from received text length as fallback.
                 from ternion.utils.token_estimator import estimate_tokens_from_text
 
                 estimated_output = estimate_tokens_from_text(received_text)
@@ -260,7 +253,6 @@ class AnthropicProvider(BaseProvider):
                     estimated_remaining=0,
                     estimated_total=estimated_output,
                 )
-                # Record estimated usage for interrupted streams
                 budget_manager.record_usage(
                     provider="anthropic",
                     model=model,
@@ -280,7 +272,6 @@ class AnthropicProvider(BaseProvider):
             return False
 
         try:
-            # Make a minimal API call to check availability
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     "https://api.anthropic.com/v1/models",
@@ -312,13 +303,11 @@ class AnthropicProvider(BaseProvider):
         result = []
 
         for msg in messages:
-            # Extract system prompt
             if msg.role == MessageRole.SYSTEM:
                 if isinstance(msg.content, str):
                     system_prompt = msg.content
                 continue
 
-            # Convert role names
             role = "user" if msg.role == MessageRole.USER else "assistant"
 
             if isinstance(msg.content, str):
@@ -329,7 +318,6 @@ class AnthropicProvider(BaseProvider):
                     }
                 )
             elif isinstance(msg.content, list):
-                # Multimodal content
                 content_parts = []
                 for part in msg.content:
                     if isinstance(part, TextContent):
@@ -340,7 +328,6 @@ class AnthropicProvider(BaseProvider):
                             }
                         )
                     elif isinstance(part, ImageContent):
-                        # Anthropic requires base64 image data
                         image_data = self._extract_image_data(part.image_url.url)
                         if image_data:
                             content_parts.append(
@@ -393,7 +380,6 @@ class AnthropicProvider(BaseProvider):
             except Exception:
                 return None
         else:
-            # For URLs, we would need to fetch the image
-            # This is not implemented to avoid synchronous HTTP calls
+            # Remote URL fetching is intentionally unsupported; only data URIs are accepted.
             logger.warning("image_url_not_supported", url=url[:50])
             return None

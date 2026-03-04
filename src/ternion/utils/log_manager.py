@@ -27,6 +27,9 @@ class LogManager:
         Note: Messages are automatically sanitized to redact API keys and
         other secrets before being stored or broadcast.
 
+        This class is designed for single-event-loop use (asyncio).
+        Concurrent access from multiple threads is not supported.
+
         Args:
             level: Log level (INFO, WARN, ERROR, DEBUG)
             category: Log category (SYSTEM, LLM, USER_ACTION, TOKEN_USAGE)
@@ -122,6 +125,5 @@ class LogManager:
         return list(self._history)
 
 
-# Singleton instance
 _DEFAULT_MAX_HISTORY = int(os.environ.get("TERNION_LOG_MAX_HISTORY", "500"))
 log_manager = LogManager(max_history=_DEFAULT_MAX_HISTORY)

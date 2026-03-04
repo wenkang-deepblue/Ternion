@@ -178,7 +178,7 @@ class BudgetManager:
 
     def _get_current_month(self) -> str:
         """Get current month in YYYY-MM format."""
-        # In test mode, use the month from the test data
+        # Anchor month to test fixture date for deterministic results
         if self._test_mode and self._store and self._store.today:
             return self._store.today[:7]
         return datetime.now().strftime("%Y-%m")
@@ -347,7 +347,19 @@ class BudgetManager:
         context_length: int,
         audio_input_tokens: int,
     ) -> float:
-        """Calculate cost for Gemini models with tiered pricing."""
+        """
+        Calculate cost for Gemini models with tiered pricing.
+
+        Args:
+            model: Gemini model ID.
+            input_tokens: Number of text/image input tokens.
+            output_tokens: Number of output tokens.
+            context_length: Total context length for Pro-tier selection.
+            audio_input_tokens: Audio tokens for Flash/Flash-Lite media pricing.
+
+        Returns:
+            Estimated cost in USD.
+        """
         pricing = GEMINI_PRICING[model]
 
         if model == "gemini-3-pro-preview":
@@ -497,7 +509,6 @@ class BudgetManager:
 
         total_cost = input_cost + output_cost + thoughts_cost
 
-        # Create usage entry
         entry = {
             "timestamp": datetime.now().isoformat(),
             "provider": provider,
@@ -548,7 +559,12 @@ class BudgetManager:
         )
 
     def get_usage_summary(self) -> dict[str, Any]:
-        """Get current usage summary for UI dashboard."""
+        """
+        Get current usage summary for UI dashboard.
+
+        Returns:
+            Dictionary containing current month usage, costs, and limits.
+        """
         if self._store is None:
             self._load_usage()
 

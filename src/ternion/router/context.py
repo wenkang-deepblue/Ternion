@@ -17,10 +17,10 @@ if TYPE_CHECKING:
 class DiscussionPhase(Enum):
     """Current phase of the discussion workflow."""
 
-    DIVERGENCE = auto()  # Parallel root cause analysis
-    CONVERGENCE = auto()  # Arbiter synthesis
-    EXECUTION = auto()  # Writer generates code
-    FINAL_CHECK = auto()  # Optimizer: applies targeted improvements to meet acceptance criteria
+    DIVERGENCE = auto()  # Phase 1: Independent root cause analysis (3 council members)
+    CONVERGENCE = auto()  # Phase 2: Arbiter synthesizes analyses into a plan
+    EXECUTION = auto()  # Phase 3: Writer generates the implementation
+    FINAL_CHECK = auto()  # Phase 4: Optimizer applies targeted improvements (Reviewer path inactive)
 
 
 ExecutionMode = Literal["ternion_full", "cursor_handoff", ""]
@@ -36,15 +36,17 @@ class TernionContext:
     original Cursor system prompt for final output formatting.
     """
 
-    # The original Cursor system prompt (e.g., "Output in DIFF format...")
-    # Stored for restoration during the EXECUTION phase
+    # The original Cursor system prompt (e.g., "Output in DIFF format...").
+    # Stored here for injection into the message list during the EXECUTION phase
+    # by the workflow layer (see workflow/nodes.py).
     cursor_system_prompt: ChatMessage | None = None
 
     # Conversation history (user messages, assistant responses, etc.)
     # This excludes the system prompt
     conversation_history: list[ChatMessage] = field(default_factory=list)
 
-    # Extracted metadata (optional, for future use)
+    # Reserved for request-level metadata (e.g., client_version, request_id).
+    # Currently unpopulated; to be filled by the API handler layer in a future iteration.
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # Flag indicating if multimodal content is present
@@ -55,13 +57,19 @@ class TernionContext:
     cursor_tool_choice: Any | None = None
 
     # Session management (Human-in-the-Loop)
-    session_id: str = ""  # Existing session ID for follow-up requests
-    await_confirmation: bool = True  # If True, stop after convergence for confirmation
+    # Populated by the API handler from the request payload.
+    # Empty string indicates a new session (no prior context).
+    session_id: str = ""
+    # If True, workflow pauses after CONVERGENCE and returns to caller for user confirmation.
+    # Set to False for fully automated (non-interactive) runs.
+    await_confirmation: bool = True
     # Execution mode is intentionally empty by default. Must be explicitly configured in Web UI.
     execution_mode: ExecutionMode = ""
-    rejection_context: str = ""  # User's rejection feedback for re-analysis
+    # Populated when the user rejects the convergence report.
+    # Contains the user's free-text feedback for the re-analysis cycle.
+    rejection_context: str = ""
 
-    # Streaming event queue (internal, for real-time output forwarding)
+    # Injected post-construction by the streaming layer; not part of the public interface.
     _stream_queue: "StreamEventQueue | None" = field(default=None, init=False, repr=False)
 
     @property

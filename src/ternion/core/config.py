@@ -60,14 +60,10 @@ class RolesSettings(BaseSettings):
 
 
 class DiscussionSettings(BaseSettings):
-    """
-    Discussion flow configuration.
+    """Discussion flow configuration. All timeout values are in seconds."""
 
-    Note: All timeout values are in seconds.
-    """
-
-    timeout_seconds: int = 600  # seconds
-    writer_timeout_seconds: int = 600  # seconds
+    timeout_seconds: int = 600
+    writer_timeout_seconds: int = 600
     max_revision_rounds: int = 2
     roles: RolesSettings = Field(default_factory=RolesSettings)
 
@@ -112,7 +108,6 @@ class Settings(BaseSettings):
         with open(path) as f:
             data = yaml.safe_load(f) or {}
 
-        # Expand environment variables in the config
         data = cls._expand_env_vars(data)
         return cls.model_validate(data)
 
@@ -145,15 +140,12 @@ def get_settings() -> Settings:
     if config_path:
         return Settings.from_yaml(Path(config_path))
 
-    # Load from environment and defaults
     settings = Settings()
 
-    # Override provider API keys from environment
     settings.providers.openai.api_key = os.environ.get("OPENAI_API_KEY", "")
     settings.providers.anthropic.api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     settings.providers.google.api_key = os.environ.get("GOOGLE_API_KEY", "")
 
-    # Override server settings from environment
     if port := os.environ.get("TERNION_PORT"):
         settings.server.port = int(port)
     if log_level := os.environ.get("TERNION_LOG_LEVEL"):

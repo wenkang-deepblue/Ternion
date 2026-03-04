@@ -55,17 +55,14 @@ class GoogleProvider(BaseProvider):
                 "Google provider optional dependency missing. "
                 "Please install the Google GenAI SDK (google-genai) to use Gemini."
             )
-        # Initialize the unified client
         self._client = genai.Client(api_key=api_key)
 
     @property
     def name(self) -> str:
-        """Return provider name."""
         return "google"
 
     @property
     def default_model(self) -> str:
-        """Return default model."""
         return self._default_model
 
     async def chat_completion(
@@ -98,28 +95,25 @@ class GoogleProvider(BaseProvider):
             message_count=len(messages),
         )
 
-        # Create config
         config = types.GenerateContentConfig(
             system_instruction=system_instruction if system_instruction else None,
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
 
-        # Generate response using new SDK async method
         response = await self._client.aio.models.generate_content(
             model=model_name,
             contents=contents,
             config=config,
         )
 
-        # Extract token counts
-        # Usage metadata fields are optional; default to 0 when missing.
         usage_metadata = response.usage_metadata
         prompt_tokens = (usage_metadata.prompt_token_count or 0) if usage_metadata else 0
         candidates_tokens = (usage_metadata.candidates_token_count or 0) if usage_metadata else 0
-        # Some models may provide thought-token usage; treat it as optional.
+
         thoughts_tokens = 0
         if usage_metadata:
+            # thoughts_token_count is model-dependent; absent on standard models.
             thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
 
         total_tokens = (usage_metadata.total_token_count or 0) if usage_metadata else 0
@@ -134,7 +128,6 @@ class GoogleProvider(BaseProvider):
             total_tokens=total_tokens,
         )
 
-        # Emit to UI log panel
         log_manager.emit_token_usage(
             provider="google",
             model=model_name,
@@ -197,14 +190,12 @@ class GoogleProvider(BaseProvider):
             message_count=len(messages),
         )
 
-        # Create config
         config = types.GenerateContentConfig(
             system_instruction=system_instruction if system_instruction else None,
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
 
-        # Generate streaming response
         response_stream = await self._client.aio.models.generate_content_stream(
             model=model_name,
             contents=contents,
@@ -220,7 +211,7 @@ class GoogleProvider(BaseProvider):
                 received_text += chunk.text
                 yield chunk.text
 
-        # Log token usage from the final chunk
+        # Google SDK only populates usage_metadata on the final streaming chunk; track last_chunk to capture it.
         if last_chunk and hasattr(last_chunk, "usage_metadata") and last_chunk.usage_metadata:
             usage_metadata = last_chunk.usage_metadata
             prompt_tokens = (usage_metadata.prompt_token_count or 0) if usage_metadata else 0
@@ -240,7 +231,6 @@ class GoogleProvider(BaseProvider):
                 total_tokens=total_tokens,
             )
 
-            # Emit to UI log panel
             log_manager.emit_token_usage(
                 provider="google",
                 model=model_name,
@@ -250,7 +240,6 @@ class GoogleProvider(BaseProvider):
                 total_tokens=total_tokens,
             )
 
-            # Record usage for cost tracking
             budget_manager.record_usage(
                 provider="google",
                 model=model_name,
@@ -274,7 +263,6 @@ class GoogleProvider(BaseProvider):
                 estimated_remaining=0,
                 estimated_total=estimated_output,
             )
-            # Record estimated usage for interrupted streams
             budget_manager.record_usage(
                 provider="google",
                 model=model_name,
@@ -294,8 +282,8 @@ class GoogleProvider(BaseProvider):
             return False
 
         try:
-            # List models to check availability using new SDK
-            # returns a specific iterable object, need to check if empty
+            # google-genai v1.0 returns an async pager, not a direct awaitable;
+            # pull the first item to confirm reachability without exhausting the page.
             pager = await self._client.aio.models.list()
             aiter = pager.__aiter__()
             try:
@@ -313,11 +301,11 @@ class GoogleProvider(BaseProvider):
 
     def _convert_messages(self, messages: list[ChatMessage]) -> tuple[str, list[dict[str, Any]]]:
         """
-        Convert ChatMessage objects to Google Gemini format (new SDK).
+        Convert ChatMessage objects to Google Gemini format.
 
-        New SDK Format:
-        - contents: List[types.Content] or List[dict]
-        - Each dict: {"role": "user"|"model", "parts": [...]}
+        System messages are extracted into a separate instruction string; the Gemini API
+        does not accept them inline in contents. TOOL-role messages are mapped to "model"
+        with a warning, as native tool calling is not supported by this provider.
 
         Args:
             messages: List of ChatMessage objects
@@ -329,15 +317,11 @@ class GoogleProvider(BaseProvider):
         contents = []
 
         for msg in messages:
-            # Extract system instruction
             if msg.role == MessageRole.SYSTEM:
                 if isinstance(msg.content, str):
                     system_instruction = msg.content
                 continue
 
-            # Convert role names
-            # 'user' -> 'user'
-            # 'assistant' -> 'model'
             if msg.role == MessageRole.TOOL:
                 logger.warning(
                     "google_tool_role_mapped_to_model",
@@ -364,10 +348,9 @@ class GoogleProvider(BaseProvider):
             content: Message content (string or list of content parts)
 
         Returns:
-            List of parts (dicts or strings)
+            List of part dicts in Gemini API format
         """
         if isinstance(content, str):
-            # Text part
             return [{"text": content}]
 
         if isinstance(content, list):

@@ -53,7 +53,9 @@ def sanitize_for_cursor_display(text: str) -> str:
 
     out = text
 
-    # Break code fence triggers without emitting ASCII fence characters.
+    # Fullwidth backticks/tildes preserve visual readability while being
+    # distinct Unicode codepoints that Cursor's parser does not recognize
+    # as fence delimiters.
     out = out.replace("```", FULLWIDTH_BACKTICK * 3)
     out = out.replace("~~~", FULLWIDTH_TILDE * 3)
 

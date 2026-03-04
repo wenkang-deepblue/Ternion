@@ -17,10 +17,17 @@ import infoIcon from '../assets/icons/information.svg';
 import { ToastContext } from './toastContext';
 import type { ToastType } from './toastContext';
 
+/**
+ * Internal state representation of a single toast notification.
+ */
 interface Toast {
+  /** Unique identifier for the toast. */
   id: number;
+  /** The message text to display. */
   message: string;
+  /** The visual type of the toast. */
   type: ToastType;
+  /** True if the toast is currently animating out before removal. */
   exiting: boolean;
 }
 

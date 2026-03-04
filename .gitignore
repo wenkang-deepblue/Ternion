@@ -134,5 +134,4 @@ reviewer*.py
 *aud*.*
 
 # Development-only testing tools (not for open source)
-scripts/*e2e*.*
-validate_i18n.py
+scripts/

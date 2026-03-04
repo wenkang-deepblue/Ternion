@@ -17,16 +17,29 @@ import api from '../api/client';
 import logIconLight from '../assets/icons/realtime_log_light_mode_dp50.svg';
 import logIconDark from '../assets/icons/realtime_log_dark_mode_dp50.svg';
 
+/**
+ * Represents a single log entry received from the backend SSE stream.
+ */
 interface LogEntry {
+  /** ISO 8601 timestamp string representing when the log was generated. */
   timestamp: string;
+  /** The severity level of the log. */
   level: 'INFO' | 'WARN' | 'ERROR';
+  /** The system category that originated the log. */
   category: 'LIFECYCLE' | 'WORKFLOW' | 'PROVIDER' | 'USER_ACTION' | 'ERROR';
+  /** The actual log message content. */
   message: string;
 }
 
+/**
+ * Props for the ObservabilityPanel component.
+ */
 interface ObservabilityPanelProps {
+  /** Translation function/object for localized strings. */
   t: Translations;
+  /** Whether the application is currently in dark mode. */
   isDarkMode: boolean;
+  /** Controls component visibility and SSE stream connection state. */
   isVisible?: boolean;
 }
 

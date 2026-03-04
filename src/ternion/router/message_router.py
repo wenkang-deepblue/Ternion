@@ -4,8 +4,8 @@ Message Router - Context Extraction Layer.
 Handles message decomposition from the Cursor request.
 Extracts system prompt and conversation history for use by workflow nodes.
 
-Note: Message assembly (phase-specific prompt injection) is handled by
-workflow/nodes.py, which is the authoritative implementation.
+Note: Phase-specific message assembly (prompt injection) is out of scope
+for this module; see the workflow layer.
 """
 
 import structlog
@@ -29,8 +29,6 @@ class MessageRouter:
     1. Extract and store Cursor's system prompt
     2. Extract conversation history
     3. Detect multimodal content (images)
-
-    Note: Phase-specific message assembly is handled by workflow nodes.
     """
 
     def extract_context(self, messages: list[ChatMessage]) -> TernionContext:
@@ -56,7 +54,8 @@ class MessageRouter:
         has_images = False
 
         for i, msg in enumerate(messages):
-            # Position-0 system message is assumed to be the Cursor system prompt
+            # Position-0 system message is assumed to be the Cursor system prompt.
+            # Any SYSTEM message at position > 0 will be treated as conversation history.
             if i == 0 and msg.role == MessageRole.SYSTEM:
                 cursor_system_prompt = msg
                 logger.debug(
@@ -93,7 +92,8 @@ class MessageRouter:
             return False
         if isinstance(content, list):
             return any(isinstance(item, ImageContent) for item in content)
-        # Fallback for unexpected content types; new types should be handled explicitly.
+        # Fallback for unrecognized content types. Returns False (no images assumed).
+        # To support a new content type, add an explicit branch above (before this fallback).
         return False
 
     def _get_content_preview(self, content: MessageContent | None, max_length: int = 50) -> str:

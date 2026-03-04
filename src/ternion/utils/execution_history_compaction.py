@@ -18,9 +18,9 @@ class ExecutionHistoryCompactionConfig:
     """Configuration for execution history compaction."""
 
     # Prefer retaining more recent raw history to reduce repeated reads in long tool loops.
-    max_history_chars: int = 160_000
+    max_history_chars: int = 160_000  # ~40K tokens at ~4 chars/token
     max_tail_messages: int = 80
-    max_digest_chars: int = 500_000
+    max_digest_chars: int = 500_000  # ~125K tokens at ~4 chars/token
     max_args_chars: int = 600
     # Keep more tool-result detail in the digest so the Writer can avoid repeating reads
     # after history truncation.

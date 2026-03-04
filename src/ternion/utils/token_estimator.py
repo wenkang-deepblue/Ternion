@@ -5,10 +5,10 @@ Provides fallback token estimation when API responses are interrupted
 or when exact token counts are unavailable.
 """
 
-# Estimation ratios based on typical LLM behavior
-OUTPUT_RATIO = 1.5  # Expected visible output ≈ 1.5x input
-THOUGHTS_RATIO = 1.0  # Thinking tokens ≈ 1x input (for thinking models)
-CHARS_PER_TOKEN = 4  # UTF-8 characters per token (Google's approximation)
+# Rough heuristic ratios for fallback estimation (not empirically validated).
+OUTPUT_RATIO = 1.5
+THOUGHTS_RATIO = 1.0
+CHARS_PER_TOKEN = 4  # Approximate; English-centric, CJK text may differ significantly.
 
 
 def estimate_tokens_from_text(text: str) -> int:

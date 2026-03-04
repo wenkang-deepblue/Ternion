@@ -33,12 +33,21 @@ import ternionAIcon from '../assets/icons/ternion_a.svg';
 import ternionBIcon from '../assets/icons/ternion_b.svg';
 import ternionCIcon from '../assets/icons/ternion_c.svg';
 
+/**
+ * Props for the RoleModelConfig component.
+ */
 interface RoleModelConfigProps {
+  /** The current global configuration object, containing role settings. */
   config: Config | null;
+  /** Callback fired when the configuration is successfully updated on the server. */
   onConfigUpdate: (config: Config) => void;
+  /** Translation function/object for localized strings. */
   t: Translations;
+  /** Whether the application is currently in dark mode. */
   isDarkMode: boolean;
+  /** The currently active execution mode to determine if some roles should be disabled. */
   executionMode?: string;
+  /** The currently selected language code. */
   language: Language;
 }
 

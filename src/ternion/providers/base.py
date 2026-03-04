@@ -29,7 +29,7 @@ class ProviderResponse:
 
     @property
     def is_complete(self) -> bool:
-        """Check if response is complete."""
+        """True when the provider has issued a finish_reason, indicating no further chunks will follow."""
         return self.finish_reason is not None
 
 
@@ -57,13 +57,13 @@ class BaseProvider(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Return the provider name (e.g., 'openai', 'anthropic', 'google')."""
+        """Provider identifier; must match the key used in config_store and ProviderManager._providers."""
         ...
 
     @property
     @abstractmethod
     def default_model(self) -> str:
-        """Return the default model for this provider."""
+        """Fallback model used when no model is specified in chat_completion calls."""
         ...
 
     @property
@@ -156,7 +156,7 @@ class BaseProvider(ABC):
             messages: List of ChatMessage objects
 
         Returns:
-            Provider-specific message format
+            Provider-specific message format; structure varies by subclass.
         """
         result = []
         for msg in messages:
@@ -168,7 +168,6 @@ class BaseProvider(ABC):
                     }
                 )
             elif isinstance(msg.content, list):
-                # Multimodal content passthrough; subclasses must override for provider-specific encoding.
                 result.append(
                     {
                         "role": msg.role.value,

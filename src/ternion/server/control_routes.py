@@ -815,7 +815,8 @@ async def reveal_file(request: RevealFileRequest) -> dict:
     """
     Reveal a file in the system file manager (Finder on macOS, Explorer on Windows).
 
-    Security: Only paths within ~/.ternion/ are allowed (CR-029).
+    Security: Path traversal prevention — only paths within ~/.ternion/ are
+    allowed to avoid arbitrary file system access via the web panel.
     """
     import os
     import platform

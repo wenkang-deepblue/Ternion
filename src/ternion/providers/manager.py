@@ -38,20 +38,14 @@ class ProviderManager:
     """
 
     def __init__(self) -> None:
-        """Initialize provider manager with configured providers."""
         self._providers: dict[str, BaseProvider] = {}
         self._initialize_providers()
 
     def _initialize_providers(self) -> None:
-        """
-        Initialize all configured providers.
-
-        Loads providers configured via Web Control Panel (config_store).
-        """
+        """Instantiates provider adapters from config_store; skips unconfigured providers silently."""
         self._providers.clear()
 
         for name in ("openai", "anthropic", "google"):
-            # Use Web Control Panel configuration
             api_key = config_store.get_provider_api_key(name)
             if api_key:
                 self._create_provider(name, api_key)
@@ -122,7 +116,6 @@ class ProviderManager:
         Raises:
             AllProvidersUnavailable: If no providers are available for the role
         """
-        # Require explicit Web Control Panel configuration
         role_cfg = config_store.get_role_config(role)
 
         if not role_cfg or not role_cfg.provider:
@@ -137,7 +130,6 @@ class ProviderManager:
             )
             return provider
 
-        # Provider configured but not available (API key not set)
         raise AllProvidersUnavailable(
             t(
                 MessageKey.PROVIDER_UNAVAILABLE,
@@ -180,7 +172,6 @@ class ProviderManager:
         if not provider:
             raise ValueError(f"Provider not configured: {provider_name}")
 
-        # Use provided timeout or fall back to config default
         timeout = timeout_seconds or settings.discussion.timeout_seconds
 
         try:
@@ -276,14 +267,14 @@ class ProviderManager:
 
     @property
     def available_providers(self) -> list[str]:
-        """List of configured provider names."""
+        """Names of all providers that have been successfully initialized."""
         return list(self._providers.keys())
 
     @property
     def has_providers(self) -> bool:
-        """Check if any providers are configured."""
+        """True if at least one provider is initialized and ready to serve requests."""
         return len(self._providers) > 0
 
 
-# Global provider manager instance
+# Singleton shared across all request handlers; reload() must be called after config changes.
 provider_manager = ProviderManager()

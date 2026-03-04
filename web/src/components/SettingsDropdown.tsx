@@ -29,12 +29,21 @@ import computerIconDark from '../assets/icons/computer_dark_mode_50dp.svg';
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type LanguageMode = 'auto' | 'en' | 'zh' | 'es' | 'fr' | 'de' | 'ja' | 'ko';
 
+/**
+ * Props for the SettingsDropdown component.
+ */
 interface SettingsDropdownProps {
+  /** Translation function/object for localized strings. */
   t: Translations;
+  /** The currently selected theme mode. */
   theme: ThemeMode;
+  /** The currently selected language mode. */
   language: LanguageMode;
+  /** Whether the application is currently in dark mode. */
   isDarkMode: boolean;
+  /** Callback fired when the user selects a new theme. */
   onThemeChange: (theme: ThemeMode) => void;
+  /** Callback fired when the user selects a new language. */
   onLanguageChange: (language: LanguageMode) => void;
 }
 

@@ -8,8 +8,13 @@
 import type { Config } from '../api/client';
 import type { Translations } from '../i18n';
 
+/**
+ * Props for the StatusBar component.
+ */
 interface StatusBarProps {
+  /** The current global configuration object. */
   config: Config | null;
+  /** Translation function/object for localized strings. */
   t: Translations;
 }
 
@@ -37,9 +42,15 @@ const EXEC_MODE_DISPLAY: Record<string, (t: Translations) => string> = {
   ternion_full: (t) => t.execModeTernionTitle,
 };
 
+/**
+ * Props for individual status indicator item.
+ */
 interface StatusItemProps {
+  /** True if the configuration step is complete. */
   isComplete: boolean;
+  /** Text to display when the step is not complete. */
   pendingText: string;
+  /** Text to display when the step is complete. */
   completeText: string;
 }
 
