@@ -11,7 +11,6 @@ from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
-from pydantic.config import ConfigDict
 
 # ============================================================================
 # Message Content Types (for multimodal support)
@@ -43,16 +42,6 @@ class ImageContent(BaseModel):
 MessageContent = str | list[TextContent | ImageContent]
 
 
-class ToolCall(BaseModel):
-    """A permissive tool call model for OpenAI-compatible payloads."""
-
-    model_config = ConfigDict(extra="allow")
-
-    id: str | None = None
-    type: str | None = None
-    function: dict[str, Any] | None = None
-
-
 # ============================================================================
 # Chat Messages
 # ============================================================================
@@ -73,28 +62,8 @@ class ChatMessage(BaseModel):
     role: MessageRole
     content: MessageContent | None = None
     name: str | None = None
-    tool_calls: list[ToolCall] | None = None
+    tool_calls: list[Any] | None = None
     tool_call_id: str | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_tool_calls(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        tool_calls = data.get("tool_calls")
-        if tool_calls is None:
-            return data
-        if not isinstance(tool_calls, list):
-            data["tool_calls"] = [{"raw": tool_calls}]
-            return data
-        coerced: list[dict[str, Any]] = []
-        for item in tool_calls:
-            if isinstance(item, dict):
-                coerced.append(item)
-            else:
-                coerced.append({"raw": item})
-        data["tool_calls"] = coerced
-        return data
 
 
 # ============================================================================
@@ -270,27 +239,7 @@ class ChoiceDelta(BaseModel):
 
     role: str | None = None
     content: str | None = None
-    tool_calls: list[ToolCall] | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_tool_calls(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        tool_calls = data.get("tool_calls")
-        if tool_calls is None:
-            return data
-        if not isinstance(tool_calls, list):
-            data["tool_calls"] = [{"raw": tool_calls}]
-            return data
-        coerced: list[dict[str, Any]] = []
-        for item in tool_calls:
-            if isinstance(item, dict):
-                coerced.append(item)
-            else:
-                coerced.append({"raw": item})
-        data["tool_calls"] = coerced
-        return data
+    tool_calls: list[Any] | None = None
 
 
 class StreamChoice(BaseModel):
