@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from ternion.core.model_catalog import LiteLLMModelCatalogService
+import ternion.core.model_catalog as model_catalog_module
+from ternion.core.model_catalog import CatalogSnapshot, LiteLLMModelCatalogService
 
 
 @pytest.fixture
@@ -30,7 +31,25 @@ def sample_catalog_payload() -> dict[str, dict[str, object]]:
             "input_cost_per_token": 0.00175,
             "output_cost_per_token": 0.014,
         },
+        "gpt-codex-5.8": {
+            "litellm_provider": "openai",
+            "mode": "completion",
+            "input_cost_per_token": 0.00195,
+            "output_cost_per_token": 0.015,
+        },
         "gpt-4.1": {
+            "litellm_provider": "openai",
+            "mode": "chat",
+        },
+        "gpt-5-search-api": {
+            "litellm_provider": "openai",
+            "mode": "completion",
+        },
+        "gpt-5-nano": {
+            "litellm_provider": "openai",
+            "mode": "chat",
+        },
+        "chatgpt-5.4": {
             "litellm_provider": "openai",
             "mode": "chat",
         },
@@ -38,8 +57,14 @@ def sample_catalog_payload() -> dict[str, dict[str, object]]:
             "litellm_provider": "openai",
             "mode": "chat",
         },
+        "gemini-3-pro": {
+            "litellm_provider": "vertex_ai-language-models",
+            "mode": "chat",
+            "input_cost_per_token": 0.0015,
+            "output_cost_per_token": 0.01,
+        },
         "gemini-3.1-pro-preview": {
-            "litellm_provider": "gemini",
+            "litellm_provider": "vertex_ai-language-models",
             "mode": "chat",
             "input_cost_per_token": 0.002,
             "output_cost_per_token": 0.012,
@@ -48,15 +73,15 @@ def sample_catalog_payload() -> dict[str, dict[str, object]]:
             "max_input_tokens": 1048576,
         },
         "gemini-3.1-image-preview": {
-            "litellm_provider": "gemini",
+            "litellm_provider": "vertex_ai-language-models",
             "mode": "chat",
         },
-        "gemini-3.1-customtools": {
-            "litellm_provider": "gemini",
+        "gemini-3.1-robotics-preview": {
+            "litellm_provider": "vertex_ai-language-models",
             "mode": "chat",
         },
         "gemini-2.5-pro-preview": {
-            "litellm_provider": "gemini",
+            "litellm_provider": "vertex_ai-language-models",
             "mode": "chat",
         },
         "claude-sonnet-4-5-20250929": {
@@ -102,11 +127,15 @@ async def test_get_snapshot_filters_models_and_formats_names(
 
     snapshot = await service.get_snapshot()
 
-    assert [model.id for model in snapshot.models_by_provider["openai"]] == [
+    assert {model.id for model in snapshot.models_by_provider["openai"]} == {
         "gpt-5.2-2025-12-11",
         "gpt-5.3-codex",
-    ]
-    assert [model.name for model in snapshot.models_by_provider["google"]] == ["Gemini 3.1 Pro"]
+        "gpt-codex-5.8",
+    }
+    assert {model.name for model in snapshot.models_by_provider["google"]} == {
+        "Gemini 3 Pro",
+        "Gemini 3.1 Pro",
+    }
     assert [model.name for model in snapshot.models_by_provider["anthropic"]] == [
         "Claude Opus 4.1",
         "Claude Sonnet 4.5",
@@ -117,6 +146,7 @@ async def test_get_snapshot_filters_models_and_formats_names(
     assert model.output_cost_per_reasoning_token == pytest.approx(0.02)
     assert model.max_input_tokens is None
 
+    assert await service.is_model_available("google", "gemini-3-pro") is True
     assert await service.is_model_available("google", "gemini-3.1-pro-preview") is True
     assert await service.is_model_available("google", "gemini-2.5-pro-preview") is False
 
@@ -306,7 +336,7 @@ async def test_get_snapshot_falls_back_to_disk_cache_when_refresh_fails(
     snapshot = await failing_service.get_snapshot(force_refresh=True)
 
     assert snapshot.index_by_id == seeded_snapshot.index_by_id
-    assert snapshot.models_by_provider["google"][0].id == "gemini-3.1-pro-preview"
+    assert snapshot.models_by_provider["google"][0].id == "gemini-3-pro"
 
 
 @pytest.mark.asyncio
@@ -420,6 +450,620 @@ async def test_get_models_payload_serializes_models_and_pricing_flags(
     assert set(payload["models"]) == {"openai", "google", "anthropic"}
     assert payload["models"]["google"][0]["pricing_available"] is True
     assert payload["models"]["anthropic"][0]["stale"] is False
+    assert payload["catalog_initialized"] is True
+    assert payload["requires_initialization"] is False
+    assert payload["model_count"] == 7
+    assert payload["catalog_anomaly_detected"] is False
+    assert payload["anomaly_report_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_models_payload_marks_empty_catalog_as_uninitialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty catalogs should require explicit initialization in the UI."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+
+    async def failing_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        raise RuntimeError("no catalog available")
+
+    monkeypatch.setattr(service, "_download_catalog_json", failing_download)
+
+    payload = await service.get_models_payload()
+
+    assert payload["catalog_initialized"] is False
+    assert payload["requires_initialization"] is True
+    assert payload["model_count"] == 0
+    assert payload["catalog_anomaly_detected"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_models_payload_passes_force_refresh_to_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Payload generation should propagate force_refresh to snapshot loading."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+    snapshot = service._build_empty_snapshot()
+    calls: list[bool] = []
+
+    async def fake_get_snapshot(force_refresh: bool = False) -> CatalogSnapshot:
+        calls.append(force_refresh)
+        return snapshot
+
+    monkeypatch.setattr(service, "get_snapshot", fake_get_snapshot)
+
+    payload = await service.get_models_payload(force_refresh=True)
+
+    assert payload["model_count"] == 0
+    assert calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_refresh_snapshot_updates_memory_and_disk_on_success(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit refresh should persist and publish the latest snapshot."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+
+    async def fake_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return sample_catalog_payload, "etag-refresh-success", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", fake_download)
+
+    snapshot = await service.refresh_snapshot()
+
+    assert service.cache_path.exists()
+    assert service._memory_snapshot == snapshot
+    assert snapshot.etag == "etag-refresh-success"
+    assert snapshot.index_by_id["gpt-5.2-2025-12-11"].provider == "openai"
+    assert service.get_anomaly_report() is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_snapshot_updates_memory_when_disk_cache_save_fails(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit refresh should keep the in-memory snapshot even if disk save fails."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+
+    async def fake_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return sample_catalog_payload, "etag-refresh-soft-fail", False
+
+    def failing_save(snapshot: CatalogSnapshot) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service, "_download_catalog_json", fake_download)
+    monkeypatch.setattr(service, "_save_disk_cache", failing_save)
+
+    snapshot = await service.refresh_snapshot()
+
+    assert service._memory_snapshot == snapshot
+    assert snapshot.etag == "etag-refresh-soft-fail"
+    assert not service.cache_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_refresh_snapshot_requires_successful_remote_fetch(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit refresh should raise instead of silently returning empty data."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+
+    async def seed_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        return sample_catalog_payload, "etag-seed", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", seed_download)
+    await service.get_snapshot()
+
+    async def failing_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag == "etag-seed"
+        raise RuntimeError("remote fetch failed")
+
+    monkeypatch.setattr(service, "_download_catalog_json", failing_download)
+
+    with pytest.raises(RuntimeError, match="remote fetch failed"):
+        await service.refresh_snapshot()
+
+
+@pytest.mark.asyncio
+async def test_refresh_snapshot_keeps_last_successful_snapshot_when_provider_becomes_empty(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An anomalous refresh should keep the last successful snapshot active."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+
+    async def seed_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return sample_catalog_payload, "etag-healthy", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", seed_download)
+    healthy_snapshot = await service.refresh_snapshot()
+
+    anomalous_payload = {
+        key: value
+        for key, value in sample_catalog_payload.items()
+        if value.get("litellm_provider") != "anthropic"
+    }
+
+    async def anomalous_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag == "etag-healthy"
+        return anomalous_payload, "etag-anomalous", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", anomalous_download)
+
+    active_snapshot = await service.refresh_snapshot()
+    report = service.get_anomaly_report()
+
+    assert report is not None
+    assert report.used_last_successful_snapshot is True
+    assert "anthropic" in report.triggered_providers
+    assert active_snapshot == healthy_snapshot
+    assert service.get_model_cached("claude-sonnet-4-5-20250929") is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_snapshot_returns_empty_catalog_when_anomaly_has_no_successful_cache(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An anomalous first refresh should expose an empty catalog and save a report."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+    anomalous_payload = {
+        key: value
+        for key, value in sample_catalog_payload.items()
+        if value.get("litellm_provider") != "anthropic"
+    }
+
+    async def anomalous_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return anomalous_payload, "etag-empty", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", anomalous_download)
+
+    snapshot = await service.refresh_snapshot()
+    payload = await service.get_models_payload()
+    report = service.get_anomaly_report()
+
+    assert report is not None
+    assert report.used_last_successful_snapshot is False
+    assert snapshot.index_by_id == {}
+    assert payload["catalog_anomaly_detected"] is True
+    assert payload["catalog_initialized"] is False
+    assert payload["anomaly_report_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_refresh_snapshot_marks_large_provider_drop_as_anomaly(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider drop greater than 80 percent should trigger anomaly reporting."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+
+    seed_payload = dict(sample_catalog_payload)
+    seed_payload["gpt-5.4-pro"] = {
+        "litellm_provider": "openai",
+        "mode": "chat",
+    }
+    seed_payload["gpt-chat-5.6"] = {
+        "litellm_provider": "openai",
+        "mode": "chat",
+    }
+    seed_payload["gpt-5.7-pro"] = {
+        "litellm_provider": "openai",
+        "mode": "chat",
+    }
+
+    async def seed_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return seed_payload, "etag-seed", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", seed_download)
+    await service.refresh_snapshot()
+
+    drop_payload = {
+        key: value
+        for key, value in seed_payload.items()
+        if key
+        not in {"gpt-5.3-codex", "gpt-codex-5.8", "gpt-5.4-pro", "gpt-chat-5.6", "gpt-5.7-pro"}
+    }
+
+    async def drop_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag == "etag-seed"
+        return drop_payload, "etag-drop", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", drop_download)
+
+    await service.refresh_snapshot()
+    report = service.get_anomaly_report()
+
+    assert report is not None
+    assert "openai" in report.triggered_providers
+    assert any("openai: filtered model count dropped" in item for item in report.trigger_conditions)
+
+
+@pytest.mark.asyncio
+async def test_refresh_snapshot_does_not_mark_exact_80_percent_drop_as_anomaly(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider drop of exactly 80 percent should not trigger anomaly reporting."""
+    service = LiteLLMModelCatalogService(
+        cache_path=tmp_path / "catalog.json",
+        anomaly_report_path=tmp_path / "catalog_anomaly.json",
+    )
+
+    seed_payload = dict(sample_catalog_payload)
+    seed_payload["gpt-5.4-pro"] = {
+        "litellm_provider": "openai",
+        "mode": "chat",
+    }
+    seed_payload["gpt-5.6-pro"] = {
+        "litellm_provider": "openai",
+        "mode": "chat",
+    }
+
+    async def seed_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return seed_payload, "etag-seed", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", seed_download)
+    await service.refresh_snapshot()
+
+    drop_payload = {
+        key: value
+        for key, value in seed_payload.items()
+        if key not in {"gpt-5.2-2025-12-11", "gpt-5.4-pro", "gpt-5.6-pro", "gpt-codex-5.8"}
+    }
+
+    async def drop_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag == "etag-seed"
+        return drop_payload, "etag-drop", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", drop_download)
+
+    snapshot = await service.refresh_snapshot()
+
+    assert {model.id for model in snapshot.models_by_provider["openai"]} == {"gpt-5.3-codex"}
+    assert service.get_anomaly_report() is None
+
+
+@pytest.mark.asyncio
+async def test_get_anomaly_report_markdown_includes_counts_and_suspected_models(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The anomaly report Markdown should summarize counts and suspicious removals."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+    anomalous_payload = {
+        key: value
+        for key, value in sample_catalog_payload.items()
+        if key not in {"claude-sonnet-4-5-20250929", "claude-opus-4-1-20250805"}
+    }
+
+    async def anomalous_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        return anomalous_payload, "etag-report", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", anomalous_download)
+
+    await service.refresh_snapshot()
+    report_markdown = service.get_anomaly_report_markdown()
+
+    assert report_markdown is not None
+    assert "# Model Catalog Anomaly Report" in report_markdown
+    assert "## Provider Counts" in report_markdown
+    assert "claude-haiku-4-5-20251001" in report_markdown
+
+
+@pytest.mark.asyncio
+async def test_get_anomaly_report_caches_missing_disk_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing anomaly reports should only hit disk once per service instance."""
+    service = LiteLLMModelCatalogService(
+        cache_path=tmp_path / "catalog.json",
+        anomaly_report_path=tmp_path / "catalog_anomaly.json",
+    )
+    calls = 0
+
+    def fake_load() -> None:
+        nonlocal calls
+        calls += 1
+        return None
+
+    monkeypatch.setattr(service, "_load_anomaly_report", fake_load)
+
+    assert service.get_anomaly_report() is None
+    assert service.get_anomaly_report() is None
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_get_anomaly_report_loads_persisted_report_after_restart(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restarted service should load a persisted anomaly report from disk."""
+    cache_path = tmp_path / "catalog.json"
+    anomaly_report_path = tmp_path / "catalog_anomaly.json"
+    writer_service = LiteLLMModelCatalogService(
+        cache_path=cache_path,
+        anomaly_report_path=anomaly_report_path,
+    )
+    anomalous_payload = {
+        key: value
+        for key, value in sample_catalog_payload.items()
+        if value.get("litellm_provider") != "anthropic"
+    }
+
+    async def anomalous_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return anomalous_payload, "etag-anomalous", False
+
+    monkeypatch.setattr(writer_service, "_download_catalog_json", anomalous_download)
+
+    await writer_service.refresh_snapshot()
+    persisted_report = writer_service.get_anomaly_report()
+
+    restarted_service = LiteLLMModelCatalogService(
+        cache_path=cache_path,
+        anomaly_report_path=anomaly_report_path,
+    )
+
+    loaded_report = restarted_service.get_anomaly_report()
+
+    assert persisted_report is not None
+    assert loaded_report is not None
+    assert loaded_report.summary == persisted_report.summary
+    assert loaded_report.triggered_providers == persisted_report.triggered_providers
+
+
+@pytest.mark.asyncio
+async def test_refresh_snapshot_clears_anomaly_report_after_recovery(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A healthy refresh should clear any previously persisted anomaly report."""
+    service = LiteLLMModelCatalogService(
+        cache_path=tmp_path / "catalog.json",
+        anomaly_report_path=tmp_path / "catalog_anomaly.json",
+    )
+    anomalous_payload = {
+        key: value
+        for key, value in sample_catalog_payload.items()
+        if value.get("litellm_provider") != "anthropic"
+    }
+
+    async def anomalous_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return anomalous_payload, "etag-anomalous", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", anomalous_download)
+    await service.refresh_snapshot()
+
+    assert service.get_anomaly_report() is not None
+    assert service.anomaly_report_path.exists() is True
+
+    async def healthy_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return sample_catalog_payload, "etag-healthy", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", healthy_download)
+    await service.refresh_snapshot()
+
+    assert service.get_anomaly_report() is None
+    assert service.anomaly_report_path.exists() is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_snapshot_keeps_anomaly_report_cleared_when_delete_fails(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed anomaly report delete should not revive stale diagnostics."""
+    service = LiteLLMModelCatalogService(
+        cache_path=tmp_path / "catalog.json",
+        anomaly_report_path=tmp_path / "catalog_anomaly.json",
+    )
+    anomalous_payload = {
+        key: value
+        for key, value in sample_catalog_payload.items()
+        if value.get("litellm_provider") != "anthropic"
+    }
+
+    async def anomalous_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return anomalous_payload, "etag-anomalous", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", anomalous_download)
+    await service.refresh_snapshot()
+    assert service.anomaly_report_path.exists() is True
+
+    original_unlink = model_catalog_module.os.unlink
+
+    def failing_unlink(path: str | bytes | Path) -> None:
+        if Path(path) == service.anomaly_report_path:
+            raise OSError("permission denied")
+        original_unlink(path)
+
+    monkeypatch.setattr(model_catalog_module.os, "unlink", failing_unlink)
+
+    async def healthy_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return sample_catalog_payload, "etag-healthy", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", healthy_download)
+    await service.refresh_snapshot()
+
+    assert service.get_anomaly_report() is None
+    assert service.anomaly_report_path.exists() is True
+
+
+@pytest.mark.asyncio
+async def test_refresh_snapshot_ignores_anomaly_report_save_failures(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refresh should keep anomaly diagnostics in memory when persistence fails."""
+    service = LiteLLMModelCatalogService(
+        cache_path=tmp_path / "catalog.json",
+        anomaly_report_path=tmp_path / "catalog_anomaly.json",
+    )
+    anomalous_payload = {
+        key: value
+        for key, value in sample_catalog_payload.items()
+        if value.get("litellm_provider") != "anthropic"
+    }
+
+    async def anomalous_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return anomalous_payload, "etag-anomalous", False
+
+    def failing_save(report: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service, "_download_catalog_json", anomalous_download)
+    monkeypatch.setattr(service, "_save_anomaly_report", failing_save)
+
+    snapshot = await service.refresh_snapshot()
+    report = service.get_anomaly_report()
+
+    assert snapshot.index_by_id == {}
+    assert report is not None
+    assert report.triggered_providers == ["anthropic"]
+    assert service.anomaly_report_path.exists() is False
+
+
+@pytest.mark.asyncio
+async def test_openai_raw_candidates_exclude_denylisted_models(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenAI raw candidates should skip denylisted variants."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+    payload = dict(sample_catalog_payload)
+    payload["gpt-5.4-mini"] = {
+        "litellm_provider": "openai",
+        "mode": "chat",
+    }
+    payload["gpt-5.4-audio"] = {
+        "litellm_provider": "openai",
+        "mode": "chat",
+    }
+
+    async def fake_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return payload, "etag-openai-raw", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", fake_download)
+
+    snapshot = await service.get_snapshot()
+
+    assert "gpt-5.4-mini" not in snapshot.provider_stats["openai"].raw_candidate_ids
+    assert "gpt-5.4-audio" not in snapshot.provider_stats["openai"].raw_candidate_ids
+
+
+@pytest.mark.asyncio
+async def test_openai_models_require_a_minor_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenAI GPT models should require a minor version to be normalized."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+    payload = {
+        "gpt-5": {
+            "litellm_provider": "openai",
+            "mode": "chat",
+        },
+        "gpt-5.1": {
+            "litellm_provider": "openai",
+            "mode": "chat",
+        },
+        "gemini-3-pro": {
+            "litellm_provider": "vertex_ai-language-models",
+            "mode": "chat",
+        },
+        "claude-sonnet-4-5-20250929": {
+            "litellm_provider": "anthropic",
+            "mode": "chat",
+        },
+    }
+
+    async def fake_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return payload, "etag-openai-version", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", fake_download)
+
+    snapshot = await service.get_snapshot()
+
+    assert {model.id for model in snapshot.models_by_provider["openai"]} == {"gpt-5.1"}
+    assert "gpt-5" not in snapshot.provider_stats["openai"].raw_candidate_ids
 
 
 @pytest.mark.asyncio
@@ -451,10 +1095,18 @@ async def test_legacy_anthropic_model_ids_are_supported(
     """Legacy version-first Anthropic IDs should still be normalized."""
     service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
     payload = {
+        "gpt-5.2-2025-12-11": {
+            "litellm_provider": "openai",
+            "mode": "chat",
+        },
+        "gemini-3-pro": {
+            "litellm_provider": "vertex_ai-language-models",
+            "mode": "chat",
+        },
         "claude-4-1-opus-latest": {
             "litellm_provider": "anthropic",
             "mode": "chat",
-        }
+        },
     }
 
     async def fake_download(
@@ -486,7 +1138,15 @@ async def test_invalid_numeric_values_do_not_break_snapshot_build(
             "mode": "chat",
             "input_cost_per_token": "not-a-number",
             "max_input_tokens": "unknown",
-        }
+        },
+        "gemini-3-pro": {
+            "litellm_provider": "vertex_ai-language-models",
+            "mode": "chat",
+        },
+        "claude-sonnet-4-5-20250929": {
+            "litellm_provider": "anthropic",
+            "mode": "chat",
+        },
     }
 
     async def fake_download(

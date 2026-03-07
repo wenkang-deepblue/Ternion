@@ -24,26 +24,6 @@ logger = structlog.get_logger(__name__)
 # Default configuration path
 DEFAULT_CONFIG_PATH = Path.home() / ".ternion" / "config.json"
 
-# Available models per provider
-AVAILABLE_MODELS = {
-    "google": [
-        {"id": "gemini-3-pro-preview", "name": "Gemini 3.0 Pro"},
-        {"id": "gemini-3-flash-preview", "name": "Gemini 3.0 Flash"},
-        {"id": "gemini-flash-lite-latest", "name": "Gemini 2.5 Flash Lite"},
-    ],
-    "anthropic": [
-        {"id": "claude-opus-4-5-20251101", "name": "Claude 4.5 Opus"},
-        {"id": "claude-sonnet-4-5-20250929", "name": "Claude 4.5 Sonnet"},
-        {"id": "claude-opus-4-1-20250805", "name": "Claude 4.1 Opus"},
-    ],
-    "openai": [
-        {"id": "gpt-5.2-pro-2025-12-11", "name": "GPT 5.2 Pro"},
-        {"id": "gpt-5.2-2025-12-11", "name": "GPT 5.2"},
-        {"id": "gpt-5.1-codex-max", "name": "GPT 5.1 Codex Max"},
-        {"id": "gpt-5.1-codex", "name": "GPT 5.1 Codex"},
-    ],
-}
-
 
 class ApiKeyEntry(BaseModel):
     """A single API key entry with name."""
@@ -281,10 +261,6 @@ class ConfigStore:
         """Get configuration for a role."""
         config = self.load()
         return config.roles.get(role)
-
-    def get_available_models(self, provider: str) -> list[dict[str, str]]:
-        """Get available models for a provider."""
-        return AVAILABLE_MODELS.get(provider, [])
 
     def to_safe_dict(self) -> dict[str, Any]:
         """

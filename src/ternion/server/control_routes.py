@@ -14,17 +14,12 @@ from datetime import UTC
 
 import structlog
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from ternion.core.budget import budget_manager
-from ternion.core.config_store import (
-    AVAILABLE_MODELS,
-    ApiKeyEntry,
-    ProviderConfig,
-    RoleConfig,
-    config_store,
-)
+from ternion.core.config_store import ApiKeyEntry, ProviderConfig, RoleConfig, config_store
+from ternion.core.model_catalog import CatalogModel, model_catalog_service
 from ternion.providers.manager import provider_manager
 from ternion.utils.log_manager import log_manager
 from ternion.utils.secrets import redact_secrets
@@ -156,13 +151,25 @@ def _get_provider_display_name(provider: str) -> str:
     return PROVIDER_DISPLAY_NAMES.get(provider, provider.title())
 
 
-def _get_model_display_name(provider: str, model_id: str) -> str:
+async def _get_model_display_name(provider: str, model_id: str) -> str:
     """Get human-readable display name for a model."""
-    models = AVAILABLE_MODELS.get(provider, [])
-    for m in models:
-        if m["id"] == model_id:
-            return m["name"]
+    model = await model_catalog_service.get_model(model_id)
+    if model is not None and model.provider == provider:
+        return model.name
     return model_id
+
+
+async def _get_catalog_model_for_provider(provider: str, model_id: str) -> CatalogModel:
+    """Get a catalog model and enforce provider/model consistency.
+
+    Raises:
+        HTTPException: If the model is missing from the catalog or belongs to a
+            different provider.
+    """
+    model = await model_catalog_service.get_model(model_id)
+    if model is None or model.provider != provider:
+        raise HTTPException(status_code=400, detail="MODEL_NOT_AVAILABLE")
+    return model
 
 
 # Endpoints
@@ -345,9 +352,7 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
                 raise HTTPException(status_code=400, detail=f"ROLES_INCOMPLETE:{role_name}")
             if role_update.provider not in enabled_providers:
                 raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
-            available = {m["id"] for m in AVAILABLE_MODELS.get(role_update.provider, [])}
-            if role_update.model not in available:
-                raise HTTPException(status_code=400, detail="MODEL_NOT_AVAILABLE")
+            await _get_catalog_model_for_provider(role_update.provider, role_update.model)
             validated_roles[role_name] = role_update
             next_roles[role_name] = RoleConfig(
                 provider=role_update.provider,
@@ -363,9 +368,7 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
                 continue
             if role_cfg.provider not in enabled_providers:
                 raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
-            available = {m["id"] for m in AVAILABLE_MODELS.get(role_cfg.provider, [])}
-            if role_cfg.model not in available:
-                raise HTTPException(status_code=400, detail="MODEL_NOT_AVAILABLE")
+            await _get_catalog_model_for_provider(role_cfg.provider, role_cfg.model)
 
         if missing_roles:
             raise HTTPException(
@@ -378,7 +381,7 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
 
         for role_name, role_update in validated_roles.items():
             provider_display = _get_provider_display_name(role_update.provider)
-            model_display = _get_model_display_name(role_update.provider, role_update.model)
+            model_display = await _get_model_display_name(role_update.provider, role_update.model)
             if role_name.startswith("ternion_"):
                 role_display = f"Ternion {role_name[-1].upper()}"
             else:
@@ -454,12 +457,10 @@ async def log_role_selection(request: RoleSelectionLogRequest) -> dict:
     if request.provider not in enabled:
         raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
 
-    available = {m["id"] for m in AVAILABLE_MODELS.get(request.provider, [])}
-    if request.model not in available:
-        raise HTTPException(status_code=400, detail="MODEL_NOT_AVAILABLE")
+    await _get_catalog_model_for_provider(request.provider, request.model)
 
     provider_display = _get_provider_display_name(request.provider)
-    model_display = _get_model_display_name(request.provider, request.model)
+    model_display = await _get_model_display_name(request.provider, request.model)
     if request.role.startswith("ternion_"):
         role_display = f"Ternion {request.role[-1].upper()}"
     else:
@@ -693,10 +694,52 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
 async def get_available_models() -> dict:
     """Get available models for each provider."""
     enabled = config_store.get_enabled_providers()
-    return {
-        "models": dict(AVAILABLE_MODELS.items()),
-        "enabled_providers": enabled,
-    }
+    payload = await model_catalog_service.get_models_payload()
+    payload["enabled_providers"] = enabled
+    return payload
+
+
+@router.post("/models/refresh")
+async def refresh_models() -> dict:
+    """Force-refresh the model catalog for initialization or manual updates.
+
+    Raises:
+        HTTPException: If the refresh fails or the resulting catalog is empty.
+    """
+    enabled = config_store.get_enabled_providers()
+
+    try:
+        await model_catalog_service.refresh_snapshot()
+        payload = await model_catalog_service.get_models_payload()
+    except Exception as exc:
+        logger.warning(
+            "model_catalog_refresh_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="MODEL_CATALOG_REFRESH_FAILED") from exc
+
+    if payload["requires_initialization"]:
+        logger.warning(
+            "model_catalog_refresh_empty",
+            model_count=payload.get("model_count", 0),
+            last_updated_at=payload.get("last_updated_at", ""),
+        )
+        raise HTTPException(status_code=503, detail="MODEL_CATALOG_REFRESH_FAILED")
+
+    payload["success"] = not payload.get("catalog_anomaly_detected", False)
+    payload["enabled_providers"] = enabled
+    return payload
+
+
+@router.get("/models/anomaly-report", response_class=PlainTextResponse)
+async def get_model_anomaly_report() -> PlainTextResponse:
+    """Return the latest model catalog anomaly report as Markdown."""
+    report_markdown = model_catalog_service.get_anomaly_report_markdown()
+    if report_markdown is None:
+        raise HTTPException(status_code=404, detail="MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND")
+    return PlainTextResponse(report_markdown, media_type="text/markdown")
 
 
 @router.get("/ports")

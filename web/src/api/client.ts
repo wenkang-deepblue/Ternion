@@ -138,6 +138,8 @@ export interface UsageData {
 export interface ModelInfo {
   id: string;
   name: string;
+  stale: boolean;
+  pricing_available: boolean;
 }
 
 /**
@@ -146,6 +148,15 @@ export interface ModelInfo {
 export interface ModelsData {
   models: Record<string, ModelInfo[]>;
   enabled_providers: string[];
+  last_updated_at?: string;
+  model_count?: number;
+  catalog_initialized?: boolean;
+  requires_initialization?: boolean;
+  catalog_anomaly_detected?: boolean;
+  catalog_anomaly_summary?: string;
+  catalog_anomaly_updated_at?: string;
+  catalog_anomaly_providers?: string[];
+  anomaly_report_available?: boolean;
 }
 
 /**
@@ -198,6 +209,26 @@ class ApiClient {
     }
 
     return response.json();
+  }
+
+  /**
+   * Internal helper for endpoints that return plain text instead of JSON.
+   */
+  private async requestText(endpoint: string, options?: RequestInit): Promise<string> {
+    const response = await fetch(`${this.baseUrl}${endpoint}`, {
+      ...options,
+      headers: {
+        Accept: 'text/markdown',
+        ...options?.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+
+    return response.text();
   }
 
   /**
@@ -320,6 +351,22 @@ class ApiClient {
    */
   async getModels(): Promise<ModelsData> {
     return this.request<ModelsData>('/models');
+  }
+
+  /**
+   * Forces the backend to initialize or refresh the LiteLLM model catalog.
+   */
+  async refreshModels(): Promise<ModelsData & { success: boolean }> {
+    return this.request<ModelsData & { success: boolean }>('/models/refresh', {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * Retrieves the latest catalog anomaly report as Markdown.
+   */
+  async getModelsAnomalyReport(): Promise<string> {
+    return this.requestText('/models/anomaly-report');
   }
 
   /**
