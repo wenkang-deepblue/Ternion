@@ -7,86 +7,40 @@ to a local file. Provides alerts when approaching budget thresholds.
 
 import json
 import os
+import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings
 
+from ternion.core.model_catalog import LiteLLMModelCatalogService, model_catalog_service
 from ternion.utils.i18n import MessageKey, t
 
 logger = structlog.get_logger(__name__)
-
-# Token pricing per model (USD per 1K tokens) - updated 2025-12
-MODEL_PRICING = {
-    # Anthropic Claude models
-    "claude-opus-4-5-20251101": {
-        "input": 5.0 / 1000,
-        "output": 25.0 / 1000,
-    },
-    "claude-sonnet-4-5-20250929": {
-        "input": 3.0 / 1000,
-        "output": 15.0 / 1000,
-    },
-    "claude-opus-4-1-20250805": {
-        "input": 15.0 / 1000,
-        "output": 75.0 / 1000,
-    },
-    # OpenAI GPT models
-    "gpt-5.2-pro-2025-12-11": {
-        "input": 21.0 / 1000,
-        "output": 168.0 / 1000,
-    },
-    "gpt-5.2-2025-12-11": {
-        "input": 1.75 / 1000,
-        "output": 14.0 / 1000,
-    },
-    "gpt-5.1-codex-max": {
-        "input": 1.25 / 1000,
-        "output": 10.0 / 1000,
-    },
-    "gpt-5.1-codex": {
-        "input": 1.25 / 1000,
-        "output": 10.0 / 1000,
-    },
-}
-
-# Gemini tiered pricing (context-length and media-type based)
-GEMINI_PRICING = {
-    "gemini-3-pro-preview": {
-        "context_threshold": 200000,  # 200K tokens
-        "input_standard": 2.0 / 1000,  # <=200K
-        "input_extended": 4.0 / 1000,  # >200K
-        "output_standard": 12.0 / 1000,
-        "output_extended": 18.0 / 1000,
-    },
-    "gemini-3-flash-preview": {
-        "input_text": 0.5 / 1000,
-        "input_audio": 1.0 / 1000,
-        "output": 3.0 / 1000,
-    },
-    "gemini-flash-lite-latest": {
-        "input_text": 0.1 / 1000,
-        "input_audio": 0.3 / 1000,
-        "output": 0.4 / 1000,
-    },
-}
-
-# Default fallback pricing if model not found
-DEFAULT_PRICING = {
-    "input": 0.01,
-    "output": 0.03,
-}
 
 
 class CostControlSettings(BaseSettings):
     """Cost control configuration."""
 
     monthly_limit_usd: float = 50.0
-    alert_threshold: float = 0.9  # 90% threshold for warnings
+    alert_threshold: float = 0.9
+
+
+class CostBreakdown(BaseModel):
+    """Structured pricing result for one request."""
+
+    input_cost: float = 0.0
+    output_cost: float = 0.0
+    thoughts_cost: float = 0.0
+
+    @property
+    def total_cost(self) -> float:
+        """Return the sum of input, output, and thoughts costs."""
+        return self.input_cost + self.output_cost + self.thoughts_cost
 
 
 class UsageEntry(BaseModel):
@@ -138,10 +92,6 @@ class UsageStore(BaseModel):
     monthly_totals: dict[str, dict] = Field(default_factory=dict)
 
 
-# Legacy alias for compatibility
-UsageRecord = UsageStore
-
-
 class BudgetManager:
     """
     Manages API usage costs and budget enforcement.
@@ -158,6 +108,7 @@ class BudgetManager:
         self,
         settings: CostControlSettings | None = None,
         usage_file: Path | None = None,
+        catalog_service: LiteLLMModelCatalogService | None = None,
     ) -> None:
         """
         Initialize budget manager.
@@ -165,10 +116,13 @@ class BudgetManager:
         Args:
             settings: Cost control settings
             usage_file: Path to store usage data (defaults to ~/.ternion/usage.json)
+            catalog_service: Optional model catalog used for pricing lookups
         """
         self.settings = settings or CostControlSettings()
         self.usage_file = usage_file or Path.home() / ".ternion" / "usage.json"
+        self.catalog_service = catalog_service or model_catalog_service
         self._test_mode = False
+        self._save_failures = 0
         self._store: UsageStore | None = None
         self._load_usage()
 
@@ -189,9 +143,9 @@ class BudgetManager:
 
         if self.usage_file.exists():
             try:
-                with open(self.usage_file) as f:
+                with open(self.usage_file, encoding="utf-8") as f:
                     data = json.load(f)
-                    self._store = UsageStore(**data)
+                    self._store = UsageStore.model_validate(data)
 
                     # Skip day rollover in test mode
                     if self._test_mode:
@@ -204,17 +158,45 @@ class BudgetManager:
                         self._save_usage()
                     elif not self._store.today:
                         self._store.today = today
-            except Exception as e:
-                logger.warning("budget_load_error", error=str(e))
+            except (json.JSONDecodeError, ValidationError) as e:
+                self._backup_invalid_usage_file()
+                logger.warning(
+                    "budget_load_invalid_data",
+                    error_type=type(e).__name__,
+                    error=str(e),
+                    path=str(self.usage_file),
+                )
+                self._store = UsageStore(today=today)
+            except OSError as e:
+                logger.error(
+                    "budget_load_error",
+                    error_type=type(e).__name__,
+                    error=str(e),
+                    path=str(self.usage_file),
+                )
                 self._store = UsageStore(today=today)
         else:
             self._store = UsageStore(today=today)
             self.usage_file.parent.mkdir(parents=True, exist_ok=True)
 
-    def _save_usage(self) -> None:
-        """Save current usage to file."""
+    def _backup_invalid_usage_file(self) -> None:
+        """Preserve the current usage file before resetting an invalid store."""
+        backup_path = self.usage_file.with_suffix(f"{self.usage_file.suffix}.corrupt")
+        try:
+            shutil.copy2(self.usage_file, backup_path)
+        except OSError as e:
+            logger.warning(
+                "budget_corrupt_backup_failed",
+                error_type=type(e).__name__,
+                error=str(e),
+                path=str(self.usage_file),
+                backup_path=str(backup_path),
+            )
+
+    def _save_usage(self) -> bool:
+        """Save current usage to file and report whether persistence succeeded."""
         if self._store is None:
-            return
+            return False
 
         try:
             self.usage_file.parent.mkdir(parents=True, exist_ok=True)
@@ -232,8 +214,26 @@ class BudgetManager:
                 except OSError:
                     pass
                 raise
+            self._save_failures = 0
+            return True
         except Exception as e:
-            logger.error("budget_save_error", error=str(e))
+            self._save_failures += 1
+            logger.error(
+                "budget_save_error",
+                error_type=type(e).__name__,
+                error=str(e),
+                path=str(self.usage_file),
+                consecutive_failures=self._save_failures,
+            )
+            return False
+
+    def _round_cost_breakdown(self, breakdown: CostBreakdown) -> CostBreakdown:
+        """Round stored and returned cost components to a stable precision."""
+        return CostBreakdown(
+            input_cost=round(breakdown.input_cost, 8),
+            output_cost=round(breakdown.output_cost, 8),
+            thoughts_cost=round(breakdown.thoughts_cost, 8),
+        )
 
     def _perform_day_rollover(self) -> None:
         """Aggregate yesterday's records into daily summary."""
@@ -311,77 +311,127 @@ class BudgetManager:
         model: str,
         input_tokens: int,
         output_tokens: int,
+        thoughts_tokens: int = 0,
         context_length: int = 0,
         audio_input_tokens: int = 0,
     ) -> float:
         """
-        Calculate cost for a request based on model-specific pricing.
+        Calculate cost for a request using LiteLLM catalog pricing.
 
         Args:
             model: Model ID
             input_tokens: Number of text/image/video input tokens
             output_tokens: Number of output tokens
-            context_length: Total context length for Gemini Pro tiered pricing
-            audio_input_tokens: Number of audio input tokens (Gemini Flash models)
+            thoughts_tokens: Number of reasoning/thought tokens already included
+                in output_tokens
+            context_length: Total context length for 200K+ tiered pricing
+            audio_input_tokens: Number of audio input tokens
 
         Returns:
             Estimated cost in USD
         """
-        # Check for Gemini tiered pricing
-        if model in GEMINI_PRICING:
-            return self._calculate_gemini_cost(
-                model, input_tokens, output_tokens, context_length, audio_input_tokens
+        breakdown = self._round_cost_breakdown(
+            self._calculate_cost_breakdown(
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                thoughts_tokens=thoughts_tokens,
+                context_length=context_length,
+                audio_input_tokens=audio_input_tokens,
             )
+        )
+        return breakdown.total_cost
 
-        # Standard flat-rate pricing
-        rates = MODEL_PRICING.get(model, DEFAULT_PRICING)
-        input_cost = (input_tokens / 1000) * rates["input"]
-        output_cost = (output_tokens / 1000) * rates["output"]
-        return input_cost + output_cost
-
-    def _calculate_gemini_cost(
+    def _calculate_cost_breakdown(
         self,
         model: str,
         input_tokens: int,
         output_tokens: int,
-        context_length: int,
-        audio_input_tokens: int,
-    ) -> float:
+        thoughts_tokens: int = 0,
+        context_length: int = 0,
+        audio_input_tokens: int = 0,
+    ) -> CostBreakdown:
         """
-        Calculate cost for Gemini models with tiered pricing.
+        Calculate a structured cost breakdown using catalog pricing.
 
-        Args:
-            model: Gemini model ID.
-            input_tokens: Number of text/image input tokens.
-            output_tokens: Number of output tokens.
-            context_length: Total context length for Pro-tier selection.
-            audio_input_tokens: Audio tokens for Flash/Flash-Lite media pricing.
-
-        Returns:
-            Estimated cost in USD.
+        Invalid token counts are clamped to safe ranges before cost calculation.
+        When a model has no dedicated reasoning token rate, the standard output
+        token rate is used for thoughts tokens.
         """
-        pricing = GEMINI_PRICING[model]
+        model_info = self.catalog_service.get_model_cached(model)
+        if model_info is None:
+            logger.warning("pricing_unavailable", model=model)
+            return CostBreakdown()
 
-        if model == "gemini-3-pro-preview":
-            # Context-length based tiering
-            threshold = pricing["context_threshold"]
-            if context_length <= threshold:
-                input_rate = pricing["input_standard"]
-                output_rate = pricing["output_standard"]
-            else:
-                input_rate = pricing["input_extended"]
-                output_rate = pricing["output_extended"]
-            input_cost = (input_tokens / 1000) * input_rate
-            output_cost = (output_tokens / 1000) * output_rate
+        safe_input_tokens = max(input_tokens, 0)
+        safe_output_tokens = max(output_tokens, 0)
+        safe_context_length = max(context_length, 0)
+        safe_thoughts_tokens = max(0, min(thoughts_tokens, safe_output_tokens))
+        safe_audio_tokens = max(0, min(audio_input_tokens, safe_input_tokens))
+        if (
+            safe_input_tokens != input_tokens
+            or safe_output_tokens != output_tokens
+            or safe_context_length != context_length
+            or safe_thoughts_tokens != thoughts_tokens
+            or safe_audio_tokens != audio_input_tokens
+        ):
+            logger.warning(
+                "budget_tokens_clamped",
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                thoughts_tokens=thoughts_tokens,
+                context_length=context_length,
+                audio_input_tokens=audio_input_tokens,
+                clamped_input_tokens=safe_input_tokens,
+                clamped_output_tokens=safe_output_tokens,
+                clamped_thoughts_tokens=safe_thoughts_tokens,
+                clamped_context_length=safe_context_length,
+                clamped_audio_input_tokens=safe_audio_tokens,
+            )
+
+        visible_output_tokens = max(safe_output_tokens - safe_thoughts_tokens, 0)
+        text_input_tokens = max(safe_input_tokens - safe_audio_tokens, 0)
+
+        input_rate = (
+            model_info.input_cost_per_token if model_info.input_cost_per_token is not None else 0.0
+        )
+        output_rate = (
+            model_info.output_cost_per_token
+            if model_info.output_cost_per_token is not None
+            else 0.0
+        )
+        reasoning_rate = model_info.output_cost_per_reasoning_token
+
+        if safe_context_length > 200_000:
+            input_rate = (
+                model_info.input_cost_per_token_above_200k_tokens
+                if model_info.input_cost_per_token_above_200k_tokens is not None
+                else input_rate
+            )
+            output_rate = (
+                model_info.output_cost_per_token_above_200k_tokens
+                if model_info.output_cost_per_token_above_200k_tokens is not None
+                else output_rate
+            )
+
+        effective_reasoning_rate = reasoning_rate if reasoning_rate is not None else output_rate
+
+        if safe_audio_tokens > 0 and model_info.input_cost_per_audio_token is not None:
+            input_cost = (
+                text_input_tokens * input_rate
+                + safe_audio_tokens * model_info.input_cost_per_audio_token
+            )
         else:
-            # Media-type based tiering (Flash and Flash-Lite)
-            text_tokens = input_tokens - audio_input_tokens
-            text_cost = (text_tokens / 1000) * pricing["input_text"]
-            audio_cost = (audio_input_tokens / 1000) * pricing["input_audio"]
-            input_cost = text_cost + audio_cost
-            output_cost = (output_tokens / 1000) * pricing["output"]
+            input_cost = safe_input_tokens * input_rate
 
-        return input_cost + output_cost
+        output_cost = visible_output_tokens * output_rate
+        thoughts_cost = safe_thoughts_tokens * effective_reasoning_rate
+        return CostBreakdown(
+            input_cost=input_cost,
+            output_cost=output_cost,
+            thoughts_cost=thoughts_cost,
+        )
 
     def check_budget(self) -> tuple[bool, str | None]:
         """
@@ -461,9 +511,9 @@ class BudgetManager:
             model: Model ID for pricing lookup
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
-            thoughts_tokens: Number of thinking tokens (for display/tracking)
-            context_length: Context length for Gemini Pro tiered pricing
-            audio_input_tokens: Audio input tokens for Gemini Flash
+            thoughts_tokens: Number of reasoning tokens included in output_tokens
+            context_length: Total context length for 200K+ tiered pricing
+            audio_input_tokens: Number of audio input tokens
 
         Returns:
             Total cost of this request in USD
@@ -477,37 +527,18 @@ class BudgetManager:
             self._perform_day_rollover()
             self._store.today = today
 
-        # Calculate costs
-        rates = MODEL_PRICING.get(model, DEFAULT_PRICING)
         clamped_thoughts_tokens = max(0, min(thoughts_tokens, output_tokens))
-        if model in GEMINI_PRICING:
-            pricing = GEMINI_PRICING[model]
-            if model == "gemini-3-pro-preview":
-                threshold = pricing["context_threshold"]
-                if context_length <= threshold:
-                    input_rate = pricing["input_standard"]
-                    output_rate = pricing["output_standard"]
-                else:
-                    input_rate = pricing["input_extended"]
-                    output_rate = pricing["output_extended"]
-                # Gemini: thoughts are separate, charged at output rate
-                input_cost = (input_tokens / 1000) * input_rate
-                output_cost = ((output_tokens - clamped_thoughts_tokens) / 1000) * output_rate
-                thoughts_cost = (clamped_thoughts_tokens / 1000) * output_rate
-            else:
-                # Flash models
-                text_tokens = input_tokens - audio_input_tokens
-                input_cost = (text_tokens / 1000) * pricing["input_text"] + (
-                    audio_input_tokens / 1000
-                ) * pricing["input_audio"]
-                output_cost = ((output_tokens - clamped_thoughts_tokens) / 1000) * pricing["output"]
-                thoughts_cost = (clamped_thoughts_tokens / 1000) * pricing["output"]
-        else:
-            input_cost = (input_tokens / 1000) * rates["input"]
-            output_cost = ((output_tokens - clamped_thoughts_tokens) / 1000) * rates["output"]
-            thoughts_cost = (clamped_thoughts_tokens / 1000) * rates["output"]
-
-        total_cost = input_cost + output_cost + thoughts_cost
+        breakdown = self._round_cost_breakdown(
+            self._calculate_cost_breakdown(
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                thoughts_tokens=clamped_thoughts_tokens,
+                context_length=context_length,
+                audio_input_tokens=audio_input_tokens,
+            )
+        )
+        total_cost = breakdown.total_cost
 
         entry = {
             "timestamp": datetime.now().isoformat(),
@@ -516,14 +547,20 @@ class BudgetManager:
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "thoughts_tokens": clamped_thoughts_tokens,
-            "input_cost": round(input_cost, 8),
-            "output_cost": round(output_cost, 8),
-            "thoughts_cost": round(thoughts_cost, 8),
+            "input_cost": round(breakdown.input_cost, 8),
+            "output_cost": round(breakdown.output_cost, 8),
+            "thoughts_cost": round(breakdown.thoughts_cost, 8),
         }
 
         if self._store:
             self._store.today_records.append(entry)
-            self._save_usage()
+            if not self._save_usage():
+                logger.warning(
+                    "usage_record_not_persisted",
+                    provider=provider,
+                    model=model,
+                    timestamp=entry["timestamp"],
+                )
 
         logger.info(
             "usage_recorded",
@@ -531,7 +568,7 @@ class BudgetManager:
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            thoughts_tokens=thoughts_tokens,
+            thoughts_tokens=clamped_thoughts_tokens,
             cost=round(total_cost, 6),
         )
 

@@ -9,9 +9,13 @@ from pathlib import Path
 import pytest
 
 from ternion.core.budget import (
-    DEFAULT_PRICING,
     BudgetManager,
     CostControlSettings,
+)
+from ternion.core.model_catalog import (
+    CatalogModel,
+    CatalogSnapshot,
+    LiteLLMModelCatalogService,
 )
 
 
@@ -22,13 +26,95 @@ def temp_usage_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def budget_manager(temp_usage_file: Path) -> BudgetManager:
+def catalog_service(tmp_path: Path) -> LiteLLMModelCatalogService:
+    """Create a seeded catalog service for budget tests."""
+    service = LiteLLMModelCatalogService(
+        cache_path=tmp_path / "model_catalog_cache.json",
+        anomaly_report_path=tmp_path / "model_catalog_anomaly_report.json",
+    )
+    models = {
+        "openai": [
+            CatalogModel(
+                id="gpt-5.2-2025-12-11",
+                name="GPT 5.2",
+                provider="openai",
+                raw_key="gpt-5.2-2025-12-11",
+                input_cost_per_token=1.75 / 1_000_000,
+                output_cost_per_token=14.0 / 1_000_000,
+                output_cost_per_reasoning_token=20.0 / 1_000_000,
+            )
+        ],
+        "google": [
+            CatalogModel(
+                id="gemini-3-pro-preview",
+                name="Gemini 3 Pro",
+                provider="google",
+                raw_key="gemini-3-pro-preview",
+                input_cost_per_token=2.0 / 1_000_000,
+                output_cost_per_token=12.0 / 1_000_000,
+                input_cost_per_token_above_200k_tokens=4.0 / 1_000_000,
+                output_cost_per_token_above_200k_tokens=18.0 / 1_000_000,
+            ),
+            CatalogModel(
+                id="gemini-3-flash-preview",
+                name="Gemini 3 Flash",
+                provider="google",
+                raw_key="gemini-3-flash-preview",
+                input_cost_per_token=0.5 / 1_000_000,
+                output_cost_per_token=3.0 / 1_000_000,
+                input_cost_per_audio_token=1.0 / 1_000_000,
+            ),
+        ],
+        "anthropic": [
+            CatalogModel(
+                id="claude-opus-4-5-20251101",
+                name="Claude Opus 4.5",
+                provider="anthropic",
+                raw_key="claude-opus-4-5-20251101",
+                input_cost_per_token=5.0 / 1_000_000,
+                output_cost_per_token=25.0 / 1_000_000,
+            ),
+            CatalogModel(
+                id="claude-sonnet-4-5-20250929",
+                name="Claude Sonnet 4.5",
+                provider="anthropic",
+                raw_key="claude-sonnet-4-5-20250929",
+                input_cost_per_token=3.0 / 1_000_000,
+                output_cost_per_token=15.0 / 1_000_000,
+            ),
+            CatalogModel(
+                id="claude-opus-4-1-20250805",
+                name="Claude Opus 4.1",
+                provider="anthropic",
+                raw_key="claude-opus-4-1-20250805",
+                input_cost_per_token=15.0 / 1_000_000,
+                output_cost_per_token=75.0 / 1_000_000,
+            ),
+        ],
+    }
+    service._memory_snapshot = CatalogSnapshot(
+        fetched_at=datetime.now().isoformat(),
+        models_by_provider=models,
+        index_by_id={model.id: model for items in models.values() for model in items},
+    )
+    return service
+
+
+@pytest.fixture
+def budget_manager(
+    temp_usage_file: Path,
+    catalog_service: LiteLLMModelCatalogService,
+) -> BudgetManager:
     """Create a budget manager with test settings."""
     settings = CostControlSettings(
         monthly_limit_usd=10.0,
         alert_threshold=0.9,
     )
-    return BudgetManager(settings=settings, usage_file=temp_usage_file)
+    return BudgetManager(
+        settings=settings,
+        usage_file=temp_usage_file,
+        catalog_service=catalog_service,
+    )
 
 
 class TestCostCalculation:
@@ -41,8 +127,7 @@ class TestCostCalculation:
             input_tokens=1000,
             output_tokens=1000,
         )
-        # $5/MTok input = $0.005/1K, $25/MTok output = $0.025/1K
-        expected = (1000 / 1000) * 0.005 + (1000 / 1000) * 0.025
+        expected = 1000 * (5.0 / 1_000_000) + 1000 * (25.0 / 1_000_000)
         assert cost == pytest.approx(expected)
 
     def test_calculate_cost_claude_sonnet_45(self, budget_manager: BudgetManager) -> None:
@@ -52,8 +137,7 @@ class TestCostCalculation:
             input_tokens=2000,
             output_tokens=500,
         )
-        # $3/MTok input = $0.003/1K, $15/MTok output = $0.015/1K
-        expected = (2000 / 1000) * 0.003 + (500 / 1000) * 0.015
+        expected = 2000 * (3.0 / 1_000_000) + 500 * (15.0 / 1_000_000)
         assert cost == pytest.approx(expected)
 
     def test_calculate_cost_claude_opus_41(self, budget_manager: BudgetManager) -> None:
@@ -63,22 +147,20 @@ class TestCostCalculation:
             input_tokens=1000,
             output_tokens=1000,
         )
-        # $15/MTok input = $0.015/1K, $75/MTok output = $0.075/1K
-        expected = (1000 / 1000) * 0.015 + (1000 / 1000) * 0.075
+        expected = 1000 * (15.0 / 1_000_000) + 1000 * (75.0 / 1_000_000)
         assert cost == pytest.approx(expected)
 
-    def test_calculate_cost_unknown_model_uses_default(self, budget_manager: BudgetManager) -> None:
-        """Test that unknown models use default pricing."""
+    def test_calculate_cost_unknown_model_returns_zero(
+        self,
+        budget_manager: BudgetManager,
+    ) -> None:
+        """Test that unknown models return zero cost."""
         cost = budget_manager.calculate_cost(
             model="unknown-model",
             input_tokens=1000,
             output_tokens=1000,
         )
-        # Default: $0.01/1K input, $0.03/1K output
-        expected = (1000 / 1000) * DEFAULT_PRICING["input"] + (1000 / 1000) * DEFAULT_PRICING[
-            "output"
-        ]
-        assert cost == pytest.approx(expected)
+        assert cost == 0.0
 
     def test_calculate_cost_gemini_pro_standard_tier(self, budget_manager: BudgetManager) -> None:
         """Test Gemini Pro cost with context <= 200K."""
@@ -88,8 +170,7 @@ class TestCostCalculation:
             output_tokens=1000,
             context_length=100000,
         )
-        # Standard tier: $2/MTok input, $12/MTok output
-        expected = (1000 / 1000) * 0.002 + (1000 / 1000) * 0.012
+        expected = 1000 * (2.0 / 1_000_000) + 1000 * (12.0 / 1_000_000)
         assert cost == pytest.approx(expected)
 
     def test_calculate_cost_gemini_pro_extended_tier(self, budget_manager: BudgetManager) -> None:
@@ -100,8 +181,7 @@ class TestCostCalculation:
             output_tokens=1000,
             context_length=250000,
         )
-        # Extended tier: $4/MTok input, $18/MTok output
-        expected = (1000 / 1000) * 0.004 + (1000 / 1000) * 0.018
+        expected = 1000 * (4.0 / 1_000_000) + 1000 * (18.0 / 1_000_000)
         assert cost == pytest.approx(expected)
 
     def test_calculate_cost_gemini_flash_text_only(self, budget_manager: BudgetManager) -> None:
@@ -112,8 +192,7 @@ class TestCostCalculation:
             output_tokens=1000,
             audio_input_tokens=0,
         )
-        # $0.5/MTok text input, $3/MTok output
-        expected = (1000 / 1000) * 0.0005 + (1000 / 1000) * 0.003
+        expected = 1000 * (0.5 / 1_000_000) + 1000 * (3.0 / 1_000_000)
         assert cost == pytest.approx(expected)
 
     def test_calculate_cost_gemini_flash_with_audio(self, budget_manager: BudgetManager) -> None:
@@ -124,21 +203,147 @@ class TestCostCalculation:
             output_tokens=1000,
             audio_input_tokens=400,
         )
-        # 600 text tokens @ $0.5/MTok, 400 audio tokens @ $1/MTok, output @ $3/MTok
-        expected = (600 / 1000) * 0.0005 + (400 / 1000) * 0.001 + (1000 / 1000) * 0.003
+        expected = 600 * (0.5 / 1_000_000) + 400 * (1.0 / 1_000_000) + 1000 * (3.0 / 1_000_000)
         assert cost == pytest.approx(expected)
 
-    def test_calculate_cost_gemini_flash_lite(self, budget_manager: BudgetManager) -> None:
-        """Test Gemini Flash Lite cost calculation."""
+    def test_calculate_cost_reasoning_tokens_use_reasoning_rate(
+        self,
+        budget_manager: BudgetManager,
+    ) -> None:
+        """Test reasoning tokens use the dedicated reasoning rate."""
         cost = budget_manager.calculate_cost(
-            model="gemini-flash-lite-latest",
+            model="gpt-5.2-2025-12-11",
             input_tokens=1000,
             output_tokens=1000,
-            audio_input_tokens=0,
+            thoughts_tokens=400,
         )
-        # $0.1/MTok text input, $0.4/MTok output
-        expected = (1000 / 1000) * 0.0001 + (1000 / 1000) * 0.0004
+        expected = 1000 * (1.75 / 1_000_000) + 600 * (14.0 / 1_000_000) + 400 * (20.0 / 1_000_000)
         assert cost == pytest.approx(expected)
+
+    def test_calculate_cost_reasoning_tokens_fall_back_to_output_rate(
+        self,
+        budget_manager: BudgetManager,
+    ) -> None:
+        """Test reasoning tokens fall back to the output rate when needed."""
+        cost = budget_manager.calculate_cost(
+            model="claude-sonnet-4-5-20250929",
+            input_tokens=1000,
+            output_tokens=1000,
+            thoughts_tokens=400,
+        )
+        expected = 1000 * (3.0 / 1_000_000) + 1000 * (15.0 / 1_000_000)
+        assert cost == pytest.approx(expected)
+
+    def test_calculate_cost_context_boundary_uses_standard_tier(
+        self,
+        budget_manager: BudgetManager,
+    ) -> None:
+        """Test the 200K context boundary stays on the standard tier."""
+        cost = budget_manager.calculate_cost(
+            model="gemini-3-pro-preview",
+            input_tokens=1000,
+            output_tokens=1000,
+            context_length=200000,
+        )
+        expected = 1000 * (2.0 / 1_000_000) + 1000 * (12.0 / 1_000_000)
+        assert cost == pytest.approx(expected)
+
+    def test_calculate_cost_negative_tokens_clamped_to_zero(
+        self,
+        budget_manager: BudgetManager,
+    ) -> None:
+        """Test negative token counts are clamped to zero."""
+        cost = budget_manager.calculate_cost(
+            model="claude-opus-4-5-20251101",
+            input_tokens=-1000,
+            output_tokens=-500,
+            thoughts_tokens=-10,
+            context_length=-1,
+            audio_input_tokens=-100,
+        )
+        assert cost == 0.0
+
+    def test_calculate_cost_thoughts_tokens_clamped_to_output_tokens(
+        self,
+        budget_manager: BudgetManager,
+    ) -> None:
+        """Test thoughts tokens are clamped to the output token count."""
+        cost = budget_manager.calculate_cost(
+            model="gpt-5.2-2025-12-11",
+            input_tokens=1000,
+            output_tokens=500,
+            thoughts_tokens=800,
+        )
+        expected = 1000 * (1.75 / 1_000_000) + 500 * (20.0 / 1_000_000)
+        assert cost == pytest.approx(expected)
+
+    def test_calculate_cost_audio_tokens_clamped_to_input_tokens(
+        self,
+        budget_manager: BudgetManager,
+    ) -> None:
+        """Test audio input tokens are clamped to the input token count."""
+        cost = budget_manager.calculate_cost(
+            model="gemini-3-flash-preview",
+            input_tokens=1000,
+            output_tokens=1000,
+            audio_input_tokens=1500,
+        )
+        expected = 1000 * (1.0 / 1_000_000) + 1000 * (3.0 / 1_000_000)
+        assert cost == pytest.approx(expected)
+
+    def test_calculate_cost_audio_without_audio_rate_uses_standard_input_rate(
+        self,
+        budget_manager: BudgetManager,
+    ) -> None:
+        """Test audio tokens fall back to the standard input rate when needed."""
+        cost = budget_manager.calculate_cost(
+            model="claude-opus-4-5-20251101",
+            input_tokens=1000,
+            output_tokens=1000,
+            audio_input_tokens=400,
+        )
+        expected = 1000 * (5.0 / 1_000_000) + 1000 * (25.0 / 1_000_000)
+        assert cost == pytest.approx(expected)
+
+    def test_record_usage_matches_calculate_cost(
+        self,
+        budget_manager: BudgetManager,
+    ) -> None:
+        """Test calculate_cost and record_usage stay consistent."""
+        expected = budget_manager.calculate_cost(
+            model="gpt-5.2-2025-12-11",
+            input_tokens=2000,
+            output_tokens=1200,
+            thoughts_tokens=300,
+        )
+        recorded = budget_manager.record_usage(
+            provider="openai",
+            model="gpt-5.2-2025-12-11",
+            input_tokens=2000,
+            output_tokens=1200,
+            thoughts_tokens=300,
+        )
+        assert recorded == pytest.approx(expected)
+
+    def test_record_usage_matches_persisted_cost_components(
+        self,
+        budget_manager: BudgetManager,
+        temp_usage_file: Path,
+    ) -> None:
+        """Test the returned cost matches the persisted rounded components."""
+        recorded = budget_manager.record_usage(
+            provider="openai",
+            model="gpt-5.2-2025-12-11",
+            input_tokens=2000,
+            output_tokens=1200,
+            thoughts_tokens=300,
+        )
+        with open(temp_usage_file, encoding="utf-8") as f:
+            data = json.load(f)
+
+        entry = data["today_records"][0]
+        persisted_total = entry["input_cost"] + entry["output_cost"] + entry["thoughts_cost"]
+        assert recorded == persisted_total
 
 
 class TestBudgetCheck:
@@ -249,19 +454,43 @@ class TestUsageTracking:
         self, budget_manager: BudgetManager, temp_usage_file: Path
     ) -> None:
         """Test tracking multiple usages."""
-        budget_manager.track_usage("openai", "gpt-5.1-codex", 1000, 1000)
+        budget_manager.track_usage("openai", "gpt-5.2-2025-12-11", 1000, 1000)
         budget_manager.track_usage("anthropic", "claude-sonnet-4-5-20250929", 500, 500)
         budget_manager.track_usage("google", "gemini-3-flash-preview", 2000, 500)
 
         summary = budget_manager.get_usage_summary()
         assert summary["request_count"] == 3
         assert len(summary["provider_costs"]) == 3
+        assert summary["total_cost_usd"] > 0
+
+    def test_record_usage_clamps_stored_thoughts_tokens(
+        self,
+        budget_manager: BudgetManager,
+        temp_usage_file: Path,
+    ) -> None:
+        """Test persisted usage stores clamped thoughts tokens."""
+        budget_manager.record_usage(
+            provider="openai",
+            model="gpt-5.2-2025-12-11",
+            input_tokens=1000,
+            output_tokens=500,
+            thoughts_tokens=800,
+        )
+
+        with open(temp_usage_file, encoding="utf-8") as f:
+            data = json.load(f)
+
+        assert data["today_records"][0]["thoughts_tokens"] == 500
 
 
 class TestMonthlyReset:
     """Tests for monthly reset functionality."""
 
-    def test_new_month_resets_usage(self, temp_usage_file: Path) -> None:
+    def test_new_month_resets_usage(
+        self,
+        temp_usage_file: Path,
+        catalog_service: LiteLLMModelCatalogService,
+    ) -> None:
         """Test that usage resets when month changes."""
         # Create usage from previous month
         old_month = "2024-01"
@@ -277,7 +506,11 @@ class TestMonthlyReset:
 
         # Create new budget manager (should detect new month)
         settings = CostControlSettings()
-        manager = BudgetManager(settings=settings, usage_file=temp_usage_file)
+        manager = BudgetManager(
+            settings=settings,
+            usage_file=temp_usage_file,
+            catalog_service=catalog_service,
+        )
 
         # Should be reset
         summary = manager.get_usage_summary()
@@ -310,13 +543,21 @@ class TestProviderCostAggregation:
         return tmp_path / "usage.json"
 
     @pytest.fixture
-    def budget_manager(self, temp_usage_file: Path) -> BudgetManager:
+    def budget_manager(
+        self,
+        temp_usage_file: Path,
+        catalog_service: LiteLLMModelCatalogService,
+    ) -> BudgetManager:
         """Create a budget manager with test settings."""
         settings = CostControlSettings(
             monthly_limit_usd=100.0,
             alert_threshold=0.9,
         )
-        return BudgetManager(settings=settings, usage_file=temp_usage_file)
+        return BudgetManager(
+            settings=settings,
+            usage_file=temp_usage_file,
+            catalog_service=catalog_service,
+        )
 
     def test_provider_costs_aggregate_separate_cost_fields(
         self, budget_manager: BudgetManager, temp_usage_file: Path
@@ -454,3 +695,26 @@ class TestProviderCostAggregation:
         # Should fall back to 'cost' field when separate fields are 0
         assert "openai" in summary["provider_costs"]
         assert summary["provider_costs"]["openai"] == pytest.approx(0.045, rel=0.01)
+
+
+class TestUsagePersistence:
+    """Tests for usage persistence error handling."""
+
+    def test_invalid_usage_file_is_backed_up(
+        self,
+        temp_usage_file: Path,
+        catalog_service: LiteLLMModelCatalogService,
+    ) -> None:
+        """Test invalid usage data is backed up before reset."""
+        temp_usage_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_usage_file.write_text("{invalid json", encoding="utf-8")
+
+        manager = BudgetManager(
+            settings=CostControlSettings(),
+            usage_file=temp_usage_file,
+            catalog_service=catalog_service,
+        )
+
+        backup_path = temp_usage_file.with_suffix(f"{temp_usage_file.suffix}.corrupt")
+        assert backup_path.exists()
+        assert manager.get_usage_summary()["total_cost_usd"] == 0.0
