@@ -137,6 +137,10 @@ export interface Translations {
   code_API_KEY_DUPLICATE: string;
   code_PROVIDER_NOT_ENABLED: string;
   code_MODEL_NOT_AVAILABLE: string;
+  code_MODEL_UNAVAILABLE: string;
+  code_MODEL_PROBE_AUTH_ERROR: string;
+  code_MODEL_PROBE_TIMEOUT: string;
+  code_MODEL_PROBE_CONNECTION_ERROR: string;
   code_INVALID_BUDGET_LIMIT: string;
   code_INVALID_BUDGET_THRESHOLD: string;
   code_BUDGET_EXCEEDED: string;
@@ -437,6 +441,10 @@ const EN: Translations = {
   code_API_KEY_DUPLICATE: 'This API Key already exists',
   code_PROVIDER_NOT_ENABLED: 'Provider not enabled',
   code_MODEL_NOT_AVAILABLE: 'Model not available',
+  code_MODEL_UNAVAILABLE: 'The selected model is no longer available from the provider',
+  code_MODEL_PROBE_AUTH_ERROR: 'Model validation failed because the provider API key is invalid or unauthorized',
+  code_MODEL_PROBE_TIMEOUT: 'Model validation timed out, please retry',
+  code_MODEL_PROBE_CONNECTION_ERROR: 'Model validation failed because the provider could not be reached',
   code_INVALID_BUDGET_LIMIT: 'Invalid budget limit',
   code_INVALID_BUDGET_THRESHOLD: 'Invalid budget threshold',
   code_BUDGET_EXCEEDED: 'Monthly budget exceeded',
@@ -709,6 +717,10 @@ const ZH: Translations = {
   code_API_KEY_DUPLICATE: '此 API Key 已存在',
   code_PROVIDER_NOT_ENABLED: '提供商未启用',
   code_MODEL_NOT_AVAILABLE: '模型不可用',
+  code_MODEL_UNAVAILABLE: '所选模型当前已无法从提供商获取',
+  code_MODEL_PROBE_AUTH_ERROR: '模型校验失败：当前提供商 API Key 无效或无权限',
+  code_MODEL_PROBE_TIMEOUT: '模型校验超时，请重试',
+  code_MODEL_PROBE_CONNECTION_ERROR: '模型校验失败：当前无法连接到提供商',
   code_INVALID_BUDGET_LIMIT: '无效的预算上限',
   code_INVALID_BUDGET_THRESHOLD: '无效的预算阈值',
   code_BUDGET_EXCEEDED: '本月预算已用尽',
@@ -979,6 +991,10 @@ const ES: Translations = {
   code_API_KEY_DUPLICATE: 'Esta clave API ya existe',
   code_PROVIDER_NOT_ENABLED: 'Proveedor no habilitado',
   code_MODEL_NOT_AVAILABLE: 'Modelo no disponible',
+  code_MODEL_UNAVAILABLE: 'El modelo seleccionado ya no está disponible en el proveedor',
+  code_MODEL_PROBE_AUTH_ERROR: 'La validación del modelo falló porque la clave API del proveedor no es válida o no tiene autorización',
+  code_MODEL_PROBE_TIMEOUT: 'La validación del modelo agotó el tiempo de espera, vuelva a intentarlo',
+  code_MODEL_PROBE_CONNECTION_ERROR: 'La validación del modelo falló porque no se pudo conectar con el proveedor',
   code_INVALID_BUDGET_LIMIT: 'Límite de presupuesto inválido',
   code_INVALID_BUDGET_THRESHOLD: 'Umbral de presupuesto inválido',
   code_BUDGET_EXCEEDED: 'Presupuesto mensual excedido',
@@ -1251,6 +1267,10 @@ const FR: Translations = {
   code_API_KEY_DUPLICATE: 'Cette clé API existe déjà',
   code_PROVIDER_NOT_ENABLED: 'Fournisseur non activé',
   code_MODEL_NOT_AVAILABLE: 'Modèle non disponible',
+  code_MODEL_UNAVAILABLE: 'Le modèle sélectionné n’est plus disponible chez le fournisseur',
+  code_MODEL_PROBE_AUTH_ERROR: 'La validation du modèle a échoué car la clé API du fournisseur est invalide ou non autorisée',
+  code_MODEL_PROBE_TIMEOUT: 'La validation du modèle a expiré, veuillez réessayer',
+  code_MODEL_PROBE_CONNECTION_ERROR: 'La validation du modèle a échoué car le fournisseur est inaccessible',
   code_INVALID_BUDGET_LIMIT: 'Limite de budget invalide',
   code_INVALID_BUDGET_THRESHOLD: 'Seuil de budget invalide',
   code_BUDGET_EXCEEDED: 'Budget mensuel dépassé',
@@ -1523,6 +1543,10 @@ const DE: Translations = {
   code_API_KEY_DUPLICATE: 'Dieser API-Schlüssel existiert bereits',
   code_PROVIDER_NOT_ENABLED: 'Anbieter nicht aktiviert',
   code_MODEL_NOT_AVAILABLE: 'Modell nicht verfügbar',
+  code_MODEL_UNAVAILABLE: 'Das ausgewählte Modell ist beim Anbieter nicht mehr verfügbar',
+  code_MODEL_PROBE_AUTH_ERROR: 'Die Modellprüfung ist fehlgeschlagen, weil der API-Schlüssel des Anbieters ungültig ist oder keine Berechtigung hat',
+  code_MODEL_PROBE_TIMEOUT: 'Die Modellprüfung hat das Zeitlimit überschritten, bitte erneut versuchen',
+  code_MODEL_PROBE_CONNECTION_ERROR: 'Die Modellprüfung ist fehlgeschlagen, weil der Anbieter nicht erreichbar ist',
   code_INVALID_BUDGET_LIMIT: 'Ungültiges Budget-Limit',
   code_INVALID_BUDGET_THRESHOLD: 'Ungültige Budget-Schwelle',
   code_BUDGET_EXCEEDED: 'Monatsbudget überschritten',
@@ -1795,6 +1819,10 @@ const JA: Translations = {
   code_API_KEY_DUPLICATE: 'このAPIキーは既に存在します',
   code_PROVIDER_NOT_ENABLED: 'プロバイダーが有効化されていません',
   code_MODEL_NOT_AVAILABLE: 'モデルが利用できません',
+  code_MODEL_UNAVAILABLE: '選択したモデルは現在そのプロバイダーで利用できません',
+  code_MODEL_PROBE_AUTH_ERROR: 'モデル検証に失敗しました。現在のプロバイダー API キーが無効か権限不足です',
+  code_MODEL_PROBE_TIMEOUT: 'モデル検証がタイムアウトしました。再試行してください',
+  code_MODEL_PROBE_CONNECTION_ERROR: 'モデル検証に失敗しました。現在プロバイダーに接続できません',
   code_INVALID_BUDGET_LIMIT: '無効な予算上限',
   code_INVALID_BUDGET_THRESHOLD: '無効な予算閾値',
   code_BUDGET_EXCEEDED: '月間予算を超過しました',
@@ -2067,6 +2095,10 @@ const KO: Translations = {
   code_API_KEY_DUPLICATE: '이 API 키는 이미 존재합니다',
   code_PROVIDER_NOT_ENABLED: '공급자가 활성화되지 않음',
   code_MODEL_NOT_AVAILABLE: '모델을 사용할 수 없음',
+  code_MODEL_UNAVAILABLE: '선택한 모델은 현재 해당 공급자에서 더 이상 사용할 수 없습니다',
+  code_MODEL_PROBE_AUTH_ERROR: '모델 검증에 실패했습니다. 현재 공급자 API 키가 유효하지 않거나 권한이 없습니다',
+  code_MODEL_PROBE_TIMEOUT: '모델 검증 시간이 초과되었습니다. 다시 시도해 주세요',
+  code_MODEL_PROBE_CONNECTION_ERROR: '모델 검증에 실패했습니다. 현재 공급자에 연결할 수 없습니다',
   code_INVALID_BUDGET_LIMIT: '잘못된 예산 한도',
   code_INVALID_BUDGET_THRESHOLD: '잘못된 예산 임계값',
   code_BUDGET_EXCEEDED: '월간 예산 초과',

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 import structlog
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from ternion.core.budget import budget_manager
@@ -25,6 +25,10 @@ from ternion.core.config_store import (
     config_store,
 )
 from ternion.core.model_catalog import CatalogModel, model_catalog_service
+from ternion.core.model_probe import (
+    ModelAvailabilityProbeResult,
+    model_availability_probe_service,
+)
 from ternion.providers.manager import provider_manager
 from ternion.server.model_catalog_refresh import (
     VALID_REFRESH_MODES,
@@ -193,6 +197,20 @@ async def _get_catalog_model_for_provider(provider: str, model_id: str) -> Catal
     return model
 
 
+def _build_model_probe_failure_response(result: ModelAvailabilityProbeResult) -> JSONResponse:
+    """Build a structured HTTP response for a failed model probe."""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "detail": result.code,
+            "provider": result.provider,
+            "model": result.model,
+            "message": redact_secrets(result.message),
+            "refresh_suggested": result.refresh_suggested,
+        },
+    )
+
+
 # Endpoints
 @router.get("/config")
 async def get_config() -> dict:
@@ -340,8 +358,8 @@ async def select_api_key(request: SelectApiKeyRequest) -> dict:
     }
 
 
-@router.post("/config")
-async def update_config(request: ConfigUpdateRequest) -> dict:
+@router.post("/config", response_model=None)
+async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
     """
     Update configuration.
 
@@ -396,6 +414,24 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
                 status_code=400,
                 detail=f"ROLES_INCOMPLETE:{','.join(missing_roles)}",
             )
+
+        unique_pairs: set[tuple[str, str]] = set()
+        for role_name in required_roles:
+            role_cfg = next_roles[role_name]
+            unique_pairs.add((role_cfg.provider, role_cfg.model))
+
+        for provider, model in sorted(unique_pairs):
+            api_key = config_store.get_provider_api_key(provider)
+            if not api_key:
+                raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
+
+            probe_result = await model_availability_probe_service.probe_model(
+                provider=provider,
+                model=model,
+                api_key=api_key,
+            )
+            if not probe_result.ok:
+                return _build_model_probe_failure_response(probe_result)
 
         # Commit updates only after validation succeeds
         config.roles = next_roles
