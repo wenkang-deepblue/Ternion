@@ -143,29 +143,30 @@ class TestControlRoutesModelCatalog:
         """`POST /api/models/refresh` should force a remote refresh for initialization."""
         with (
             patch("ternion.server.control_routes.config_store") as mock_config_store,
-            patch("ternion.server.control_routes.model_catalog_service") as mock_catalog_service,
+            patch(
+                "ternion.server.control_routes.refresh_catalog_and_update_schedule",
+                new=AsyncMock(
+                    return_value={
+                        "models": {
+                            "openai": [{"id": "gpt-5.2-2025-12-11", "name": "GPT 5.2"}],
+                            "google": [],
+                            "anthropic": [],
+                        },
+                        "last_updated_at": "2026-03-06T12:30:00Z",
+                        "model_count": 1,
+                        "catalog_initialized": True,
+                        "requires_initialization": False,
+                        "catalog_anomaly_detected": False,
+                        "catalog_anomaly_summary": "",
+                        "catalog_anomaly_updated_at": "",
+                        "catalog_anomaly_providers": [],
+                        "anomaly_report_available": False,
+                    }
+                ),
+            ) as mock_refresh_catalog,
         ):
             mock_config_store.get_enabled_providers.return_value = ["openai"]
             mock_config_store.load.return_value = _build_enabled_openai_config()
-            mock_catalog_service.refresh_snapshot = AsyncMock()
-            mock_catalog_service.get_models_payload = AsyncMock(
-                return_value={
-                    "models": {
-                        "openai": [{"id": "gpt-5.2-2025-12-11", "name": "GPT 5.2"}],
-                        "google": [],
-                        "anthropic": [],
-                    },
-                    "last_updated_at": "2026-03-06T12:30:00Z",
-                    "model_count": 1,
-                    "catalog_initialized": True,
-                    "requires_initialization": False,
-                    "catalog_anomaly_detected": False,
-                    "catalog_anomaly_summary": "",
-                    "catalog_anomaly_updated_at": "",
-                    "catalog_anomaly_providers": [],
-                    "anomaly_report_available": False,
-                }
-            )
 
             client = TestClient(app)
             response = client.post("/api/models/refresh")
@@ -173,49 +174,50 @@ class TestControlRoutesModelCatalog:
             assert response.status_code == 200
             assert response.json()["success"] is True
             assert response.json()["catalog_initialized"] is True
-            mock_catalog_service.refresh_snapshot.assert_awaited_once()
+            mock_refresh_catalog.assert_awaited_once_with("manual")
 
     def test_refresh_models_returns_error_when_refresh_raises(self) -> None:
         """`POST /api/models/refresh` should map refresh failures to HTTP 503."""
         with (
             patch("ternion.server.control_routes.config_store") as mock_config_store,
-            patch("ternion.server.control_routes.model_catalog_service") as mock_catalog_service,
+            patch(
+                "ternion.server.control_routes.refresh_catalog_and_update_schedule",
+                new=AsyncMock(side_effect=RuntimeError("network unavailable")),
+            ) as mock_refresh_catalog,
         ):
             mock_config_store.get_enabled_providers.return_value = []
-            mock_catalog_service.refresh_snapshot = AsyncMock(
-                side_effect=RuntimeError("network unavailable")
-            )
 
             client = TestClient(app)
             response = client.post("/api/models/refresh")
 
             assert response.status_code == 503
             assert response.json()["detail"] == "MODEL_CATALOG_REFRESH_FAILED"
-            mock_catalog_service.get_models_payload.assert_not_called()
+            mock_refresh_catalog.assert_awaited_once_with("manual")
 
     def test_refresh_models_returns_error_when_initialization_still_missing(self) -> None:
         """`POST /api/models/refresh` should fail when no model list is obtained."""
         with (
             patch("ternion.server.control_routes.config_store") as mock_config_store,
-            patch("ternion.server.control_routes.model_catalog_service") as mock_catalog_service,
+            patch(
+                "ternion.server.control_routes.refresh_catalog_and_update_schedule",
+                new=AsyncMock(
+                    return_value={
+                        "models": {"openai": [], "google": [], "anthropic": []},
+                        "last_updated_at": "",
+                        "model_count": 0,
+                        "catalog_initialized": False,
+                        "requires_initialization": True,
+                        "catalog_anomaly_detected": True,
+                        "catalog_anomaly_summary": "Model catalog anomaly detected for anthropic.",
+                        "catalog_anomaly_updated_at": "2026-03-06T12:45:00Z",
+                        "catalog_anomaly_providers": ["anthropic"],
+                        "anomaly_report_available": True,
+                    }
+                ),
+            ),
         ):
             mock_config_store.get_enabled_providers.return_value = []
             mock_config_store.load.return_value = UserConfig()
-            mock_catalog_service.refresh_snapshot = AsyncMock()
-            mock_catalog_service.get_models_payload = AsyncMock(
-                return_value={
-                    "models": {"openai": [], "google": [], "anthropic": []},
-                    "last_updated_at": "",
-                    "model_count": 0,
-                    "catalog_initialized": False,
-                    "requires_initialization": True,
-                    "catalog_anomaly_detected": True,
-                    "catalog_anomaly_summary": "Model catalog anomaly detected for anthropic.",
-                    "catalog_anomaly_updated_at": "2026-03-06T12:45:00Z",
-                    "catalog_anomaly_providers": ["anthropic"],
-                    "anomaly_report_available": True,
-                }
-            )
 
             client = TestClient(app)
             response = client.post("/api/models/refresh")
@@ -229,30 +231,34 @@ class TestControlRoutesModelCatalog:
         """`POST /api/models/refresh` should surface anomaly state with preserved models."""
         with (
             patch("ternion.server.control_routes.config_store") as mock_config_store,
-            patch("ternion.server.control_routes.model_catalog_service") as mock_catalog_service,
+            patch(
+                "ternion.server.control_routes.refresh_catalog_and_update_schedule",
+                new=AsyncMock(
+                    return_value={
+                        "models": {
+                            "openai": [{"id": "gpt-5.2-2025-12-11", "name": "GPT 5.2"}],
+                            "google": [{"id": "gemini-3-pro", "name": "Gemini 3 Pro"}],
+                            "anthropic": [
+                                {
+                                    "id": "claude-sonnet-4-5-20250929",
+                                    "name": "Claude Sonnet 4.5",
+                                }
+                            ],
+                        },
+                        "last_updated_at": "2026-03-06T12:50:00Z",
+                        "model_count": 3,
+                        "catalog_initialized": True,
+                        "requires_initialization": False,
+                        "catalog_anomaly_detected": True,
+                        "catalog_anomaly_summary": "Model catalog anomaly detected for anthropic.",
+                        "catalog_anomaly_updated_at": "2026-03-06T12:50:00Z",
+                        "catalog_anomaly_providers": ["anthropic"],
+                        "anomaly_report_available": True,
+                    }
+                ),
+            ),
         ):
             mock_config_store.get_enabled_providers.return_value = ["openai"]
-            mock_catalog_service.refresh_snapshot = AsyncMock()
-            mock_catalog_service.get_models_payload = AsyncMock(
-                return_value={
-                    "models": {
-                        "openai": [{"id": "gpt-5.2-2025-12-11", "name": "GPT 5.2"}],
-                        "google": [{"id": "gemini-3-pro", "name": "Gemini 3 Pro"}],
-                        "anthropic": [
-                            {"id": "claude-sonnet-4-5-20250929", "name": "Claude Sonnet 4.5"}
-                        ],
-                    },
-                    "last_updated_at": "2026-03-06T12:50:00Z",
-                    "model_count": 3,
-                    "catalog_initialized": True,
-                    "requires_initialization": False,
-                    "catalog_anomaly_detected": True,
-                    "catalog_anomaly_summary": "Model catalog anomaly detected for anthropic.",
-                    "catalog_anomaly_updated_at": "2026-03-06T12:50:00Z",
-                    "catalog_anomaly_providers": ["anthropic"],
-                    "anomaly_report_available": True,
-                }
-            )
 
             client = TestClient(app)
             response = client.post("/api/models/refresh")
@@ -261,6 +267,107 @@ class TestControlRoutesModelCatalog:
             assert response.json()["success"] is False
             assert response.json()["catalog_anomaly_detected"] is True
             assert response.json()["anomaly_report_available"] is True
+
+    def test_update_config_accepts_model_catalog_refresh_settings(self) -> None:
+        """`POST /api/config` should persist automatic refresh scheduling."""
+        config = UserConfig()
+
+        with (
+            patch("ternion.server.control_routes.config_store") as mock_config_store,
+            patch("ternion.server.control_routes.log_manager") as mock_log_manager,
+        ):
+            mock_config_store.load.return_value = config
+            mock_config_store.to_safe_dict.return_value = {"model_catalog_refresh": "safe"}
+            mock_log_manager.emit = MagicMock()
+
+            client = TestClient(app)
+            response = client.post(
+                "/api/config",
+                json={
+                    "model_catalog_refresh": {
+                        "enabled": True,
+                        "mode": "interval_weeks",
+                        "time_of_day": "04:30",
+                        "interval_value": 2,
+                    }
+                },
+            )
+
+            assert response.status_code == 200
+            assert response.json() == {"success": True, "config": {"model_catalog_refresh": "safe"}}
+            assert config.model_catalog_refresh.enabled is True
+            assert config.model_catalog_refresh.mode == "interval_weeks"
+            assert config.model_catalog_refresh.time_of_day == "04:30"
+            assert config.model_catalog_refresh.interval_value == 2
+            assert config.model_catalog_refresh.next_refresh_at
+            mock_config_store.save.assert_called_once_with(config)
+
+    def test_update_config_rejects_invalid_model_catalog_refresh_time(self) -> None:
+        """`POST /api/config` should reject invalid automatic refresh times."""
+        with patch("ternion.server.control_routes.config_store") as mock_config_store:
+            mock_config_store.load.return_value = UserConfig()
+
+            client = TestClient(app)
+            response = client.post(
+                "/api/config",
+                json={"model_catalog_refresh": {"enabled": True, "time_of_day": "25:61"}},
+            )
+
+            assert response.status_code == 400
+            assert response.json()["detail"] == "INVALID_MODEL_CATALOG_REFRESH_TIME"
+
+    def test_update_config_rejects_invalid_model_catalog_refresh_mode(self) -> None:
+        """`POST /api/config` should reject unknown automatic refresh modes."""
+        with patch("ternion.server.control_routes.config_store") as mock_config_store:
+            mock_config_store.load.return_value = UserConfig()
+
+            client = TestClient(app)
+            response = client.post(
+                "/api/config",
+                json={"model_catalog_refresh": {"enabled": True, "mode": "hourly"}},
+            )
+
+            assert response.status_code == 400
+            assert response.json()["detail"] == "INVALID_MODEL_CATALOG_REFRESH_MODE"
+
+    def test_update_config_rejects_non_positive_model_catalog_refresh_interval(self) -> None:
+        """`POST /api/config` should reject non-positive refresh intervals."""
+        with patch("ternion.server.control_routes.config_store") as mock_config_store:
+            mock_config_store.load.return_value = UserConfig()
+
+            client = TestClient(app)
+            response = client.post(
+                "/api/config",
+                json={"model_catalog_refresh": {"enabled": True, "interval_value": 0}},
+            )
+
+            assert response.status_code == 400
+            assert response.json()["detail"] == "INVALID_MODEL_CATALOG_REFRESH_INTERVAL"
+
+    def test_update_config_disabling_refresh_clears_next_refresh_at(self) -> None:
+        """`POST /api/config` should clear next_refresh_at when auto-refresh is disabled."""
+        config = UserConfig()
+        config.model_catalog_refresh.enabled = True
+        config.model_catalog_refresh.next_refresh_at = "2026-03-07T03:00:00Z"
+
+        with (
+            patch("ternion.server.control_routes.config_store") as mock_config_store,
+            patch("ternion.server.control_routes.log_manager") as mock_log_manager,
+        ):
+            mock_config_store.load.return_value = config
+            mock_config_store.to_safe_dict.return_value = {"model_catalog_refresh": "safe"}
+            mock_log_manager.emit = MagicMock()
+
+            client = TestClient(app)
+            response = client.post(
+                "/api/config",
+                json={"model_catalog_refresh": {"enabled": False}},
+            )
+
+            assert response.status_code == 200
+            assert config.model_catalog_refresh.enabled is False
+            assert config.model_catalog_refresh.next_refresh_at == ""
+            mock_config_store.save.assert_called_once_with(config)
 
     def test_get_model_anomaly_report_returns_markdown(self) -> None:
         """`GET /api/models/anomaly-report` should expose the latest Markdown report."""

@@ -49,6 +49,8 @@ interface RoleModelConfigProps {
   executionMode?: string;
   /** The currently selected language code. */
   language: Language;
+  /** Incremented when the model catalog was refreshed elsewhere. */
+  modelsReloadSignal?: number;
 }
 
 const PROVIDER_NAMES: Record<string, string> = {
@@ -73,7 +75,15 @@ const MODEL_NAMES: Record<string, string> = {
 const DRAFT_STORAGE_KEY = 'ternion_role_model_draft';
 const CONFIG_NONEMPTY_MARKER_KEY = 'ternion_config_nonempty';
 
-export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executionMode, language }: RoleModelConfigProps) {
+export function RoleModelConfig({
+  config,
+  onConfigUpdate,
+  t,
+  isDarkMode,
+  executionMode,
+  language,
+  modelsReloadSignal = 0,
+}: RoleModelConfigProps) {
   const { showToast } = useToast();
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
   const [selectedRoles, setSelectedRoles] = useState<Record<string, RoleConfig>>({});
@@ -176,7 +186,7 @@ export function RoleModelConfig({ config, onConfigUpdate, t, isDarkMode, executi
 
   useEffect(() => {
     void loadModels();
-  }, [config, loadModels]);
+  }, [config, loadModels, modelsReloadSignal]);
 
   useEffect(() => {
     if (!config) return;

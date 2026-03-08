@@ -10,7 +10,7 @@ Provides REST API endpoints for the Web Control Panel to manage:
 
 import asyncio
 from collections.abc import AsyncGenerator
-from datetime import UTC
+from datetime import UTC, datetime
 
 import structlog
 from fastapi import APIRouter, HTTPException
@@ -18,9 +18,20 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from ternion.core.budget import budget_manager
-from ternion.core.config_store import ApiKeyEntry, ProviderConfig, RoleConfig, config_store
+from ternion.core.config_store import (
+    ApiKeyEntry,
+    ProviderConfig,
+    RoleConfig,
+    config_store,
+)
 from ternion.core.model_catalog import CatalogModel, model_catalog_service
 from ternion.providers.manager import provider_manager
+from ternion.server.model_catalog_refresh import (
+    VALID_REFRESH_MODES,
+    compute_next_refresh_at,
+    normalize_time_of_day,
+    refresh_catalog_and_update_schedule,
+)
 from ternion.utils.log_manager import log_manager
 from ternion.utils.secrets import redact_secrets
 
@@ -94,12 +105,22 @@ class BudgetUpdateRequest(BaseModel):
     alert_threshold: float | None = None
 
 
+class ModelCatalogRefreshUpdateRequest(BaseModel):
+    """Request to update model catalog refresh scheduling."""
+
+    enabled: bool | None = None
+    mode: str | None = None
+    time_of_day: str | None = None
+    interval_value: int | None = None
+
+
 class ConfigUpdateRequest(BaseModel):
     """Request to update configuration."""
 
     roles: RolesUpdateRequest | None = None
     budget: BudgetUpdateRequest | None = None
     execution_mode: str | None = None  # "cursor_handoff" or "ternion_full"
+    model_catalog_refresh: ModelCatalogRefreshUpdateRequest | None = None
 
 
 class RoleSelectionLogRequest(BaseModel):
@@ -439,6 +460,52 @@ async def update_config(request: ConfigUpdateRequest) -> dict:
                 f"Execution mode saved: {mode_display}",
             )
 
+    if request.model_catalog_refresh is not None:
+        refresh_settings = config.model_catalog_refresh
+        if request.model_catalog_refresh.enabled is not None:
+            refresh_settings.enabled = request.model_catalog_refresh.enabled
+        if request.model_catalog_refresh.mode is not None:
+            if request.model_catalog_refresh.mode not in VALID_REFRESH_MODES:
+                raise HTTPException(status_code=400, detail="INVALID_MODEL_CATALOG_REFRESH_MODE")
+            refresh_settings.mode = request.model_catalog_refresh.mode
+        if request.model_catalog_refresh.time_of_day is not None:
+            try:
+                refresh_settings.time_of_day = normalize_time_of_day(
+                    request.model_catalog_refresh.time_of_day
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="INVALID_MODEL_CATALOG_REFRESH_TIME",
+                ) from exc
+        if request.model_catalog_refresh.interval_value is not None:
+            if request.model_catalog_refresh.interval_value <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="INVALID_MODEL_CATALOG_REFRESH_INTERVAL",
+                )
+            refresh_settings.interval_value = request.model_catalog_refresh.interval_value
+
+        if refresh_settings.enabled:
+            refresh_settings.next_refresh_at = compute_next_refresh_at(
+                refresh_settings,
+                now=datetime.now(UTC),
+            )
+        else:
+            refresh_settings.next_refresh_at = ""
+
+        log_manager.emit(
+            "INFO",
+            "USER_ACTION",
+            (
+                "Model catalog auto-refresh updated: "
+                f"enabled={refresh_settings.enabled}, "
+                f"mode={refresh_settings.mode}, "
+                f"time={refresh_settings.time_of_day}, "
+                f"interval={refresh_settings.interval_value}"
+            ),
+        )
+
     config_store.save(config)
     logger.info("config_updated")
 
@@ -709,15 +776,8 @@ async def refresh_models() -> dict:
     enabled = config_store.get_enabled_providers()
 
     try:
-        await model_catalog_service.refresh_snapshot()
-        payload = await model_catalog_service.get_models_payload()
+        payload = await refresh_catalog_and_update_schedule("manual")
     except Exception as exc:
-        logger.warning(
-            "model_catalog_refresh_failed",
-            error_type=type(exc).__name__,
-            error=str(exc),
-            exc_info=True,
-        )
         raise HTTPException(status_code=503, detail="MODEL_CATALOG_REFRESH_FAILED") from exc
 
     if payload["requires_initialization"]:

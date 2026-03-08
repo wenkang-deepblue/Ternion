@@ -81,6 +81,41 @@ export interface Translations {
   apiKeyAdded: string;
   errorUnknown: string;
   successConnected: string;
+  modelCatalogTitle: string;
+  modelCatalogDescription: string;
+  modelCatalogInitialize: string;
+  modelCatalogInitializing: string;
+  modelCatalogRefreshNow: string;
+  modelCatalogRefreshing: string;
+  modelCatalogInitSuccess: string;
+  modelCatalogInitFailed: string;
+  modelCatalogInitAnomaly: string;
+  modelCatalogRefreshSuccess: string;
+  modelCatalogRefreshFailed: string;
+  modelCatalogRefreshAnomaly: string;
+  modelCatalogStatus: string;
+  modelCatalogStatusReady: string;
+  modelCatalogStatusNeedsInitialization: string;
+  modelCatalogModelCount: string;
+  modelCatalogCatalogUpdatedAt: string;
+  modelCatalogScheduleTitle: string;
+  modelCatalogScheduleDescription: string;
+  modelCatalogScheduleEnabled: string;
+  modelCatalogScheduleMode: string;
+  modelCatalogScheduleDaily: string;
+  modelCatalogScheduleDays: string;
+  modelCatalogScheduleWeeks: string;
+  modelCatalogScheduleTime: string;
+  modelCatalogScheduleInterval: string;
+  modelCatalogScheduleSaved: string;
+  modelCatalogLastRefreshAt: string;
+  modelCatalogNextRefreshAt: string;
+  modelCatalogAnomalyBanner: string;
+  modelCatalogAnomalyHelp: string;
+  modelCatalogAnomalyUpdatedAt: string;
+  modelCatalogRetry: string;
+  modelCatalogViewDetails: string;
+  modelCatalogDetailsTitle: string;
 
   // Status Bar - Ternion
   statusConfigTernionA: string;
@@ -109,6 +144,11 @@ export interface Translations {
   code_STREAM_INTERRUPTED: string;
   code_ROLES_INCOMPLETE: string;
   code_ROLES_INCOMPLETE_SUFFIX: string;
+  code_MODEL_CATALOG_REFRESH_FAILED: string;
+  code_MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND: string;
+  code_INVALID_MODEL_CATALOG_REFRESH_MODE: string;
+  code_INVALID_MODEL_CATALOG_REFRESH_TIME: string;
+  code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: string;
   saveChanges: string;
   saving: string;
   noApiKey: string;
@@ -404,10 +444,50 @@ const EN: Translations = {
   code_STREAM_INTERRUPTED: 'Stream interrupted, please retry',
   code_ROLES_INCOMPLETE: 'Please configure all roles before saving',
   code_ROLES_INCOMPLETE_SUFFIX: ' (missing: {roles})',
+  code_MODEL_CATALOG_REFRESH_FAILED: 'La actualización del catálogo de modelos falló',
+  code_MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND: 'No se encontró el informe de anomalías del catálogo',
+  code_INVALID_MODEL_CATALOG_REFRESH_MODE: 'Modo de actualización automática no válido',
+  code_INVALID_MODEL_CATALOG_REFRESH_TIME: 'Hora de actualización automática no válida',
+  code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: 'Intervalo de actualización automática no válido',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Unknown error',
   successConnected: 'Connected successfully',
+  modelCatalogTitle: 'Catálogo de Modelos',
+  modelCatalogDescription: 'Inicializa, actualiza y programa actualizaciones del catálogo de modelos de LiteLLM.',
+  modelCatalogInitialize: 'Inicializar lista de modelos',
+  modelCatalogInitializing: 'Inicializando...',
+  modelCatalogRefreshNow: 'Actualizar lista de modelos',
+  modelCatalogRefreshing: 'Actualizando...',
+  modelCatalogInitSuccess: 'El catálogo de modelos se inicializó correctamente',
+  modelCatalogInitFailed: 'No se pudo inicializar el catálogo de modelos',
+  modelCatalogInitAnomaly: 'El catálogo de modelos se inicializó, pero se detectó una anomalía',
+  modelCatalogRefreshSuccess: 'El catálogo de modelos se actualizó correctamente',
+  modelCatalogRefreshFailed: 'No se pudo actualizar el catálogo de modelos',
+  modelCatalogRefreshAnomaly: 'La actualización del catálogo terminó, pero se detectó una anomalía',
+  modelCatalogStatus: 'Estado del catálogo',
+  modelCatalogStatusReady: 'Listo',
+  modelCatalogStatusNeedsInitialization: 'Se requiere inicialización',
+  modelCatalogModelCount: 'Modelos disponibles',
+  modelCatalogCatalogUpdatedAt: 'Catálogo actualizado el',
+  modelCatalogScheduleTitle: 'Actualización automática',
+  modelCatalogScheduleDescription: 'Configure actualizaciones periódicas en segundo plano para el catálogo de modelos.',
+  modelCatalogScheduleEnabled: 'Habilitar actualización automática',
+  modelCatalogScheduleMode: 'Frecuencia de actualización',
+  modelCatalogScheduleDaily: 'Todos los días',
+  modelCatalogScheduleDays: 'Cada X días',
+  modelCatalogScheduleWeeks: 'Cada X semanas',
+  modelCatalogScheduleTime: 'Hora del día',
+  modelCatalogScheduleInterval: 'Valor del intervalo',
+  modelCatalogScheduleSaved: 'Configuración de actualización automática guardada',
+  modelCatalogLastRefreshAt: 'Última actualización',
+  modelCatalogNextRefreshAt: 'Próxima actualización',
+  modelCatalogAnomalyBanner: 'Se detectó una anomalía en el catálogo de modelos',
+  modelCatalogAnomalyHelp: 'Revise la configuración del proveedor, la conectividad de red o espere a que se actualicen las reglas de filtrado.',
+  modelCatalogAnomalyUpdatedAt: 'Anomalía actualizada el',
+  modelCatalogRetry: 'Reintentar',
+  modelCatalogViewDetails: 'Ver detalles',
+  modelCatalogDetailsTitle: 'Informe de anomalías del catálogo',
 
   // Toast messages
   toastConfigSaved: 'Configuration saved',
@@ -636,10 +716,50 @@ const ZH: Translations = {
   code_STREAM_INTERRUPTED: '流式传输中断，请重试',
   code_ROLES_INCOMPLETE: '请先完成所有角色的模型选择',
   code_ROLES_INCOMPLETE_SUFFIX: '（缺少：{roles}）',
+  code_MODEL_CATALOG_REFRESH_FAILED: '模型列表刷新失败',
+  code_MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND: '未找到模型目录异常报告',
+  code_INVALID_MODEL_CATALOG_REFRESH_MODE: '自动刷新模式无效',
+  code_INVALID_MODEL_CATALOG_REFRESH_TIME: '自动刷新时间无效',
+  code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: '自动刷新间隔无效',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '未知错误',
   successConnected: '连接成功',
+  modelCatalogTitle: '模型目录管理',
+  modelCatalogDescription: '初始化、手动刷新并配置 LiteLLM 模型目录的定时更新。',
+  modelCatalogInitialize: '初始化模型列表',
+  modelCatalogInitializing: '初始化中...',
+  modelCatalogRefreshNow: '刷新模型列表',
+  modelCatalogRefreshing: '刷新中...',
+  modelCatalogInitSuccess: '模型列表初始化成功',
+  modelCatalogInitFailed: '模型列表初始化失败',
+  modelCatalogInitAnomaly: '模型列表已初始化，但检测到目录异常',
+  modelCatalogRefreshSuccess: '模型列表刷新成功',
+  modelCatalogRefreshFailed: '模型列表刷新失败',
+  modelCatalogRefreshAnomaly: '模型列表刷新完成，但检测到目录异常',
+  modelCatalogStatus: '目录状态',
+  modelCatalogStatusReady: '可用',
+  modelCatalogStatusNeedsInitialization: '需要初始化',
+  modelCatalogModelCount: '可用模型数',
+  modelCatalogCatalogUpdatedAt: '目录更新时间',
+  modelCatalogScheduleTitle: '自动刷新',
+  modelCatalogScheduleDescription: '配置后台定时更新模型目录的计划。',
+  modelCatalogScheduleEnabled: '启用自动刷新',
+  modelCatalogScheduleMode: '刷新频率',
+  modelCatalogScheduleDaily: '每天固定时间',
+  modelCatalogScheduleDays: '每隔 X 天',
+  modelCatalogScheduleWeeks: '每隔 X 周',
+  modelCatalogScheduleTime: '刷新时间',
+  modelCatalogScheduleInterval: '间隔值',
+  modelCatalogScheduleSaved: '自动刷新设置已保存',
+  modelCatalogLastRefreshAt: '上次刷新时间',
+  modelCatalogNextRefreshAt: '下次刷新时间',
+  modelCatalogAnomalyBanner: '模型列表获取异常，请检查 provider 配置、网络或等待规则更新',
+  modelCatalogAnomalyHelp: '建议检查 provider 配置、网络连通性，或等待过滤规则更新后再重试。',
+  modelCatalogAnomalyUpdatedAt: '异常更新时间',
+  modelCatalogRetry: '重试',
+  modelCatalogViewDetails: '查看详情',
+  modelCatalogDetailsTitle: '模型目录异常报告',
 
   // Toast messages
   toastConfigSaved: '配置已保存',
@@ -866,10 +986,50 @@ const ES: Translations = {
   code_STREAM_INTERRUPTED: 'Transmisión interrumpida, por favor reintente',
   code_ROLES_INCOMPLETE: 'Configure todos los roles antes de guardar',
   code_ROLES_INCOMPLETE_SUFFIX: ' (faltan: {roles})',
+  code_MODEL_CATALOG_REFRESH_FAILED: 'L\'actualisation du catalogue de modeles a echoue',
+  code_MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND: 'Rapport d\'anomalie du catalogue introuvable',
+  code_INVALID_MODEL_CATALOG_REFRESH_MODE: 'Mode d\'actualisation automatique invalide',
+  code_INVALID_MODEL_CATALOG_REFRESH_TIME: 'Heure d\'actualisation automatique invalide',
+  code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: 'Intervalle d\'actualisation automatique invalide',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Error desconocido',
   successConnected: 'Conectado exitosamente',
+  modelCatalogTitle: 'Catalogue de modeles',
+  modelCatalogDescription: 'Initialisez, actualisez et planifiez les mises a jour du catalogue de modeles LiteLLM.',
+  modelCatalogInitialize: 'Initialiser la liste des modeles',
+  modelCatalogInitializing: 'Initialisation...',
+  modelCatalogRefreshNow: 'Actualiser la liste des modeles',
+  modelCatalogRefreshing: 'Actualisation...',
+  modelCatalogInitSuccess: 'Le catalogue de modeles a ete initialise avec succes',
+  modelCatalogInitFailed: 'Impossible d\'initialiser le catalogue de modeles',
+  modelCatalogInitAnomaly: 'Le catalogue de modeles a ete initialise, mais une anomalie a ete detectee',
+  modelCatalogRefreshSuccess: 'Le catalogue de modeles a ete actualise avec succes',
+  modelCatalogRefreshFailed: 'Impossible d\'actualiser le catalogue de modeles',
+  modelCatalogRefreshAnomaly: 'L\'actualisation du catalogue est terminee, mais une anomalie a ete detectee',
+  modelCatalogStatus: 'Etat du catalogue',
+  modelCatalogStatusReady: 'Pret',
+  modelCatalogStatusNeedsInitialization: 'Initialisation requise',
+  modelCatalogModelCount: 'Modeles disponibles',
+  modelCatalogCatalogUpdatedAt: 'Catalogue mis a jour le',
+  modelCatalogScheduleTitle: 'Actualisation automatique',
+  modelCatalogScheduleDescription: 'Configurez des actualisations periodiques en arriere-plan pour le catalogue de modeles.',
+  modelCatalogScheduleEnabled: 'Activer l\'actualisation automatique',
+  modelCatalogScheduleMode: 'Frequence d\'actualisation',
+  modelCatalogScheduleDaily: 'Chaque jour',
+  modelCatalogScheduleDays: 'Tous les X jours',
+  modelCatalogScheduleWeeks: 'Toutes les X semaines',
+  modelCatalogScheduleTime: 'Heure de la journee',
+  modelCatalogScheduleInterval: 'Valeur de l\'intervalle',
+  modelCatalogScheduleSaved: 'Parametres d\'actualisation automatique enregistres',
+  modelCatalogLastRefreshAt: 'Derniere actualisation',
+  modelCatalogNextRefreshAt: 'Prochaine actualisation',
+  modelCatalogAnomalyBanner: 'Une anomalie du catalogue de modeles a ete detectee',
+  modelCatalogAnomalyHelp: 'Verifiez la configuration du fournisseur, la connectivite reseau ou attendez la mise a jour des regles de filtrage.',
+  modelCatalogAnomalyUpdatedAt: 'Anomalie mise a jour le',
+  modelCatalogRetry: 'Reessayer',
+  modelCatalogViewDetails: 'Voir les details',
+  modelCatalogDetailsTitle: 'Rapport d\'anomalie du catalogue',
 
   // Toast messages
   toastConfigSaved: 'Configuración guardada',
@@ -1098,10 +1258,50 @@ const FR: Translations = {
   code_STREAM_INTERRUPTED: 'Transmission interrompue, veuillez réessayer',
   code_ROLES_INCOMPLETE: 'Veuillez configurer tous les rôles avant d\'enregistrer',
   code_ROLES_INCOMPLETE_SUFFIX: ' (manquant: {roles})',
+  code_MODEL_CATALOG_REFRESH_FAILED: 'Aktualisierung des Modellkatalogs fehlgeschlagen',
+  code_MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND: 'Anomaliebericht zum Modellkatalog nicht gefunden',
+  code_INVALID_MODEL_CATALOG_REFRESH_MODE: 'Ungueltiger automatischer Aktualisierungsmodus',
+  code_INVALID_MODEL_CATALOG_REFRESH_TIME: 'Ungueltige automatische Aktualisierungszeit',
+  code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: 'Ungueltiges automatisches Aktualisierungsintervall',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Erreur inconnue',
   successConnected: 'Connecté avec succès',
+  modelCatalogTitle: 'Modellkatalog',
+  modelCatalogDescription: 'Initialisieren, aktualisieren und planen Sie Aktualisierungen des LiteLLM-Modellkatalogs.',
+  modelCatalogInitialize: 'Modellliste initialisieren',
+  modelCatalogInitializing: 'Initialisierung...',
+  modelCatalogRefreshNow: 'Modellliste aktualisieren',
+  modelCatalogRefreshing: 'Aktualisierung...',
+  modelCatalogInitSuccess: 'Der Modellkatalog wurde erfolgreich initialisiert',
+  modelCatalogInitFailed: 'Der Modellkatalog konnte nicht initialisiert werden',
+  modelCatalogInitAnomaly: 'Der Modellkatalog wurde initialisiert, aber es wurde eine Anomalie erkannt',
+  modelCatalogRefreshSuccess: 'Der Modellkatalog wurde erfolgreich aktualisiert',
+  modelCatalogRefreshFailed: 'Der Modellkatalog konnte nicht aktualisiert werden',
+  modelCatalogRefreshAnomaly: 'Die Aktualisierung des Modellkatalogs wurde abgeschlossen, aber es wurde eine Anomalie erkannt',
+  modelCatalogStatus: 'Katalogstatus',
+  modelCatalogStatusReady: 'Bereit',
+  modelCatalogStatusNeedsInitialization: 'Initialisierung erforderlich',
+  modelCatalogModelCount: 'Verfuegbare Modelle',
+  modelCatalogCatalogUpdatedAt: 'Katalog aktualisiert am',
+  modelCatalogScheduleTitle: 'Automatische Aktualisierung',
+  modelCatalogScheduleDescription: 'Konfigurieren Sie periodische Hintergrundaktualisierungen fuer den Modellkatalog.',
+  modelCatalogScheduleEnabled: 'Automatische Aktualisierung aktivieren',
+  modelCatalogScheduleMode: 'Aktualisierungshaeufigkeit',
+  modelCatalogScheduleDaily: 'Jeden Tag',
+  modelCatalogScheduleDays: 'Alle X Tage',
+  modelCatalogScheduleWeeks: 'Alle X Wochen',
+  modelCatalogScheduleTime: 'Uhrzeit',
+  modelCatalogScheduleInterval: 'Intervallwert',
+  modelCatalogScheduleSaved: 'Einstellungen fuer die automatische Aktualisierung wurden gespeichert',
+  modelCatalogLastRefreshAt: 'Letzte Aktualisierung',
+  modelCatalogNextRefreshAt: 'Naechste Aktualisierung',
+  modelCatalogAnomalyBanner: 'Eine Anomalie im Modellkatalog wurde erkannt',
+  modelCatalogAnomalyHelp: 'Bitte pruefen Sie die Anbieter-Konfiguration, die Netzwerkverbindung oder warten Sie auf aktualisierte Filterregeln.',
+  modelCatalogAnomalyUpdatedAt: 'Anomalie aktualisiert am',
+  modelCatalogRetry: 'Erneut versuchen',
+  modelCatalogViewDetails: 'Details anzeigen',
+  modelCatalogDetailsTitle: 'Anomaliebericht zum Katalog',
 
   // Toast messages
   toastConfigSaved: 'Configuration sauvegardée',
@@ -1330,10 +1530,50 @@ const DE: Translations = {
   code_STREAM_INTERRUPTED: 'Übertragung unterbrochen, bitte erneut versuchen',
   code_ROLES_INCOMPLETE: 'Bitte konfigurieren Sie alle Rollen, bevor Sie speichern',
   code_ROLES_INCOMPLETE_SUFFIX: ' (fehlend: {roles})',
+  code_MODEL_CATALOG_REFRESH_FAILED: 'モデルカタログの更新に失敗しました',
+  code_MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND: 'カタログ異常レポートが見つかりません',
+  code_INVALID_MODEL_CATALOG_REFRESH_MODE: '自動更新モードが無効です',
+  code_INVALID_MODEL_CATALOG_REFRESH_TIME: '自動更新時刻が無効です',
+  code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: '自動更新間隔が無効です',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Unbekannter Fehler',
   successConnected: 'Erfolgreich verbunden',
+  modelCatalogTitle: 'モデルカタログ',
+  modelCatalogDescription: 'LiteLLM モデルカタログの初期化、手動更新、定期更新を設定します。',
+  modelCatalogInitialize: 'モデル一覧を初期化',
+  modelCatalogInitializing: '初期化中...',
+  modelCatalogRefreshNow: 'モデル一覧を更新',
+  modelCatalogRefreshing: '更新中...',
+  modelCatalogInitSuccess: 'モデルカタログの初期化に成功しました',
+  modelCatalogInitFailed: 'モデルカタログの初期化に失敗しました',
+  modelCatalogInitAnomaly: 'モデルカタログは初期化されましたが、異常が検出されました',
+  modelCatalogRefreshSuccess: 'モデルカタログの更新に成功しました',
+  modelCatalogRefreshFailed: 'モデルカタログの更新に失敗しました',
+  modelCatalogRefreshAnomaly: 'モデルカタログの更新は完了しましたが、異常が検出されました',
+  modelCatalogStatus: 'カタログ状態',
+  modelCatalogStatusReady: '利用可能',
+  modelCatalogStatusNeedsInitialization: '初期化が必要です',
+  modelCatalogModelCount: '利用可能なモデル数',
+  modelCatalogCatalogUpdatedAt: 'カタログ更新日時',
+  modelCatalogScheduleTitle: '自動更新',
+  modelCatalogScheduleDescription: 'モデルカタログの定期バックグラウンド更新を設定します。',
+  modelCatalogScheduleEnabled: '自動更新を有効化',
+  modelCatalogScheduleMode: '更新頻度',
+  modelCatalogScheduleDaily: '毎日',
+  modelCatalogScheduleDays: 'X日ごと',
+  modelCatalogScheduleWeeks: 'X週間ごと',
+  modelCatalogScheduleTime: '更新時刻',
+  modelCatalogScheduleInterval: '間隔値',
+  modelCatalogScheduleSaved: '自動更新設定を保存しました',
+  modelCatalogLastRefreshAt: '前回の更新日時',
+  modelCatalogNextRefreshAt: '次回の更新日時',
+  modelCatalogAnomalyBanner: 'モデルカタログの異常が検出されました',
+  modelCatalogAnomalyHelp: 'プロバイダー設定やネットワーク接続を確認するか、フィルタールールの更新をお待ちください。',
+  modelCatalogAnomalyUpdatedAt: '異常更新日時',
+  modelCatalogRetry: '再試行',
+  modelCatalogViewDetails: '詳細を見る',
+  modelCatalogDetailsTitle: 'カタログ異常レポート',
 
   // Toast messages
   toastConfigSaved: 'Konfiguration gespeichert',
@@ -1562,10 +1802,50 @@ const JA: Translations = {
   code_STREAM_INTERRUPTED: '伝送中断、再試行してください',
   code_ROLES_INCOMPLETE: '保存する前にすべてのロールを設定してください',
   code_ROLES_INCOMPLETE_SUFFIX: '（不足：{roles}）',
+  code_MODEL_CATALOG_REFRESH_FAILED: '모델 카탈로그 새로고침에 실패했습니다',
+  code_MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND: '카탈로그 이상 보고서를 찾을 수 없습니다',
+  code_INVALID_MODEL_CATALOG_REFRESH_MODE: '자동 새로고침 모드가 올바르지 않습니다',
+  code_INVALID_MODEL_CATALOG_REFRESH_TIME: '자동 새로고침 시간이 올바르지 않습니다',
+  code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: '자동 새로고침 간격이 올바르지 않습니다',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '不明なエラー',
   successConnected: '接続成功',
+  modelCatalogTitle: '모델 카탈로그',
+  modelCatalogDescription: 'LiteLLM 모델 카탈로그의 초기화, 수동 새로고침, 예약 갱신을 설정합니다.',
+  modelCatalogInitialize: '모델 목록 초기화',
+  modelCatalogInitializing: '초기화 중...',
+  modelCatalogRefreshNow: '모델 목록 새로고침',
+  modelCatalogRefreshing: '새로고침 중...',
+  modelCatalogInitSuccess: '모델 카탈로그가 성공적으로 초기화되었습니다',
+  modelCatalogInitFailed: '모델 카탈로그를 초기화하지 못했습니다',
+  modelCatalogInitAnomaly: '모델 카탈로그가 초기화되었지만 이상이 감지되었습니다',
+  modelCatalogRefreshSuccess: '모델 카탈로그가 성공적으로 새로고침되었습니다',
+  modelCatalogRefreshFailed: '모델 카탈로그를 새로고침하지 못했습니다',
+  modelCatalogRefreshAnomaly: '모델 카탈로그 새로고침은 완료되었지만 이상이 감지되었습니다',
+  modelCatalogStatus: '카탈로그 상태',
+  modelCatalogStatusReady: '준비됨',
+  modelCatalogStatusNeedsInitialization: '초기화 필요',
+  modelCatalogModelCount: '사용 가능한 모델 수',
+  modelCatalogCatalogUpdatedAt: '카탈로그 갱신 시각',
+  modelCatalogScheduleTitle: '자동 새로고침',
+  modelCatalogScheduleDescription: '모델 카탈로그의 주기적인 백그라운드 새로고침을 설정합니다.',
+  modelCatalogScheduleEnabled: '자동 새로고침 활성화',
+  modelCatalogScheduleMode: '새로고침 주기',
+  modelCatalogScheduleDaily: '매일',
+  modelCatalogScheduleDays: 'X일마다',
+  modelCatalogScheduleWeeks: 'X주마다',
+  modelCatalogScheduleTime: '시간',
+  modelCatalogScheduleInterval: '간격 값',
+  modelCatalogScheduleSaved: '자동 새로고침 설정이 저장되었습니다',
+  modelCatalogLastRefreshAt: '마지막 새로고침 시각',
+  modelCatalogNextRefreshAt: '다음 새로고침 시각',
+  modelCatalogAnomalyBanner: '모델 카탈로그 이상이 감지되었습니다',
+  modelCatalogAnomalyHelp: '공급자 설정과 네트워크 연결을 확인하거나 필터 규칙이 갱신될 때까지 기다려 주세요.',
+  modelCatalogAnomalyUpdatedAt: '이상 갱신 시각',
+  modelCatalogRetry: '다시 시도',
+  modelCatalogViewDetails: '상세 보기',
+  modelCatalogDetailsTitle: '카탈로그 이상 보고서',
 
   // Toast messages
   toastConfigSaved: '設定を保存しました',
@@ -1794,10 +2074,50 @@ const KO: Translations = {
   code_STREAM_INTERRUPTED: '전송 중단, 다시 시도해 주세요',
   code_ROLES_INCOMPLETE: '저장하기 전에 모든 역할을 구성하세요',
   code_ROLES_INCOMPLETE_SUFFIX: '（누락：{roles}）',
+  code_MODEL_CATALOG_REFRESH_FAILED: 'Model catalog refresh failed',
+  code_MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND: 'Catalog anomaly report not found',
+  code_INVALID_MODEL_CATALOG_REFRESH_MODE: 'Invalid automatic refresh mode',
+  code_INVALID_MODEL_CATALOG_REFRESH_TIME: 'Invalid automatic refresh time',
+  code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: 'Invalid automatic refresh interval',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '알 수 없는 오류',
   successConnected: '연결 성공',
+  modelCatalogTitle: 'Model Catalog',
+  modelCatalogDescription: 'Initialize, refresh, and schedule LiteLLM model catalog updates.',
+  modelCatalogInitialize: 'Initialize Model List',
+  modelCatalogInitializing: 'Initializing...',
+  modelCatalogRefreshNow: 'Refresh Model List',
+  modelCatalogRefreshing: 'Refreshing...',
+  modelCatalogInitSuccess: 'Model catalog initialized successfully',
+  modelCatalogInitFailed: 'Failed to initialize model catalog',
+  modelCatalogInitAnomaly: 'Model catalog initialized, but an anomaly was detected',
+  modelCatalogRefreshSuccess: 'Model catalog refreshed successfully',
+  modelCatalogRefreshFailed: 'Failed to refresh model catalog',
+  modelCatalogRefreshAnomaly: 'Model catalog refresh completed, but an anomaly was detected',
+  modelCatalogStatus: 'Catalog status',
+  modelCatalogStatusReady: 'Ready',
+  modelCatalogStatusNeedsInitialization: 'Initialization required',
+  modelCatalogModelCount: 'Available models',
+  modelCatalogCatalogUpdatedAt: 'Catalog updated at',
+  modelCatalogScheduleTitle: 'Automatic Refresh',
+  modelCatalogScheduleDescription: 'Configure periodic background refreshes for the model catalog.',
+  modelCatalogScheduleEnabled: 'Enable automatic refresh',
+  modelCatalogScheduleMode: 'Refresh frequency',
+  modelCatalogScheduleDaily: 'Every day',
+  modelCatalogScheduleDays: 'Every X days',
+  modelCatalogScheduleWeeks: 'Every X weeks',
+  modelCatalogScheduleTime: 'Time of day',
+  modelCatalogScheduleInterval: 'Interval value',
+  modelCatalogScheduleSaved: 'Automatic refresh settings saved',
+  modelCatalogLastRefreshAt: 'Last refresh at',
+  modelCatalogNextRefreshAt: 'Next refresh at',
+  modelCatalogAnomalyBanner: 'Model catalog anomaly detected',
+  modelCatalogAnomalyHelp: 'Please check provider configuration, network connectivity, or wait for filtering rules to be updated.',
+  modelCatalogAnomalyUpdatedAt: 'Anomaly updated at',
+  modelCatalogRetry: 'Retry',
+  modelCatalogViewDetails: 'View Details',
+  modelCatalogDetailsTitle: 'Catalog Anomaly Report',
 
   // Toast messages
   toastConfigSaved: '설정 저장됨',

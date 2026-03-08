@@ -49,6 +49,31 @@ export interface PortsConfig {
 }
 
 /**
+ * Automatic model catalog refresh schedule persisted in the backend.
+ */
+export interface ModelCatalogRefreshConfig {
+  enabled: boolean;
+  mode: 'daily' | 'interval_days' | 'interval_weeks';
+  /** "HH:MM" in 24-hour format. */
+  time_of_day: string;
+  interval_value: number;
+  /** ISO-8601 UTC timestamp of the last successful refresh. */
+  last_refresh_at?: string;
+  /** ISO-8601 UTC timestamp of the next scheduled refresh. */
+  next_refresh_at?: string;
+}
+
+/**
+ * Writable subset of model catalog refresh settings accepted by the backend.
+ */
+export interface ModelCatalogRefreshUpdateRequest {
+  enabled?: boolean;
+  mode?: ModelCatalogRefreshConfig['mode'];
+  time_of_day?: string;
+  interval_value?: number;
+}
+
+/**
  * Complete application configuration persisted in the backend.
  * Captures all user settings including active models, budget limits, and UI preferences.
  */
@@ -57,12 +82,14 @@ export interface Config {
   roles: Record<string, RoleConfig>;
   budget: BudgetConfig;
   ports?: PortsConfig;
+  model_catalog_refresh?: ModelCatalogRefreshConfig;
   execution_mode?: string;
   preferences?: {
     theme: string;
     language: string;
     browser_language?: string;
     hide_usage_disclaimer?: boolean;
+    show_phase_indicators?: boolean;
   };
   updated_at?: string;
 }
@@ -281,6 +308,7 @@ class ApiClient {
   async updateConfig(config: Partial<{
     roles?: Record<string, RoleConfig>;
     budget?: Partial<BudgetConfig>;
+    model_catalog_refresh?: ModelCatalogRefreshUpdateRequest;
     execution_mode?: string;
     preferences?: {
       theme?: string;

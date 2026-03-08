@@ -13,6 +13,7 @@ import api from './api/client';
 import type { Config, ServerStatus } from './api/client';
 import { ToastProvider } from './components/Toast';
 import StatusBar from './components/StatusBar';
+import ModelCatalogManager from './components/ModelCatalogManager';
 import ApiKeyManager from './components/ApiKeyManager';
 import RoleModelConfig from './components/RoleModelConfig';
 import BudgetSettings from './components/BudgetSettings';
@@ -42,6 +43,7 @@ function AppContent() {
   const [config, setConfig] = useState<Config | null>(null);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [activeTab, setActiveTab] = useState<'config' | 'ports' | 'usage' | 'logs'>('config');
+  const [modelsReloadSignal, setModelsReloadSignal] = useState(0);
 
   // Store scroll positions for each tab
   const scrollPositions = useRef<Record<string, number>>({
@@ -161,6 +163,10 @@ function AppContent() {
     setConfig(newConfig);
     api.getStatus().then(setStatus).catch(console.error);
   };
+
+  const handleModelsReload = useCallback(() => {
+    setModelsReloadSignal(prev => prev + 1);
+  }, []);
 
   const handleThemeChange = useCallback(async (theme: ThemeMode) => {
     setThemeMode(theme);
@@ -291,9 +297,24 @@ function AppContent() {
       <main className="max-w-5xl mx-auto px-4 py-8">
         <div style={{ display: activeTab === 'config' ? 'block' : 'none' }}>
           <div className="space-y-6">
+            <ModelCatalogManager
+              config={config}
+              onConfigUpdate={handleConfigUpdate}
+              onModelsReload={handleModelsReload}
+              t={t}
+              language={effectiveLanguage}
+            />
             <ApiKeyManager config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} language={effectiveLanguage} />
             <ExecutionModeSelector config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} />
-            <RoleModelConfig config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} executionMode={config?.execution_mode} language={effectiveLanguage} />
+            <RoleModelConfig
+              config={config}
+              onConfigUpdate={handleConfigUpdate}
+              t={t}
+              isDarkMode={isDarkMode}
+              executionMode={config?.execution_mode}
+              language={effectiveLanguage}
+              modelsReloadSignal={modelsReloadSignal}
+            />
             <BudgetSettings config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} language={effectiveLanguage} />
           </div>
         </div>

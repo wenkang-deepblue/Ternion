@@ -14,7 +14,7 @@ import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 import structlog
 from pydantic import BaseModel, Field
@@ -76,6 +76,38 @@ class PortsConfig(BaseModel):
     web: int = 9120  # Web control panel port
 
 
+ModelCatalogRefreshMode = Literal["daily", "interval_days", "interval_weeks"]
+
+
+class ModelCatalogRefreshConfig(BaseModel):
+    """Configuration for automatic model catalog refresh scheduling."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether automatic model catalog refresh is enabled.",
+    )
+    mode: ModelCatalogRefreshMode = Field(
+        default="daily",
+        description="Refresh cadence: daily, every N days, or every N weeks.",
+    )
+    time_of_day: str = Field(
+        default="03:00",
+        description='Daily refresh time in 24-hour "HH:MM" format.',
+    )
+    interval_value: int = Field(
+        default=1,
+        description="Positive interval value used for day/week refresh modes.",
+    )
+    last_refresh_at: str = Field(
+        default="",
+        description="Last successful refresh time as an ISO-8601 UTC string.",
+    )
+    next_refresh_at: str = Field(
+        default="",
+        description="Next scheduled refresh time as an ISO-8601 UTC string.",
+    )
+
+
 class UserConfig(BaseModel):
     """Complete user configuration."""
 
@@ -101,6 +133,9 @@ class UserConfig(BaseModel):
     )
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
+    model_catalog_refresh: ModelCatalogRefreshConfig = Field(
+        default_factory=ModelCatalogRefreshConfig
+    )
     theme: str = "system"  # "light", "dark", "system"
     language: str = "auto"  # "auto", "en", "zh", "es", "fr", "de", "ja", "ko"
     # Browser-detected language (stored when language == "auto")
@@ -182,6 +217,34 @@ class ConfigStore:
                             "api_keys": [],
                             "selected_key_id": None,
                         }
+        refresh_settings = data.get("model_catalog_refresh")
+        if isinstance(refresh_settings, dict):
+            valid_modes = set(get_args(ModelCatalogRefreshMode))
+            if refresh_settings.get("mode") not in valid_modes:
+                refresh_settings["mode"] = "daily"
+
+            interval_value = refresh_settings.get("interval_value", 1)
+            try:
+                refresh_settings["interval_value"] = max(int(interval_value), 1)
+            except (TypeError, ValueError):
+                refresh_settings["interval_value"] = 1
+
+            time_of_day = refresh_settings.get("time_of_day")
+            if not isinstance(time_of_day, str):
+                refresh_settings["time_of_day"] = "03:00"
+            else:
+                parts = time_of_day.split(":")
+                try:
+                    hour, minute = (int(parts[0]), int(parts[1]))
+                    if len(parts) != 2 or not 0 <= hour <= 23 or not 0 <= minute <= 59:
+                        raise ValueError
+                except (IndexError, TypeError, ValueError):
+                    refresh_settings["time_of_day"] = "03:00"
+
+            for key in ("last_refresh_at", "next_refresh_at"):
+                value = refresh_settings.get(key)
+                if not isinstance(value, str):
+                    refresh_settings[key] = ""
         return data
 
     def load(self) -> UserConfig:
@@ -301,6 +364,14 @@ class ConfigStore:
             "ports": {
                 "backend": config.ports.backend,
                 "web": config.ports.web,
+            },
+            "model_catalog_refresh": {
+                "enabled": config.model_catalog_refresh.enabled,
+                "mode": config.model_catalog_refresh.mode,
+                "time_of_day": config.model_catalog_refresh.time_of_day,
+                "interval_value": config.model_catalog_refresh.interval_value,
+                "last_refresh_at": config.model_catalog_refresh.last_refresh_at,
+                "next_refresh_at": config.model_catalog_refresh.next_refresh_at,
             },
             "preferences": {
                 "theme": config.theme,

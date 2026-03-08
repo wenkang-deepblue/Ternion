@@ -4,8 +4,9 @@ FastAPI application for Ternion gateway.
 Provides the main application instance with middleware and exception handlers.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import structlog
 from fastapi import FastAPI, Request
@@ -18,6 +19,7 @@ from ternion.core.config_store import config_store
 from ternion.core.exceptions import TernionError
 from ternion.core.models import ErrorDetail, ErrorResponse
 from ternion.server.control_routes import router as control_router
+from ternion.server.model_catalog_refresh import run_model_catalog_refresh_scheduler
 from ternion.server.routes import router
 from ternion.utils.log_manager import log_manager
 
@@ -70,9 +72,23 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     )
     log_manager.emit("INFO", "LIFECYCLE", f"Server started (version {__version__})")
 
+    scheduler_stop_event = asyncio.Event()
+    scheduler_task = asyncio.create_task(
+        run_model_catalog_refresh_scheduler(scheduler_stop_event)
+    )
+
     yield  # Application runs here
 
     # Shutdown
+    scheduler_stop_event.set()
+    try:
+        await asyncio.wait_for(asyncio.shield(scheduler_task), timeout=5.0)
+    except TimeoutError:
+        scheduler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await scheduler_task
+    except Exception:
+        logger.warning("model_catalog_refresh_scheduler_shutdown_failed", exc_info=True)
     logger.info("ternion_shutting_down")
     log_manager.emit("INFO", "LIFECYCLE", "Server shutting down")
 
