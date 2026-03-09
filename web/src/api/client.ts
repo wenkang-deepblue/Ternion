@@ -5,6 +5,42 @@
 const API_BASE = '/api';
 
 /**
+ * Structured error payload returned by the backend.
+ */
+export interface ApiErrorPayload {
+  detail?: string;
+  code?: string;
+  message?: string;
+  provider?: string;
+  model?: string;
+  refresh_suggested?: boolean;
+}
+
+/**
+ * Error wrapper that preserves backend response metadata.
+ */
+export class ApiError extends Error {
+  status: number;
+  code: string;
+  payload: ApiErrorPayload;
+
+  constructor(status: number, payload: ApiErrorPayload) {
+    super(payload.message || payload.detail || `HTTP ${status}`);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = payload.code || payload.detail || `HTTP ${status}`;
+    this.payload = payload;
+  }
+}
+
+/**
+ * Type guard for API errors returned by the client.
+ */
+export function isApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError;
+}
+
+/**
  * Basic information for a configured API key.
  */
 export interface ApiKeyInfo {
@@ -96,7 +132,7 @@ export interface Config {
 
 /**
  * Detailed token usage and cost metrics for a single provider.
- * thoughts_tokens/thoughts_cost represent internal reasoning steps (e.g., formatting, tool calling).
+ * thoughts_tokens/thoughts_cost track reasoning/chain-of-thought tokens (e.g., extended thinking).
  */
 export interface ProviderDetail {
   input_tokens: number;
@@ -160,7 +196,7 @@ export interface UsageData {
 }
 
 /**
- * Basic identifier and display name for an LLM model.
+ * Metadata for an LLM model entry in the catalog, including staleness and pricing availability.
  */
 export interface ModelInfo {
   id: string;
@@ -229,10 +265,7 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      // Note: Try to extract structured JSON error messages from FastAPI responses
-      // before falling back to a generic HTTP status error.
-      const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-      throw new Error(error.detail || `HTTP ${response.status}`);
+      throw await this.buildApiError(response);
     }
 
     return response.json();
@@ -251,11 +284,36 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-      throw new Error(error.detail || `HTTP ${response.status}`);
+      throw await this.buildApiError(response);
     }
 
     return response.text();
+  }
+
+  /**
+   * Builds a normalized error instance from a failed HTTP response.
+   * Handles JSON objects, non-object JSON (arrays/numbers), plain text, and unreadable bodies.
+   */
+  private async buildApiError(response: Response): Promise<ApiError> {
+    let payload: ApiErrorPayload;
+
+    try {
+      const parsed: unknown = await response.clone().json();
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        payload = parsed as ApiErrorPayload;
+      } else {
+        payload = { detail: String(parsed) || `HTTP ${response.status}` };
+      }
+    } catch {
+      try {
+        const text = await response.text();
+        payload = { detail: text || `HTTP ${response.status}` };
+      } catch {
+        payload = { detail: `HTTP ${response.status}` };
+      }
+    }
+
+    return new ApiError(response.status, payload);
   }
 
   /**
@@ -338,7 +396,7 @@ class ApiClient {
   }
 
   /**
-   * Updates the global execution mode (e.g., automated vs review).
+   * Updates the global execution mode (e.g., cursor_handoff, ternion_full).
    */
   async logExecutionModeSelection(
     execution_mode: string
@@ -445,7 +503,7 @@ class ApiClient {
   }
 
   /**
-   * Zips and downloads the system logs directly from the backend.
+   * Exports current session logs to ~/.ternion/log.json on the server.
    */
   async downloadLogs(): Promise<{
     success: boolean;

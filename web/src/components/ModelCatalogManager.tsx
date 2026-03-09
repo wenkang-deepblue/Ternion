@@ -14,6 +14,7 @@ interface ModelCatalogManagerProps {
   config: Config | null;
   onConfigUpdate: (config: Config) => void;
   onModelsReload: () => void;
+  reloadSignal?: number;
   t: Translations;
   language: Language;
 }
@@ -48,6 +49,7 @@ export function ModelCatalogManager({
   config,
   onConfigUpdate,
   onModelsReload,
+  reloadSignal = 0,
   t,
   language,
 }: ModelCatalogManagerProps) {
@@ -89,7 +91,7 @@ export function ModelCatalogManager({
 
   useEffect(() => {
     void loadModels();
-  }, [loadModels]);
+  }, [loadModels, reloadSignal]);
 
   useEffect(() => {
     setSchedule(config?.model_catalog_refresh || DEFAULT_REFRESH_CONFIG);

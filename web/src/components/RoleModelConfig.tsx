@@ -8,13 +8,20 @@
  * - Reviewer: Code reviewer
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../api/client';
-import type { Config, RoleConfig, ModelsData, ModelInfo } from '../api/client';
+import type { ApiErrorPayload, Config, RoleConfig, ModelsData, ModelInfo } from '../api/client';
+import { isApiError } from '../api/client';
 import { useToast } from './toastContext';
 import type { Translations } from '../i18n';
 import { getErrorMessage, isCJKLanguage } from '../i18n';
 import type { Language } from '../i18n';
+import {
+  getModelName,
+  getModelSeriesName,
+  getProviderDisplayName,
+  isModelAvailableInCatalog,
+} from '../modelDisplay';
 
 // Section icon
 import characterIconLight from '../assets/icons/character_light_mode_50dp.svg';
@@ -51,29 +58,20 @@ interface RoleModelConfigProps {
   language: Language;
   /** Incremented when the model catalog was refreshed elsewhere. */
   modelsReloadSignal?: number;
+  /** Called after the model catalog is refreshed from this panel. */
+  onModelsReload: () => void;
 }
-
-const PROVIDER_NAMES: Record<string, string> = {
-  google: 'Gemini',
-  anthropic: 'Claude',
-  openai: 'GPT',
-};
-
-const MODEL_NAMES: Record<string, string> = {
-  'gemini-3-pro-preview': 'Gemini 3.0 Pro',
-  'gemini-3-flash-preview': 'Gemini 3.0 Flash',
-  'gemini-flash-lite-latest': 'Gemini 2.5 Flash Lite',
-  'claude-opus-4-5-20251101': 'Claude 4.5 Opus',
-  'claude-sonnet-4-5-20250929': 'Claude 4.5 Sonnet',
-  'claude-opus-4-1-20250805': 'Claude 4.1 Opus',
-  'gpt-5.2-pro-2025-12-11': 'GPT 5.2 Pro',
-  'gpt-5.2-2025-12-11': 'GPT 5.2',
-  'gpt-5.1-codex-max': 'GPT 5.1 Codex Max',
-  'gpt-5.1-codex': 'GPT 5.1 Codex',
-};
 
 const DRAFT_STORAGE_KEY = 'ternion_role_model_draft';
 const CONFIG_NONEMPTY_MARKER_KEY = 'ternion_config_nonempty';
+const ROLE_KEYS = ['ternion_a', 'ternion_b', 'ternion_c', 'arbiter', 'writer', 'reviewer'] as const;
+
+interface ModelUnavailableState {
+  provider: string;
+  model: string;
+  message: string;
+  refreshSuggested: boolean;
+}
 
 export function RoleModelConfig({
   config,
@@ -83,15 +81,20 @@ export function RoleModelConfig({
   executionMode,
   language,
   modelsReloadSignal = 0,
+  onModelsReload,
 }: RoleModelConfigProps) {
   const { showToast } = useToast();
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
   const [selectedRoles, setSelectedRoles] = useState<Record<string, RoleConfig>>({});
   const [saving, setSaving] = useState(false);
+  const [refreshingModels, setRefreshingModels] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const [invalidatedRoles, setInvalidatedRoles] = useState<string[]>([]);
+  const [modelUnavailableState, setModelUnavailableState] = useState<ModelUnavailableState | null>(null);
+  const previousReloadSignalRef = useRef(modelsReloadSignal);
+  const selfTriggeredReloadRef = useRef(false);
   const unsavedSeparator = isCJKLanguage(language) ? '，' : ', ';
 
-  // Check if role is disabled based on execution mode
   const isRoleDisabled = (role: string) => {
     if (executionMode === 'cursor_handoff') {
       return role === 'writer' || role === 'reviewer';
@@ -116,7 +119,6 @@ export function RoleModelConfig({
     return !hasExecutionMode && !hasAnyRoleConfigured && !hasAnyApiKeyConfigured;
   };
 
-  // Get role icon based on role type
   const getRoleIcon = (role: string) => {
     switch (role) {
       case 'ternion_a':
@@ -165,7 +167,6 @@ export function RoleModelConfig({
     },
   };
 
-  const ROLE_KEYS = Object.keys(ROLE_INFO);
   const ROLE_DISPLAY_NAMES: Record<string, string> = {
     ternion_a: t.ternionAName,
     ternion_b: t.ternionBName,
@@ -175,18 +176,69 @@ export function RoleModelConfig({
     reviewer: t.reviewerName,
   };
 
-  const loadModels = useCallback(async () => {
-    try {
-      const data = await api.getModels();
-      setModelsData(data);
-    } catch (error) {
-      console.error('Failed to load models:', error);
+  const persistDraft = useCallback((draft: Record<string, RoleConfig>) => {
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
     }
   }, []);
 
+  const loadModels = useCallback(async (): Promise<ModelsData | null> => {
+    try {
+      const data = await api.getModels();
+      setModelsData(data);
+      return data;
+    } catch (error) {
+      console.error('Failed to load models:', error);
+      showToast(t.modelCatalogRefreshFailed, 'error');
+      return null;
+    }
+  }, [showToast, t.modelCatalogRefreshFailed]);
+
   useEffect(() => {
     void loadModels();
-  }, [config, loadModels, modelsReloadSignal]);
+  }, [config, loadModels]);
+
+  const reconcileSelectionsAfterRefresh = useCallback((nextModelsData: ModelsData) => {
+    setSelectedRoles(prevRoles => {
+      const clearedRoles: string[] = [];
+      const nextRoles = { ...prevRoles };
+
+      for (const role of ROLE_KEYS) {
+        const roleConfig = prevRoles[role];
+        if (!roleConfig?.provider || !roleConfig?.model) continue;
+        if (isModelAvailableInCatalog(nextModelsData, roleConfig.provider, roleConfig.model)) continue;
+        nextRoles[role] = { ...roleConfig, model: '' };
+        clearedRoles.push(role);
+      }
+
+      if (clearedRoles.length > 0) {
+        persistDraft(nextRoles);
+        setHasChanges(true);
+        setInvalidatedRoles(prev => Array.from(new Set([...prev, ...clearedRoles])));
+        setModelUnavailableState(null);
+        showToast(t.roleConfigRemovedSelectionHint, 'info');
+        return nextRoles;
+      }
+      return prevRoles;
+    });
+  }, [persistDraft, showToast, t.roleConfigRemovedSelectionHint]);
+
+  useEffect(() => {
+    if (modelsReloadSignal === previousReloadSignalRef.current) {
+      return;
+    }
+    previousReloadSignalRef.current = modelsReloadSignal;
+    if (selfTriggeredReloadRef.current) {
+      selfTriggeredReloadRef.current = false;
+      return;
+    }
+    void (async () => {
+      const data = await loadModels();
+      if (data) {
+        reconcileSelectionsAfterRefresh(data);
+      }
+    })();
+  }, [loadModels, modelsReloadSignal, reconcileSelectionsAfterRefresh]);
 
   useEffect(() => {
     if (!config) return;
@@ -213,8 +265,8 @@ export function RoleModelConfig({
         setSelectedRoles(draft);
         setHasChanges(true);
         return;
-      } catch {
-        // ignore corrupted draft
+      } catch (e) {
+        console.warn('Discarding corrupted draft from sessionStorage:', e);
       }
     }
     if (config.roles) {
@@ -228,11 +280,11 @@ export function RoleModelConfig({
         ...prev,
         [role]: { provider, model: '' },
       };
-      if (typeof window !== 'undefined') {
-        window.sessionStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(next));
-      }
+      persistDraft(next);
       return next;
     });
+    setInvalidatedRoles(prev => prev.filter(item => item !== role));
+    setModelUnavailableState(null);
     setHasChanges(true);
   };
 
@@ -243,11 +295,11 @@ export function RoleModelConfig({
         ...prev,
         [role]: { ...prev[role], model },
       };
-      if (typeof window !== 'undefined') {
-        window.sessionStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(next));
-      }
+      persistDraft(next);
       return next;
     });
+    setInvalidatedRoles(prev => prev.filter(item => item !== role));
+    setModelUnavailableState(null);
     setHasChanges(true);
 
     if (!provider || !model) {
@@ -280,11 +332,12 @@ export function RoleModelConfig({
       });
       onConfigUpdate(updatedConfig);
       setHasChanges(false);
+      setInvalidatedRoles([]);
+      setModelUnavailableState(null);
       if (typeof window !== 'undefined') {
         window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
       }
 
-      // Build toast message with role configuration status
       const lines: string[] = [];
       const enabledProviders = modelsData?.enabled_providers || [];
 
@@ -295,9 +348,9 @@ export function RoleModelConfig({
         }
         const roleConfig = selectedRoles[role];
         if (roleConfig && enabledProviders.includes(roleConfig.provider)) {
-          const providerName = PROVIDER_NAMES[roleConfig.provider] || roleConfig.provider;
-          const modelName = MODEL_NAMES[roleConfig.model] || roleConfig.model;
-          lines.push(`${name}: ${providerName} / ${modelName}`);
+          const seriesName = getModelSeriesName(roleConfig.provider);
+          const modelName = getModelName(modelsData, roleConfig.provider, roleConfig.model);
+          lines.push(`${name}: ${seriesName} / ${modelName}`);
         } else {
           lines.push(`${name} ${t.toastNotConfigured}`);
         }
@@ -306,10 +359,43 @@ export function RoleModelConfig({
       showToast(lines.join('\n'), 'success');
     } catch (error) {
       console.error('Failed to save:', error);
+      if (isApiError(error) && error.code === 'MODEL_UNAVAILABLE') {
+        const payload: ApiErrorPayload = error.payload || {};
+        setModelUnavailableState({
+          provider: payload.provider || '',
+          model: payload.model || '',
+          message: payload.message || '',
+          refreshSuggested: Boolean(payload.refresh_suggested),
+        });
+        showToast(t.code_MODEL_UNAVAILABLE, 'error');
+        return;
+      }
       const errorCode = error instanceof Error ? error.message : String(error);
       showToast(getErrorMessage(t, errorCode, language), 'error');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleRefreshModels = async () => {
+    setRefreshingModels(true);
+    try {
+      const payload = await api.refreshModels();
+      setModelsData(payload);
+      reconcileSelectionsAfterRefresh(payload);
+      selfTriggeredReloadRef.current = true;
+      onModelsReload();
+
+      if (payload.catalog_anomaly_detected) {
+        showToast(t.modelCatalogRefreshAnomaly, 'info');
+      } else {
+        showToast(t.modelCatalogRefreshSuccess, 'success');
+      }
+    } catch (error) {
+      const errorCode = error instanceof Error ? error.message : String(error);
+      showToast(getErrorMessage(t, errorCode, language), 'error');
+    } finally {
+      setRefreshingModels(false);
     }
   };
 
@@ -336,7 +422,7 @@ export function RoleModelConfig({
   });
   const hasIncompleteRoles = !allRolesConfigured;
   const showSaveButton = enabledProviders.length > 0 && (hasAnySelection || hasChanges || allRolesConfigured);
-  const canSave = hasChanges && allRolesConfigured && enabledProviders.length > 0 && !saving;
+  const canSave = hasChanges && allRolesConfigured && enabledProviders.length > 0 && !saving && !refreshingModels;
   const saveButtonTitle = hasIncompleteRoles ? t.roleNotSaved : '';
 
   return (
@@ -356,7 +442,7 @@ export function RoleModelConfig({
                 <span className="text-slate-400 dark:text-slate-500">（</span>
                 <span className="inline-block w-2 h-2 rounded-full bg-green-500"></span>
                 <span className="text-green-600 dark:text-green-400">
-                  {t.apiKeyAdded}: {enabledProviders.map(p => PROVIDER_NAMES[p] || p).join(', ')}
+                  {t.apiKeyAdded}: {enabledProviders.map(p => getProviderDisplayName(p)).join(', ')}
                 </span>
                 <span className="text-slate-400 dark:text-slate-500">）</span>
               </span>
@@ -371,22 +457,69 @@ export function RoleModelConfig({
             disabled={!canSave}
             title={saveButtonTitle}
           >
-            {saving ? t.saving : t.saveChanges}
+            {saving ? t.roleConfigValidatingModel : t.saveChanges}
           </button>
         )}
       </div>
       <div className="card-body space-y-6">
+        {modelUnavailableState && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-4 dark:border-amber-700 dark:bg-amber-950/40">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div className="space-y-1">
+                <div className="font-medium text-amber-900 dark:text-amber-100">
+                  {t.code_MODEL_UNAVAILABLE}
+                </div>
+                <p className="text-sm text-amber-800 dark:text-amber-200">
+                  {modelUnavailableState.refreshSuggested
+                    ? t.roleConfigRefreshSuggested
+                    : getErrorMessage(t, 'MODEL_UNAVAILABLE', language)}
+                </p>
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  {getProviderDisplayName(modelUnavailableState.provider)} /{' '}
+                  {getModelName(
+                    modelsData,
+                    modelUnavailableState.provider,
+                    modelUnavailableState.model
+                  )}
+                </p>
+                {modelUnavailableState.message && (
+                  <p className="text-xs text-amber-700 dark:text-amber-300 break-words">
+                    {modelUnavailableState.message}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button className="btn btn-primary" onClick={handleSave} disabled={saving || refreshingModels}>
+                  {saving ? t.roleConfigValidatingModel : t.modelCatalogRetry}
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleRefreshModels}
+                  disabled={refreshingModels || saving}
+                >
+                  {refreshingModels ? t.modelCatalogRefreshing : t.modelCatalogRefreshNow}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {Object.entries(ROLE_INFO).map(([role, info]) => {
           const roleConfig = selectedRoles[role];
           const selectedProvider = roleConfig?.provider;
           const selectedModel = roleConfig?.model;
           const availableModels = modelsData?.models[selectedProvider] || [];
           const disabled = isRoleDisabled(role);
+          const highlighted = invalidatedRoles.includes(role);
 
           return (
             <div
               key={role}
-              className="p-4 rounded-lg border border-slate-200 dark:border-slate-700"
+              className={`p-4 rounded-lg border ${
+                highlighted
+                  ? 'border-amber-400 bg-amber-50/50 dark:border-amber-700 dark:bg-amber-950/20'
+                  : 'border-slate-200 dark:border-slate-700'
+              }`}
             >
               <div className="flex items-center gap-2 mb-4">
                 <img src={getRoleIcon(role)} alt="" className="w-6 h-6" />
@@ -417,7 +550,7 @@ export function RoleModelConfig({
                           value={provider}
                           disabled={!isEnabled}
                         >
-                          {PROVIDER_NAMES[provider] || provider}
+                          {getModelSeriesName(provider)}
                           {!isEnabled && ` ${t.noApiKey}`}
                         </option>
                       );
@@ -457,8 +590,11 @@ export function RoleModelConfig({
                   <>
                     <code className="px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded">
                       {roleConfig && enabledProviders.includes(roleConfig.provider)
-                        ? `${PROVIDER_NAMES[roleConfig.provider]} / ${availableModels.find(m => m.id === selectedModel)?.name || selectedModel
-                        }`
+                        ? `${getModelSeriesName(roleConfig.provider)} / ${getModelName(
+                            modelsData,
+                            roleConfig.provider,
+                            selectedModel
+                          )}`
                         : '--/----'}
                     </code>
                     {(!config?.roles?.[role] ||
@@ -469,6 +605,11 @@ export function RoleModelConfig({
                   </>
                 )}
               </div>
+              {highlighted && (
+                <p className="mt-3 text-sm text-amber-700 dark:text-amber-300">
+                  {t.roleConfigRemovedSelectionHint}
+                </p>
+              )}
             </div>
           );
         })}

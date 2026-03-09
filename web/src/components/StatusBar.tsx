@@ -5,8 +5,9 @@
  * Uses red/green dots to indicate pending/completed configuration items.
  */
 
-import type { Config } from '../api/client';
+import type { Config, ModelsData } from '../api/client';
 import type { Translations } from '../i18n';
+import { getModelName, getModelSeriesName, getProviderDisplayName } from '../modelDisplay';
 
 /**
  * Props for the StatusBar component.
@@ -14,28 +15,11 @@ import type { Translations } from '../i18n';
 interface StatusBarProps {
   /** The current global configuration object. */
   config: Config | null;
+  /** The current model catalog payload. */
+  modelsData: ModelsData | null;
   /** Translation function/object for localized strings. */
   t: Translations;
 }
-
-const PROVIDER_NAMES: Record<string, string> = {
-  google: 'Gemini',
-  anthropic: 'Claude',
-  openai: 'OpenAI',
-};
-
-const MODEL_NAMES: Record<string, string> = {
-  'gemini-3-pro-preview': 'Gemini 3.0 Pro',
-  'gemini-3-flash-preview': 'Gemini 3.0 Flash',
-  'gemini-flash-lite-latest': 'Gemini 2.5 Flash Lite',
-  'claude-opus-4-5-20251101': 'Claude 4.5 Opus',
-  'claude-sonnet-4-5-20250929': 'Claude 4.5 Sonnet',
-  'claude-opus-4-1-20250805': 'Claude 4.1 Opus',
-  'gpt-5.2-pro-2025-12-11': 'GPT 5.2 Pro',
-  'gpt-5.2-2025-12-11': 'GPT 5.2',
-  'gpt-5.1-codex-max': 'GPT 5.1 Codex Max',
-  'gpt-5.1-codex': 'GPT 5.1 Codex',
-};
 
 const EXEC_MODE_DISPLAY: Record<string, (t: Translations) => string> = {
   cursor_handoff: (t) => t.execModeCursorTitle,
@@ -69,27 +53,24 @@ function StatusItem({ isComplete, pendingText, completeText }: StatusItemProps) 
   );
 }
 
-export function StatusBar({ config, t }: StatusBarProps) {
-  // Check if any API key is configured
+export function StatusBar({ config, modelsData, t }: StatusBarProps) {
   const enabledProviders: string[] = [];
   if (config?.providers) {
     Object.entries(config.providers).forEach(([name, provider]) => {
       if (provider.enabled) {
-        enabledProviders.push(PROVIDER_NAMES[name] || name);
+        enabledProviders.push(getProviderDisplayName(name));
       }
     });
   }
   const hasApiKey = enabledProviders.length > 0;
 
-  // Check role configurations
   const roles = config?.roles || {};
-  
+
   const isRoleConfigured = (role: string) => {
     const roleConfig = roles[role];
     if (!roleConfig || !roleConfig.provider || !roleConfig.model) {
       return false;
     }
-    // Check if the provider is enabled
     const providerStatus = config?.providers[roleConfig.provider];
     return providerStatus?.enabled || false;
   };
@@ -99,21 +80,19 @@ export function StatusBar({ config, t }: StatusBarProps) {
     if (!roleConfig || !isRoleConfigured(role)) {
       return '';
     }
-    const providerName = PROVIDER_NAMES[roleConfig.provider] || roleConfig.provider;
-    const modelName = MODEL_NAMES[roleConfig.model] || roleConfig.model;
-    return `${roleName}: ${providerName} / ${modelName}`;
+    const seriesName = getModelSeriesName(roleConfig.provider);
+    const modelName = getModelName(modelsData, roleConfig.provider, roleConfig.model);
+    return `${roleName}: ${seriesName} / ${modelName}`;
   };
 
   const arbiterConfigured = isRoleConfigured('arbiter');
   const writerConfigured = isRoleConfigured('writer');
   const reviewerConfigured = isRoleConfigured('reviewer');
 
-  // Check council configurations
   const ternionAConfigured = isRoleConfigured('ternion_a');
   const ternionBConfigured = isRoleConfigured('ternion_b');
   const ternionCConfigured = isRoleConfigured('ternion_c');
 
-  // Execution mode status
   const executionMode = config?.execution_mode || '';
   const hasExecutionMode = executionMode === 'cursor_handoff' || executionMode === 'ternion_full';
   const execModeDisplay = hasExecutionMode ? EXEC_MODE_DISPLAY[executionMode]?.(t) || executionMode : '';

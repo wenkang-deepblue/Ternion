@@ -8,7 +8,7 @@
  * See: docs/ternion_architecture_design_doc.md Section 5.7.4
  */
 
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import fs from 'fs'
 import path from 'path'
@@ -52,6 +52,10 @@ console.log(`[vite] Web port: ${webPort}, Backend port: ${backendPort}`)
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    setupFiles: './src/test/setup.ts',
+  },
   server: {
     port: webPort,
     proxy: {

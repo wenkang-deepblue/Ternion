@@ -159,6 +159,9 @@ export interface Translations {
   roleNotSaved: string;
   roleSelectionPending: string;
   unsavedLabel: string;
+  roleConfigValidatingModel: string;
+  roleConfigRemovedSelectionHint: string;
+  roleConfigRefreshSuggested: string;
 
   // Budget Settings
   budgetTitle: string;
@@ -363,6 +366,9 @@ const EN: Translations = {
   roleNotSaved: 'Role model not saved yet',
   roleSelectionPending: 'role model selected {model}, not saved yet',
   unsavedLabel: 'not saved',
+  roleConfigValidatingModel: 'Validating model...',
+  roleConfigRemovedSelectionHint: 'Some selected models were removed from the refreshed catalog. Please reselect them.',
+  roleConfigRefreshSuggested: 'The model catalog may be outdated. Try refreshing the model list to resolve this issue.',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Please configure Ternion A model',
@@ -639,6 +645,9 @@ const ZH: Translations = {
   roleNotSaved: '角色模型未保存',
   roleSelectionPending: '角色模型选择 {model}，尚未保存',
   unsavedLabel: '尚未保存',
+  roleConfigValidatingModel: '正在验证模型...',
+  roleConfigRemovedSelectionHint: '部分已选模型已从最新模型列表中移除，请重新选择。',
+  roleConfigRefreshSuggested: '模型列表可能已过期，请尝试刷新模型列表以解决此问题。',
 
   // Status Bar - Ternion
   statusConfigTernionA: '请配置Ternion A 模型',
@@ -913,6 +922,9 @@ const ES: Translations = {
   roleNotSaved: 'Modelo de rol aún no guardado',
   roleSelectionPending: 'Modelo de rol seleccionado {model}, aún no guardado',
   unsavedLabel: 'no guardado',
+  roleConfigValidatingModel: 'Validando modelo...',
+  roleConfigRemovedSelectionHint: 'Algunos modelos seleccionados fueron eliminados del catálogo actualizado. Vuelva a seleccionarlos.',
+  roleConfigRefreshSuggested: 'El catálogo de modelos puede estar desactualizado. Intente actualizar la lista de modelos para resolver este problema.',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Configure modelo de Ternion A',
@@ -1189,6 +1201,9 @@ const FR: Translations = {
   roleNotSaved: 'Modèle de rôle non enregistré',
   roleSelectionPending: 'Modèle de rôle sélectionné {model}, non enregistré',
   unsavedLabel: 'non enregistré',
+  roleConfigValidatingModel: 'Validation du modèle...',
+  roleConfigRemovedSelectionHint: 'Certains modèles sélectionnés ont été retirés du catalogue actualisé. Veuillez les sélectionner à nouveau.',
+  roleConfigRefreshSuggested: 'Le catalogue de modèles est peut-être obsolète. Essayez d\'actualiser la liste des modèles pour résoudre ce problème.',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Configurez le modèle Ternion A',
@@ -1465,6 +1480,9 @@ const DE: Translations = {
   roleNotSaved: 'Rollenmodell noch nicht gespeichert',
   roleSelectionPending: 'Rollenmodell {model} ausgewählt, noch nicht gespeichert',
   unsavedLabel: 'noch nicht gespeichert',
+  roleConfigValidatingModel: 'Modell wird geprüft...',
+  roleConfigRemovedSelectionHint: 'Einige ausgewählte Modelle wurden aus dem aktualisierten Katalog entfernt. Bitte wählen Sie sie erneut aus.',
+  roleConfigRefreshSuggested: 'Der Modellkatalog ist möglicherweise veraltet. Versuchen Sie, die Modellliste zu aktualisieren, um das Problem zu beheben.',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Bitte konfigurieren Sie das Ternion A Modell',
@@ -1741,6 +1759,9 @@ const JA: Translations = {
   roleNotSaved: 'ロールモデルはまだ保存されていません',
   roleSelectionPending: 'ロールモデル {model} を選択、まだ保存されていません',
   unsavedLabel: '未保存',
+  roleConfigValidatingModel: 'モデルを検証中...',
+  roleConfigRemovedSelectionHint: '選択していた一部のモデルが更新後のカタログから削除されました。再選択してください。',
+  roleConfigRefreshSuggested: 'モデルカタログが古くなっている可能性があります。モデルリストを更新してこの問題を解決してください。',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Ternion A モデルを設定してください',
@@ -2017,6 +2038,9 @@ const KO: Translations = {
   roleNotSaved: '역할 모델이 아직 저장되지 않았습니다',
   roleSelectionPending: '역할 모델 {model} 선택, 아직 저장되지 않았습니다',
   unsavedLabel: '저장되지 않음',
+  roleConfigValidatingModel: '모델 검증 중...',
+  roleConfigRemovedSelectionHint: '선택한 일부 모델이 새로고침된 카탈로그에서 제거되었습니다. 다시 선택해 주세요.',
+  roleConfigRefreshSuggested: '모델 카탈로그가 최신이 아닐 수 있습니다. 모델 목록을 새로고침하여 이 문제를 해결해 보세요.',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Ternion A 모델을 구성해 주세요',

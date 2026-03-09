@@ -10,7 +10,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from './api/client';
-import type { Config, ServerStatus } from './api/client';
+import type { Config, ModelsData, ServerStatus } from './api/client';
 import { ToastProvider } from './components/Toast';
 import StatusBar from './components/StatusBar';
 import ModelCatalogManager from './components/ModelCatalogManager';
@@ -42,6 +42,7 @@ import logIconDark from './assets/icons/log_dark_mode_dp50.svg';
 function AppContent() {
   const [config, setConfig] = useState<Config | null>(null);
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  const [modelsData, setModelsData] = useState<ModelsData | null>(null);
   const [activeTab, setActiveTab] = useState<'config' | 'ports' | 'usage' | 'logs'>('config');
   const [modelsReloadSignal, setModelsReloadSignal] = useState(0);
 
@@ -97,6 +98,16 @@ function AppContent() {
     document.documentElement.classList.toggle('dark', isDarkMode);
   }, [isDarkMode]);
 
+  const loadModelsData = useCallback(async () => {
+    try {
+      const models = await api.getModels();
+      setModelsData(models);
+    } catch (error) {
+      console.error('Failed to load models:', error);
+      setModelsData(null);
+    }
+  }, []);
+
   const loadData = useCallback(async () => {
     try {
       const [configData, statusData] = await Promise.all([
@@ -105,6 +116,7 @@ function AppContent() {
       ]);
       setConfig(configData);
       setStatus(statusData);
+      await loadModelsData();
 
       // Load preferences from config
       if (configData?.preferences) {
@@ -125,7 +137,7 @@ function AppContent() {
     } catch (error) {
       console.error('Failed to load data:', error);
     }
-  }, []);
+  }, [loadModelsData]);
 
   // Load initial data and preferences
   useEffect(() => {
@@ -240,7 +252,7 @@ function AppContent() {
         </div>
 
         {/* Status Bar */}
-        <StatusBar config={config} t={t} />
+        <StatusBar config={config} modelsData={modelsData} t={t} />
 
         {/* Tabs */}
         <div className="max-w-5xl mx-auto px-4">
@@ -301,6 +313,7 @@ function AppContent() {
               config={config}
               onConfigUpdate={handleConfigUpdate}
               onModelsReload={handleModelsReload}
+              reloadSignal={modelsReloadSignal}
               t={t}
               language={effectiveLanguage}
             />
@@ -314,6 +327,7 @@ function AppContent() {
               executionMode={config?.execution_mode}
               language={effectiveLanguage}
               modelsReloadSignal={modelsReloadSignal}
+              onModelsReload={handleModelsReload}
             />
             <BudgetSettings config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} language={effectiveLanguage} />
           </div>
