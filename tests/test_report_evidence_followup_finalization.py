@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ternion.core.models import ChatCompletionRequest, ChatMessage, MessageRole
 from ternion.core.session_store import ExecutionMode, Session, SessionStage
@@ -283,7 +283,7 @@ async def test_report_evidence_followup_passes_resume_metadata_to_resume_workflo
         ],
         stream=False,
     )
-    # Note: Mocking a resumed state that preserves the metadata necessary 
+    # Note: Mocking a resumed state that preserves the metadata necessary
     # to continue correctly in subsequent calls.
     final_state = {
         "current_phase": "report_evidence",
@@ -488,7 +488,7 @@ async def test_report_evidence_followup_non_streaming_tool_calls_does_not_regres
         ],
         stream=False,
     )
-    # Note: Mocking the final state containing a pending tool call 
+    # Note: Mocking the final state containing a pending tool call
     # ensuring the topup round and resume phase are persisted correctly.
     final_state = {
         "current_phase": "report_evidence",
@@ -544,3 +544,68 @@ async def test_report_evidence_followup_non_streaming_tool_calls_does_not_regres
         persisted = tool_call_updates[-1]
         assert persisted.get("evidence_topup_round") == 1
         assert persisted.get("report_evidence_resume_phase") == "execution"
+
+
+@pytest.mark.asyncio
+async def test_report_evidence_followup_returns_runtime_model_unavailable_response() -> None:
+    """Report-evidence follow-up should preserve structured stale-model HTTP errors."""
+    session = Session(
+        session_id="0123456789ab",
+        stage=SessionStage.AWAITING_TOOL_RESULTS,
+        execution_mode=ExecutionMode.TERNION_FULL,
+        ternion_report_raw="REPORT",
+        ternion_report_safe="REPORT",
+        report_hash="hash",
+        created_at="2026-01-11T00:00:00Z",
+        updated_at="2026-01-11T00:00:00Z",
+        workflow_phase="report_evidence",
+    )
+    request = ChatCompletionRequest(
+        model="ternion-team",
+        messages=[
+            ChatMessage(
+                role=MessageRole.TOOL,
+                tool_call_id="ternion_0123456789ab_r0001_c00",
+                content="RESULT",
+            ),
+        ],
+        stream=False,
+    )
+    final_state = {
+        "current_phase": "complete",
+        "errors": ["runtime model unavailable"],
+        "runtime_error_payload": {
+            "code": "MODEL_UNAVAILABLE",
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "refresh_suggested": True,
+            "provider_message": "model not found",
+        },
+    }
+    mock_user_config = MagicMock()
+    mock_user_config.execution_mode = "ternion_full"
+    mock_user_config.show_phase_indicators = True
+    mock_user_config.show_thinking_logs = False
+    mock_user_config.language = "en"
+
+    with (
+        patch(
+            "ternion.workflow.graph.resume_report_evidence",
+            new_callable=AsyncMock,
+        ) as mock_resume,
+        patch("ternion.server.routes.config_store") as mock_config_store,
+        patch("ternion.server.routes.budget_manager") as mock_budget_manager,
+        patch("ternion.server.routes.session_store") as mock_session_store,
+    ):
+        mock_resume.return_value = final_state
+        mock_config_store.load.return_value = mock_user_config
+        mock_budget_manager.check_budget.return_value = (True, None)
+        mock_session_store.update_session.return_value = session
+
+        response = await handle_report_evidence_followup(session, request)
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 400
+    assert "MODEL_UNAVAILABLE" in response.body.decode("utf-8")
+    assert "openai" in response.body.decode("utf-8")
+    assert "gpt-5.4" in response.body.decode("utf-8")

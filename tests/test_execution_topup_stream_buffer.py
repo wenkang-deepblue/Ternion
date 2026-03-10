@@ -34,8 +34,8 @@ async def test_call_with_stream_suppresses_evidence_topup_block_in_execution_pha
     mock_cfg.language = "zh"
     mock_cfg.browser_language = "zh"
 
-    with patch("ternion.utils.i18n.config_store") as mock_store:
-        mock_store.load.return_value = mock_cfg
+    with patch("ternion.utils.i18n._load_user_config") as mock_store:
+        mock_store.return_value = mock_cfg
 
         provider = _DummyStreamingProvider(
             [

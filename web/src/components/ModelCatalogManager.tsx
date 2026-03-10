@@ -186,6 +186,8 @@ export function ModelCatalogManager({
   const lastRefreshText = formatTimestamp(schedule.last_refresh_at, language);
   const nextRefreshText = formatTimestamp(schedule.next_refresh_at, language);
   const anomalySummary = modelsData?.catalog_anomaly_summary || t.modelCatalogAnomalyBanner;
+  const usesDailySchedule = schedule.mode === 'daily';
+  const scheduleFieldsDisabled = !schedule.enabled;
 
   return (
     <>
@@ -275,9 +277,17 @@ export function ModelCatalogManager({
           <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-700">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <h3 className="font-medium text-slate-900 dark:text-slate-100">
-                  {t.modelCatalogScheduleTitle}
-                </h3>
+                <div className="flex items-center gap-3">
+                  <h3 className="font-medium text-slate-900 dark:text-slate-100">
+                    {t.modelCatalogScheduleTitle}
+                  </h3>
+                  <input
+                    type="checkbox"
+                    checked={schedule.enabled}
+                    onChange={(event) => handleScheduleFieldChange('enabled', event.target.checked)}
+                    className="h-4 w-4"
+                  />
+                </div>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
                   {t.modelCatalogScheduleDescription}
                 </p>
@@ -291,19 +301,11 @@ export function ModelCatalogManager({
               </button>
             </div>
 
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
-              <label className="flex items-center gap-3 rounded-lg border border-slate-200 px-3 py-3 dark:border-slate-700">
-                <input
-                  type="checkbox"
-                  checked={schedule.enabled}
-                  onChange={(event) => handleScheduleFieldChange('enabled', event.target.checked)}
-                  className="h-4 w-4"
-                />
-                <span className="text-sm text-slate-700 dark:text-slate-200">
-                  {t.modelCatalogScheduleEnabled}
-                </span>
-              </label>
-
+            <div
+              className={`mt-4 grid gap-4 md:grid-cols-2 ${
+                scheduleFieldsDisabled ? 'opacity-50' : ''
+              }`}
+            >
               <div>
                 <label className="label">{t.modelCatalogScheduleMode}</label>
                 <select
@@ -321,31 +323,32 @@ export function ModelCatalogManager({
               </div>
 
               <div>
-                <label className="label">{t.modelCatalogScheduleTime}</label>
-                <input
-                  type="time"
-                  className="input"
-                  value={schedule.time_of_day}
-                  onChange={(event) => handleScheduleFieldChange('time_of_day', event.target.value)}
-                  disabled={!schedule.enabled}
-                />
-              </div>
-
-              <div>
-                <label className="label">{t.modelCatalogScheduleInterval}</label>
-                <input
-                  type="number"
-                  className="input"
-                  min={1}
-                  value={schedule.interval_value}
-                  onChange={(event) =>
-                    handleScheduleFieldChange(
-                      'interval_value',
-                      Math.max(Number.parseInt(event.target.value || '1', 10) || 1, 1)
-                    )
-                  }
-                  disabled={!schedule.enabled || schedule.mode === 'daily'}
-                />
+                <label className="label">
+                  {usesDailySchedule ? t.modelCatalogScheduleTime : t.modelCatalogScheduleInterval}
+                </label>
+                {usesDailySchedule ? (
+                  <input
+                    type="time"
+                    className="input"
+                    value={schedule.time_of_day}
+                    onChange={(event) => handleScheduleFieldChange('time_of_day', event.target.value)}
+                    disabled={scheduleFieldsDisabled}
+                  />
+                ) : (
+                  <input
+                    type="number"
+                    className="input"
+                    min={1}
+                    value={schedule.interval_value}
+                    onChange={(event) =>
+                      handleScheduleFieldChange(
+                        'interval_value',
+                        Math.max(Number.parseInt(event.target.value || '1', 10) || 1, 1)
+                      )
+                    }
+                    disabled={scheduleFieldsDisabled}
+                  />
+                )}
               </div>
             </div>
 

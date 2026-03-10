@@ -89,12 +89,12 @@ async def test_execution_followup_blocks_tool_calls_not_in_cursor_tools_list() -
             "ternion.workflow.implementation_stage.run_implementation_stage", new_callable=AsyncMock
         ) as mock_run,
         patch("ternion.server.routes.config_store") as mock_config_store,
-        patch("ternion.utils.i18n.config_store") as mock_i18n_config,
+        patch("ternion.utils.i18n._load_user_config") as mock_i18n_config,
         patch("ternion.server.routes.session_store") as mock_session_store,
     ):
         mock_run.return_value = final_state
         mock_config_store.load.return_value = mock_user_config
-        mock_i18n_config.load.return_value = mock_user_config
+        mock_i18n_config.return_value = mock_user_config
         mock_session_store.update_session.return_value = session
 
         resp = await handle_execution_followup(session, request, skip_budget_confirm=True)
@@ -194,14 +194,14 @@ async def test_execution_followup_rewrites_shell_alias_run_terminal_cmd_to_avail
             "ternion.workflow.implementation_stage.run_implementation_stage", new_callable=AsyncMock
         ) as mock_run,
         patch("ternion.server.routes.config_store") as mock_config_store,
-        patch("ternion.utils.i18n.config_store") as mock_i18n_config,
+        patch("ternion.utils.i18n._load_user_config") as mock_i18n_config,
         patch("ternion.server.routes.session_store") as mock_session_store,
         patch("ternion.server.routes._enforce_execution_tool_policy") as mock_tool_policy,
         patch("ternion.server.routes._enforce_deliverable_policy") as mock_deliverable_policy,
     ):
         mock_run.return_value = final_state
         mock_config_store.load.return_value = mock_user_config
-        mock_i18n_config.load.return_value = mock_user_config
+        mock_i18n_config.return_value = mock_user_config
         mock_session_store.update_session.return_value = session
         mock_tool_policy.side_effect = lambda **kwargs: (kwargs["tool_calls"], None)
         mock_deliverable_policy.side_effect = lambda **kwargs: (

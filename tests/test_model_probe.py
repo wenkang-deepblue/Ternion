@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from ternion.core.exceptions import RuntimeModelUnavailableError
 from ternion.core.model_probe import (
     ModelAvailabilityProbeService,
+    classify_runtime_model_unavailable,
     is_model_unavailable_error,
 )
 
@@ -233,13 +235,20 @@ class TestModelAvailabilityProbeService:
         assert result.ok is False
         assert result.code == "MODEL_PROBE_AUTH_ERROR"
 
-    async def test_probe_anthropic_model_reads_status_from_httpx_response(self) -> None:
-        """Anthropic probe should read status codes from ``HTTPStatusError.response``."""
+    async def test_probe_anthropic_model_404_falls_back_to_chat_and_succeeds(self) -> None:
+        """Anthropic probe should accept a model when metadata 404s but chat succeeds."""
         service = ModelAvailabilityProbeService()
+
         mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.raise_for_status.side_effect = _build_http_status_error(404, "model not found")
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_meta_response = MagicMock()
+        mock_meta_response.raise_for_status.side_effect = _build_http_status_error(
+            404, "not found"
+        )
+        mock_chat_response = MagicMock()
+        mock_chat_response.raise_for_status = MagicMock()
+        mock_client.get = AsyncMock(return_value=mock_meta_response)
+        mock_client.post = AsyncMock(return_value=mock_chat_response)
+
         mock_context = AsyncMock()
         mock_context.__aenter__.return_value = mock_client
         mock_context.__aexit__.return_value = None
@@ -247,7 +256,35 @@ class TestModelAvailabilityProbeService:
         with patch(HTTPX_ASYNC_CLIENT_PATCH, return_value=mock_context):
             result = await service.probe_model(
                 provider="anthropic",
-                model="claude-sonnet-4-5-20250929",
+                model="claude-opus-4-6-20260205",
+                api_key="anthropic-key",
+            )
+
+        assert result.ok is True
+        assert result.code == "SUCCESS"
+
+    async def test_probe_anthropic_model_404_falls_back_to_chat_and_fails(self) -> None:
+        """Anthropic probe should report unavailable when both metadata and chat fail."""
+        service = ModelAvailabilityProbeService()
+
+        mock_client = MagicMock()
+        mock_meta_response = MagicMock()
+        mock_meta_response.raise_for_status.side_effect = _build_http_status_error(
+            404, "not found"
+        )
+        mock_client.get = AsyncMock(return_value=mock_meta_response)
+        mock_client.post = AsyncMock(
+            side_effect=FakeProbeError("model not found", status_code=404)
+        )
+
+        mock_context = AsyncMock()
+        mock_context.__aenter__.return_value = mock_client
+        mock_context.__aexit__.return_value = None
+
+        with patch(HTTPX_ASYNC_CLIENT_PATCH, return_value=mock_context):
+            result = await service.probe_model(
+                provider="anthropic",
+                model="claude-opus-4-6-20260205",
                 api_key="anthropic-key",
             )
 
@@ -374,3 +411,47 @@ class TestModelAvailabilityProbeService:
         """Fallback unavailable detection should recognize common provider phrases."""
         assert is_model_unavailable_error("openai", "This model was retired yesterday") is True
         assert is_model_unavailable_error("openai", "provider temporarily unavailable") is False
+
+    def test_classify_runtime_model_unavailable_maps_404(self) -> None:
+        """Runtime classification should map HTTP 404 to a structured stale-model error."""
+        error = classify_runtime_model_unavailable(
+            provider="openai",
+            model="gpt-5.4",
+            exc=FakeProbeError("model not found", status_code=404),
+        )
+
+        assert isinstance(error, RuntimeModelUnavailableError)
+        assert error.provider == "openai"
+        assert error.model == "gpt-5.4"
+        assert error.provider_message == "model not found"
+
+    def test_classify_runtime_model_unavailable_maps_keyword_only_error(self) -> None:
+        """Runtime classification should fall back to message matching when no status exists."""
+        error = classify_runtime_model_unavailable(
+            provider="openai",
+            model="gpt-5.4",
+            exc=Exception("The requested model does not exist"),
+        )
+
+        assert isinstance(error, RuntimeModelUnavailableError)
+        assert error.model == "gpt-5.4"
+
+    def test_classify_runtime_model_unavailable_skips_transient_status_codes(self) -> None:
+        """Runtime classification should not turn transient provider failures into stale models."""
+        error = classify_runtime_model_unavailable(
+            provider="openai",
+            model="gpt-5.4",
+            exc=FakeProbeError("service temporarily not available", status_code=503),
+        )
+
+        assert error is None
+
+    def test_classify_runtime_model_unavailable_returns_none_for_generic_error(self) -> None:
+        """Runtime classification should ignore unrelated generic exceptions."""
+        error = classify_runtime_model_unavailable(
+            provider="openai",
+            model="gpt-5.4",
+            exc=RuntimeError("unexpected failure"),
+        )
+
+        assert error is None

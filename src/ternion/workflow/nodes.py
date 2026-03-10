@@ -24,8 +24,14 @@ from ternion.core.deliverable_policy import (
     format_deliverable_policy_for_prompt,
     resolve_deliverable_policy,
 )
-from ternion.core.exceptions import TernionTimeoutError as TernionTimeout
+from ternion.core.exceptions import (
+    RuntimeModelUnavailableError,
+)
+from ternion.core.exceptions import (
+    TernionTimeoutError as TernionTimeout,
+)
 from ternion.core.intent_classifier import get_latest_user_message
+from ternion.core.model_probe import classify_runtime_model_unavailable
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.core.session_store import (
     ExecutionMode,
@@ -87,6 +93,17 @@ _OPTIMIZER_INTERNAL_BEGIN = "TERNION_OPTIMIZER_INTERNAL_REPORT_BEGIN"
 _OPTIMIZER_INTERNAL_END = "TERNION_OPTIMIZER_INTERNAL_REPORT_END"
 _OPTIMIZER_USER_BEGIN = "TERNION_OPTIMIZER_USER_SUMMARY_BEGIN"
 _OPTIMIZER_USER_END = "TERNION_OPTIMIZER_USER_SUMMARY_END"
+
+def _build_runtime_model_unavailable_message(
+    error: RuntimeModelUnavailableError,
+) -> str:
+    """Build a localized user-facing message for runtime stale-model failures."""
+    return t(
+        MessageKey.RUNTIME_MODEL_UNAVAILABLE,
+        provider=error.provider,
+        model=error.model,
+    )
+
 
 _ROLE_DISPLAY_NAMES = {
     "ternion_a": "Ternion A",
@@ -599,6 +616,11 @@ async def _call_with_timeout(
             operation=f"chat_completion ({provider.name})",
             timeout_seconds=timeout,
         ) from None
+    except Exception as exc:
+        runtime_model_error = classify_runtime_model_unavailable(provider.name, model, exc)
+        if runtime_model_error is not None:
+            raise runtime_model_error from exc
+        raise
 
 
 async def _call_with_stream(
@@ -925,6 +947,14 @@ async def _call_with_stream(
             timeout_seconds=timeout,
         ) from None
     except Exception as e:
+        runtime_model_error = classify_runtime_model_unavailable(provider.name, model, e)
+        if runtime_model_error is not None:
+            await stream_queue.put_error(
+                str(runtime_model_error),
+                phase=phase,
+                **runtime_model_error.to_payload(),
+            )
+            raise runtime_model_error from e
         if stream_queue is not None and stream_queue.is_closed:
             err_text = str(e).lower()
             if (
@@ -1254,6 +1284,14 @@ async def _call_optimizer_with_stream(
             timeout_seconds=timeout,
         ) from None
     except Exception as e:
+        runtime_model_error = classify_runtime_model_unavailable(provider.name, model, e)
+        if runtime_model_error is not None:
+            await stream_queue.put_error(
+                str(runtime_model_error),
+                phase=phase,
+                **runtime_model_error.to_payload(),
+            )
+            raise runtime_model_error from e
         if stream_queue is not None and stream_queue.is_closed:
             err_text = str(e).lower()
             if (
@@ -1700,6 +1738,21 @@ async def evidence_node(state: TernionState) -> TernionState:
             "evidence_gaps": evidence_gaps,
             "thinking_logs": thinking_logs,
         }
+    except RuntimeModelUnavailableError as e:
+        error_msg = _build_runtime_model_unavailable_message(e)
+        logger.warning(
+            "evidence_runtime_model_unavailable",
+            provider=e.provider,
+            model=e.model,
+        )
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "errors": state.get("errors", []) + [error_msg],
+            "final_output": sanitize_for_cursor_display(error_msg),
+            "runtime_error_payload": e.to_payload(),
+            "thinking_logs": thinking_logs,
+        }
     except Exception as e:
         logger.warning("evidence_collection_failed", error=str(e))
         log_manager.emit(
@@ -1921,6 +1974,8 @@ async def divergence_node(state: TernionState) -> TernionState:
                 "analysis": response.content,
                 "error": None,
             }
+        except RuntimeModelUnavailableError:
+            raise
         except Exception as e:
             logger.warning(
                 "ternion_analysis_failed",
@@ -1936,7 +1991,24 @@ async def divergence_node(state: TernionState) -> TernionState:
             }
 
     tasks = [analyze(cfg) for cfg in ternion_configs]
-    analyses = await asyncio.gather(*tasks)
+    try:
+        analyses = await asyncio.gather(*tasks)
+    except RuntimeModelUnavailableError as e:
+        error_msg = _build_runtime_model_unavailable_message(e)
+        logger.warning(
+            "divergence_runtime_model_unavailable",
+            provider=e.provider,
+            model=e.model,
+        )
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "errors": state.get("errors", []) + [error_msg],
+            "final_output": sanitize_for_cursor_display(error_msg),
+            "runtime_error_payload": e.to_payload(),
+            "thinking_logs": thinking_logs,
+            "ternion_analyses": [],
+        }
 
     successful = [a for a in analyses if not a.get("error")]
     logger.info(
@@ -2784,6 +2856,21 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             ),
             "thinking_logs": thinking_logs,
         }
+    except RuntimeModelUnavailableError as e:
+        error_msg = _build_runtime_model_unavailable_message(e)
+        logger.warning(
+            "report_evidence_runtime_model_unavailable",
+            provider=e.provider,
+            model=e.model,
+        )
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "errors": state.get("errors", []) + [error_msg],
+            "final_output": sanitize_for_cursor_display(error_msg),
+            "runtime_error_payload": e.to_payload(),
+            "thinking_logs": thinking_logs,
+        }
     except Exception as e:
         logger.warning("report_evidence_collection_failed", error=str(e))
         log_manager.emit(
@@ -3087,6 +3174,21 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 "is_consensus": len(successful_analyses) > 1,
                 "thinking_logs": thinking_logs,
             }
+    except RuntimeModelUnavailableError as e:
+        error_msg = _build_runtime_model_unavailable_message(e)
+        logger.warning(
+            "convergence_runtime_model_unavailable",
+            provider=e.provider,
+            model=e.model,
+        )
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "errors": state.get("errors", []) + [error_msg],
+            "final_output": sanitize_for_cursor_display(error_msg),
+            "runtime_error_payload": e.to_payload(),
+            "thinking_logs": thinking_logs + [t(MessageKey.CONVERGENCE_ERROR, error=error_msg)],
+        }
     except Exception as e:
         logger.error("convergence_failed", error=str(e))
         log_manager.emit(
@@ -3193,6 +3295,23 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 )
                 break  # Success, exit fallback loop
 
+            except RuntimeModelUnavailableError as fallback_exc:
+                error_msg = _build_runtime_model_unavailable_message(fallback_exc)
+                logger.warning(
+                    "convergence_fallback_runtime_model_unavailable",
+                    ternion_id=fallback_cfg["ternion_id"],
+                    provider=fallback_exc.provider,
+                    model=fallback_exc.model,
+                )
+                return {
+                    **state,
+                    "current_phase": WorkflowPhase.COMPLETE.value,
+                    "errors": state.get("errors", []) + [error_msg],
+                    "final_output": sanitize_for_cursor_display(error_msg),
+                    "runtime_error_payload": fallback_exc.to_payload(),
+                    "thinking_logs": thinking_logs
+                    + [t(MessageKey.CONVERGENCE_ERROR, error=error_msg)],
+                }
             except Exception as fallback_exc:
                 logger.warning(
                     "convergence_fallback_failed",
@@ -4220,6 +4339,22 @@ async def execution_node(state: TernionState) -> TernionState:
             "generated_code": response.content,
             "thinking_logs": thinking_logs,
         }
+    except RuntimeModelUnavailableError as e:
+        error_msg = _build_runtime_model_unavailable_message(e)
+        logger.error(
+            "execution_runtime_model_unavailable",
+            provider=e.provider,
+            model=e.model,
+        )
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "generated_code": "",
+            "final_output": sanitize_for_cursor_display(error_msg),
+            "errors": state.get("errors", []) + [error_msg],
+            "runtime_error_payload": e.to_payload(),
+            "thinking_logs": thinking_logs + [t(MessageKey.EXECUTION_ERROR, error=error_msg)],
+        }
     except Exception as e:
         logger.error("execution_failed", error=str(e))
         log_manager.emit(
@@ -4774,14 +4909,33 @@ async def optimizer_node(state: TernionState) -> TernionState:
                     generated_code=generated_code,
                 )
             )
-        except Exception:
-            pass
+        except Exception as capture_exc:
+            logger.debug(
+                "optimizer_capture_scheduling_failed",
+                exc_type=type(capture_exc).__name__,
+                error=str(capture_exc),
+            )
 
         return {
             **state,
             "current_phase": WorkflowPhase.COMPLETE.value,
             "optimizer_review_report": internal_report,
             "final_output": user_summary_safe,
+            "thinking_logs": thinking_logs,
+        }
+    except RuntimeModelUnavailableError as e:
+        error_msg = _build_runtime_model_unavailable_message(e)
+        logger.warning(
+            "optimizer_runtime_model_unavailable",
+            provider=e.provider,
+            model=e.model,
+        )
+        return {
+            **state,
+            "current_phase": WorkflowPhase.COMPLETE.value,
+            "errors": state.get("errors", []) + [error_msg],
+            "final_output": sanitize_for_cursor_display(error_msg),
+            "runtime_error_payload": e.to_payload(),
             "thinking_logs": thinking_logs,
         }
     except Exception as e:

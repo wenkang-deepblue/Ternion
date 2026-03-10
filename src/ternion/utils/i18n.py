@@ -93,6 +93,7 @@ class MessageKey(str, Enum):
     # Workflow Errors (Cursor-facing UI text)
     ARBITER_FALLBACKS_FAILED = "arbiter_fallbacks_failed"
     EXECUTION_FAILED = "execution_failed"
+    RUNTIME_MODEL_UNAVAILABLE = "runtime_model_unavailable"
     EXECUTION_NO_OUTPUT = "execution_no_output"
     REANALYSIS_COMPLETED = "reanalysis_completed"
     REVIEW_SKIPPED = "review_skipped"

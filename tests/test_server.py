@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from ternion.core.config_store import RoleConfig
+from ternion.core.exceptions import RuntimeModelUnavailableError
 from ternion.server.app import app
 
 
@@ -110,10 +111,12 @@ class TestChatCompletions:
         with (
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.utils.i18n._load_user_config") as mock_i18n_loader,
             patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
         ):
             mock_config_store.load.return_value = mock_user_config
             mock_provider_mgr.has_providers = True
+            mock_i18n_loader.return_value = mock_user_config
             mock_run.return_value = mock_result
 
             response = client.post(
@@ -163,10 +166,12 @@ class TestChatCompletions:
         with (
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.utils.i18n._load_user_config") as mock_i18n_loader,
             patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
         ):
             mock_config_store.load.return_value = mock_user_config
             mock_provider_mgr.has_providers = True
+            mock_i18n_loader.return_value = mock_user_config
             mock_run.return_value = mock_result
 
             with client.stream(
@@ -190,6 +195,131 @@ class TestChatCompletions:
                         break
 
                 assert len(chunks) > 0
+
+    def test_chat_completions_returns_model_unavailable_error_payload(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Non-streaming runtime stale-model failures should return a stable error payload."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-5.4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-5.4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-5.4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-5.4"),
+            "writer": RoleConfig(provider="openai", model="gpt-5.4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-5.4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+        mock_user_config.language = "en"
+
+        mock_result = {
+            "current_phase": "complete",
+            "errors": ["runtime model unavailable"],
+            "runtime_error_payload": {
+                "code": "MODEL_UNAVAILABLE",
+                "provider": "openai",
+                "model": "gpt-5.4",
+                "refresh_suggested": True,
+            },
+        }
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": False,
+                },
+            )
+
+        assert response.status_code == 400
+        error_payload = response.json()["error"]
+        assert error_payload["type"] == "model_unavailable"
+        assert error_payload["code"] == "MODEL_UNAVAILABLE"
+        assert error_payload["provider"] == "openai"
+        assert error_payload["model"] == "gpt-5.4"
+        assert error_payload["refresh_suggested"] is True
+        assert "openai / gpt-5.4" in error_payload["message"]
+        assert "http://localhost:9120" in error_payload["message"]
+
+    def test_chat_completions_streaming_surfaces_model_unavailable_guidance(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Streaming runtime stale-model failures should not degrade to a generic stream error."""
+        mock_user_config = MagicMock()
+        mock_user_config.execution_mode = "ternion_full"
+        mock_user_config.show_phase_indicators = True
+        mock_user_config.roles = {
+            "ternion_a": RoleConfig(provider="openai", model="gpt-5.4"),
+            "ternion_b": RoleConfig(provider="openai", model="gpt-5.4"),
+            "ternion_c": RoleConfig(provider="openai", model="gpt-5.4"),
+            "arbiter": RoleConfig(provider="openai", model="gpt-5.4"),
+            "writer": RoleConfig(provider="openai", model="gpt-5.4"),
+            "reviewer": RoleConfig(provider="openai", model="gpt-5.4"),
+        }
+        mock_provider_config = MagicMock()
+        mock_provider_config.api_keys = [MagicMock()]
+        mock_provider_config.selected_key_id = "test-key-id"
+        mock_user_config.providers = {"openai": mock_provider_config}
+        mock_user_config.language = "en"
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.utils.i18n._load_user_config") as mock_i18n_loader,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_i18n_loader.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.side_effect = RuntimeModelUnavailableError(
+                provider="openai",
+                model="gpt-5.4",
+                provider_message="model not found",
+            )
+
+            with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": True,
+                },
+            ) as response:
+                assert response.status_code == 200
+                chunks: list[str] = []
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line.removeprefix("data: ").strip()
+                    if payload == "[DONE]":
+                        break
+                    chunks.append(payload)
+
+        joined = "\n".join(chunks)
+        assert "configured runtime model is no longer available" in joined
+        assert "openai / gpt-5.4" in joined
+        assert "Web Control Panel" in joined
 
     def test_chat_completions_returns_tool_calls_and_rewrites_ids(self, client: TestClient) -> None:
         """When workflow returns pending_tool_calls, respond with tool_calls and embedded session_id."""
@@ -240,13 +370,13 @@ class TestChatCompletions:
 
         with (
             patch("ternion.server.routes.config_store") as mock_config_store,
-            patch("ternion.utils.i18n.config_store") as mock_i18n_config,
+            patch("ternion.utils.i18n._load_user_config") as mock_i18n_loader,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
             patch("ternion.server.routes.session_store") as mock_session_store,
         ):
             mock_config_store.load.return_value = mock_user_config
-            mock_i18n_config.load.return_value = mock_user_config
+            mock_i18n_loader.return_value = mock_user_config
             mock_provider_mgr.has_providers = True
             mock_run.return_value = mock_result
             mock_session_store.create_session.return_value = fake_session

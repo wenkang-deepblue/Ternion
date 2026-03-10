@@ -17,8 +17,8 @@ async def test_run_implementation_stage_missing_report_is_localized_with_browser
     config.language = "auto"
     config.browser_language = "zh"
 
-    with patch("ternion.utils.i18n.config_store") as mock_store:
-        mock_store.load.return_value = config
+    with patch("ternion.utils.i18n._load_user_config") as mock_load_user_config:
+        mock_load_user_config.return_value = config
 
         state = {
             "conversation_history": [{"role": "user", "content": "hi"}],

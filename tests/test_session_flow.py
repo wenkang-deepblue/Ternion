@@ -159,12 +159,22 @@ class TestRCAToConfirmHandoff:
             content = response.json()["choices"][0]["message"]["content"]
 
             # Verify handoff package structure
-            assert "Cursor Handoff Package" in content
-            assert "Root Cause" in content
-            assert "Fix Plan" in content or "Fix Plan / Recommendation" in content
-            assert "Verification" in content
-            assert "Scope & Non-Goals" in content
-            assert "switch your model" in content.lower() or "switch" in content.lower()
+            assert "Cursor Handoff Package" in content or "Cursor 交接包" in content
+            assert "Root Cause" in content or "根因" in content
+            assert (
+                "Fix Plan" in content
+                or "Fix Plan / Recommendation" in content
+                or "修复方案" in content
+                or "建议" in content
+            )
+            assert "Verification" in content or "验证" in content
+            assert "Scope & Non-Goals" in content or "范围" in content
+            assert (
+                "switch your model" in content.lower()
+                or "switch" in content.lower()
+                or "切换模型" in content
+                or "专用编码模型" in content
+            )
 
             # Verify no code fence triggers
             assert not contains_code_fence_trigger(content), (
@@ -492,7 +502,7 @@ class TestPostExecutionFollowup:
             content = response.json()["choices"][0]["message"]["content"]
 
             # Should remind to switch model
-            assert "switch" in content.lower()
+            assert "switch" in content.lower() or "切换模型" in content or "切换至非" in content
 
     def test_ternion_full_completed_informs_user(
         self, client: TestClient, mock_user_config: MagicMock

@@ -4,6 +4,8 @@ Custom exceptions for Ternion.
 All exceptions inherit from TernionError for easy catching.
 """
 
+from typing import Any
+
 
 class TernionError(Exception):
     """Base exception for all Ternion errors."""
@@ -25,6 +27,31 @@ class ProviderError(TernionError):
     ) -> None:
         self.provider = provider
         super().__init__(f"[{provider}] {message}", status_code)
+
+
+class RuntimeModelUnavailableError(TernionError):
+    """Provider rejected a configured runtime model because it no longer exists."""
+
+    def __init__(self, provider: str, model: str, provider_message: str = "") -> None:
+        self.provider = provider
+        self.model = model
+        self.provider_message = provider_message
+        self.code = "MODEL_UNAVAILABLE"
+        self.refresh_suggested = True
+        message = provider_message or f"Configured model is unavailable: {provider} / {model}"
+        super().__init__(message, status_code=400)
+
+    def to_payload(self) -> dict[str, Any]:
+        """Serialize the runtime error into a stable structured payload."""
+        payload = {
+            "code": self.code,
+            "provider": self.provider,
+            "model": self.model,
+            "refresh_suggested": self.refresh_suggested,
+        }
+        if self.provider_message:
+            payload["provider_message"] = self.provider_message
+        return payload
 
 
 class AllProvidersUnavailable(TernionError):

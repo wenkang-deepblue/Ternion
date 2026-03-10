@@ -100,6 +100,7 @@ class TernionState(TypedDict, total=False):
 
     # Error tracking
     errors: list[str]
+    runtime_error_payload: dict[str, Any]
 
     # Thinking stream logs (Cursor-compatible markdown)
     thinking_logs: list[str]

@@ -49,8 +49,8 @@ describe('getModelSeriesName', () => {
 });
 
 describe('getModelName', () => {
-  it('returns the catalog display name when the model exists', () => {
-    expect(getModelName(buildModelsData(), 'openai', 'gpt-5.2')).toBe('GPT 5.2');
+  it('returns the raw model id when the model exists in the catalog', () => {
+    expect(getModelName(buildModelsData(), 'openai', 'gpt-5.2')).toBe('gpt-5.2');
   });
 
   it('returns the raw model id when not found in catalog', () => {

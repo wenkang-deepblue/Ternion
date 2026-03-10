@@ -11,6 +11,8 @@ import structlog
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+from ternion.core.exceptions import RuntimeModelUnavailableError
+
 try:
     from google import genai
 except ImportError:  # pragma: no cover
@@ -65,6 +67,36 @@ def is_model_unavailable_error(provider: str, error_message: str) -> bool:
     _ = provider
     lowered = error_message.lower()
     return any(keyword in lowered for keyword in MODEL_UNAVAILABLE_KEYWORDS)
+
+
+def classify_runtime_model_unavailable(
+    provider: str,
+    model: str,
+    exc: Exception,
+) -> RuntimeModelUnavailableError | None:
+    """Classify a runtime provider exception as a stale-model error when possible.
+
+    Returns:
+        A ``RuntimeModelUnavailableError`` when the failure indicates that the
+        configured model is missing or retired, otherwise ``None``.
+    """
+    message = ModelAvailabilityProbeService._extract_error_message(exc)
+    status_code = ModelAvailabilityProbeService._extract_status_code(exc)
+    if status_code == 404:
+        return RuntimeModelUnavailableError(
+            provider=provider,
+            model=model,
+            provider_message=message,
+        )
+    if status_code in {429, 500, 502, 503, 504}:
+        return None
+    if status_code is None and is_model_unavailable_error(provider, message):
+        return RuntimeModelUnavailableError(
+            provider=provider,
+            model=model,
+            provider_message=message,
+        )
+    return None
 
 
 class ModelAvailabilityProbeService:
@@ -176,7 +208,13 @@ class ModelAvailabilityProbeService:
         api_key: str,
         model: str,
     ) -> ModelAvailabilityProbeResult:
-        """Probe an Anthropic model via ``GET /v1/models/{model}``."""
+        """Probe an Anthropic model for availability.
+
+        Tries ``GET /v1/models/{model}`` first.  When that returns 404
+        (Anthropic's Models metadata API may lag behind the Messages API
+        for newly released models), falls back to a minimal 1-token chat
+        completion to verify actual availability.
+        """
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
@@ -186,6 +224,45 @@ class ModelAvailabilityProbeService:
                 response = await client.get(
                     f"https://api.anthropic.com/v1/models/{model}",
                     headers=headers,
+                )
+                response.raise_for_status()
+            return self._build_success_result(provider="anthropic", model=model)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.info(
+                    "anthropic_models_api_404_fallback_to_chat",
+                    model=model,
+                )
+                return await self._probe_anthropic_chat_fallback(
+                    api_key=api_key, model=model
+                )
+            return self._classify_probe_exception(provider="anthropic", model=model, exc=exc)
+        except Exception as exc:
+            return self._classify_probe_exception(provider="anthropic", model=model, exc=exc)
+
+    async def _probe_anthropic_chat_fallback(
+        self,
+        *,
+        api_key: str,
+        model: str,
+    ) -> ModelAvailabilityProbeResult:
+        """Verify an Anthropic model via a minimal Messages API call."""
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.request_timeout) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json=payload,
                 )
                 response.raise_for_status()
             return self._build_success_result(provider="anthropic", model=model)

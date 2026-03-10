@@ -10,8 +10,8 @@ import pytest
 
 from ternion.utils.i18n import (
     DEFAULT_LANGUAGE,
-    TRANSLATIONS,
     MessageKey,
+    _load_translations,
     get_user_language,
     t,
 )
@@ -23,8 +23,9 @@ class TestMessageKeyCompleteness:
     def test_all_languages_have_required_keys(self) -> None:
         """All languages should have translations for all MessageKey values."""
         required_keys = list(MessageKey)
+        translations_by_language = _load_translations()
 
-        for lang, translations in TRANSLATIONS.items():
+        for lang, translations in translations_by_language.items():
             for key in required_keys:
                 assert key in translations or key.value in translations, (
                     f"Missing translation for {key} in language '{lang}'"
@@ -32,7 +33,7 @@ class TestMessageKeyCompleteness:
 
     def test_no_corrupted_characters(self) -> None:
         """Translations should not contain replacement characters (U+FFFD)."""
-        for lang, translations in TRANSLATIONS.items():
+        for lang, translations in _load_translations().items():
             for key, value in translations.items():
                 assert "\ufffd" not in value, (
                     f"Corrupted character found in {lang}/{key}: {value[:50]}..."
@@ -58,8 +59,7 @@ class TestTranslationFunction:
 
     def test_t_returns_translated_string(self, mock_english_config: MagicMock) -> None:
         """t() should return translated string for valid key."""
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = mock_english_config
+        with patch("ternion.utils.i18n._load_user_config", return_value=mock_english_config):
 
             result = t(MessageKey.DIVERGENCE_START)
 
@@ -68,8 +68,7 @@ class TestTranslationFunction:
 
     def test_t_formats_placeholders_correctly(self, mock_english_config: MagicMock) -> None:
         """t() should correctly format placeholder values."""
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = mock_english_config
+        with patch("ternion.utils.i18n._load_user_config", return_value=mock_english_config):
 
             result = t(
                 MessageKey.DIVERGENCE_ANALYSIS, ternion_id="ternion_a", preview="Test preview"
@@ -80,8 +79,7 @@ class TestTranslationFunction:
 
     def test_t_formats_error_placeholders(self, mock_english_config: MagicMock) -> None:
         """t() should correctly format error placeholders."""
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = mock_english_config
+        with patch("ternion.utils.i18n._load_user_config", return_value=mock_english_config):
 
             result = t(MessageKey.CONVERGENCE_ERROR, error="Test error message")
 
@@ -90,8 +88,7 @@ class TestTranslationFunction:
 
     def test_t_formats_missing_roles_placeholder(self, mock_english_config: MagicMock) -> None:
         """t() should correctly format missing_roles placeholder."""
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = mock_english_config
+        with patch("ternion.utils.i18n._load_user_config", return_value=mock_english_config):
 
             result = t(MessageKey.ROLE_CONFIG_INCOMPLETE, missing_roles="arbiter, writer")
 
@@ -99,8 +96,7 @@ class TestTranslationFunction:
 
     def test_t_respects_language_setting(self, mock_chinese_config: MagicMock) -> None:
         """t() should use user's configured language."""
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = mock_chinese_config
+        with patch("ternion.utils.i18n._load_user_config", return_value=mock_chinese_config):
 
             result = t(MessageKey.DIVERGENCE_START)
 
@@ -112,8 +108,7 @@ class TestTranslationFunction:
         config = MagicMock()
         config.language = "invalid_lang"
 
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = config
+        with patch("ternion.utils.i18n._load_user_config", return_value=config):
 
             result = t(MessageKey.DIVERGENCE_START)
 
@@ -130,8 +125,7 @@ class TestAllLanguagePlaceholderFormatting:
         config = MagicMock()
         config.language = lang
 
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = config
+        with patch("ternion.utils.i18n._load_user_config", return_value=config):
 
             # Should not raise KeyError or ValueError
             result = t(MessageKey.DIVERGENCE_ANALYSIS, ternion_id="ternion_a", preview="Test")
@@ -145,8 +139,7 @@ class TestAllLanguagePlaceholderFormatting:
         config = MagicMock()
         config.language = lang
 
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = config
+        with patch("ternion.utils.i18n._load_user_config", return_value=config):
 
             # Test all error keys
             error_keys = [
@@ -165,8 +158,7 @@ class TestAllLanguagePlaceholderFormatting:
         config = MagicMock()
         config.language = lang
 
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = config
+        with patch("ternion.utils.i18n._load_user_config", return_value=config):
 
             # ROLE_CONFIG_INCOMPLETE has a placeholder
             result = t(MessageKey.ROLE_CONFIG_INCOMPLETE, missing_roles="arbiter")
@@ -185,8 +177,7 @@ class TestGetUserLanguage:
         config = MagicMock()
         config.language = "zh"
 
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = config
+        with patch("ternion.utils.i18n._load_user_config", return_value=config):
 
             result = get_user_language()
 
@@ -194,8 +185,7 @@ class TestGetUserLanguage:
 
     def test_returns_default_on_error(self) -> None:
         """Should return default language when config fails."""
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.side_effect = Exception("Config error")
+        with patch("ternion.utils.i18n._load_user_config", return_value=None):
 
             result = get_user_language()
 
@@ -206,8 +196,7 @@ class TestGetUserLanguage:
         config = MagicMock()
         config.language = "unsupported"
 
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = config
+        with patch("ternion.utils.i18n._load_user_config", return_value=config):
 
             result = get_user_language()
 
@@ -219,8 +208,7 @@ class TestGetUserLanguage:
         config.language = "auto"
         config.browser_language = "zh"
 
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = config
+        with patch("ternion.utils.i18n._load_user_config", return_value=config):
 
             result = get_user_language()
 
@@ -232,8 +220,7 @@ class TestGetUserLanguage:
         config.language = "auto"
         config.browser_language = "pt"  # Portuguese not in supported list
 
-        with patch("ternion.utils.i18n.config_store") as mock_store:
-            mock_store.load.return_value = config
+        with patch("ternion.utils.i18n._load_user_config", return_value=config):
 
             result = get_user_language()
 

@@ -6,10 +6,10 @@ All role configuration must be explicitly set via Web Control Panel.
 No automatic fallback - user must configure all roles.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
-import asyncio
 import structlog
 
 from ternion.core.config import settings
@@ -185,7 +185,7 @@ class ProviderManager:
                 ),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             assert timeout is not None
             log_manager.emit(
                 "ERROR",
@@ -251,7 +251,7 @@ class ProviderManager:
                         **kwargs,
                     ):
                         yield chunk
-        except asyncio.TimeoutError:
+        except TimeoutError:
             assert timeout is not None
             log_manager.emit(
                 "ERROR",

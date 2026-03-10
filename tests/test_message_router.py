@@ -60,10 +60,8 @@ class TestMessageRouter:
         assert context.is_empty
 
     def test_context_property(self, sample_messages: list[ChatMessage]) -> None:
-        """Test that context property returns stored context."""
+        """MessageRouter should stay stateless across context extraction."""
         router = MessageRouter()
-        assert router.context is None
-
         context = router.extract_context(sample_messages)
-        assert router.context is context
-        assert router.context.cursor_system_prompt is not None
+        assert isinstance(context, TernionContext)
+        assert context.cursor_system_prompt is not None

@@ -178,7 +178,7 @@ def _get_provider_display_name(provider: str) -> str:
 
 async def _get_model_display_name(provider: str, model_id: str) -> str:
     """Get human-readable display name for a model."""
-    model = await model_catalog_service.get_model(model_id)
+    model = model_catalog_service.get_model_cached(model_id)
     if model is not None and model.provider == provider:
         return model.name
     return model_id
@@ -191,7 +191,7 @@ async def _get_catalog_model_for_provider(provider: str, model_id: str) -> Catal
         HTTPException: If the model is missing from the catalog or belongs to a
             different provider.
     """
-    model = await model_catalog_service.get_model(model_id)
+    model = model_catalog_service.get_model_cached(model_id)
     if model is None or model.provider != provider:
         raise HTTPException(status_code=400, detail="MODEL_NOT_AVAILABLE")
     return model
@@ -797,7 +797,7 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
 async def get_available_models() -> dict:
     """Get available models for each provider."""
     enabled = config_store.get_enabled_providers()
-    payload = await model_catalog_service.get_models_payload()
+    payload = await model_catalog_service.get_models_payload(allow_remote_fetch=False)
     payload["enabled_providers"] = enabled
     return payload
 

@@ -136,6 +136,10 @@ async function findModelSelectForRole(roleName: string): Promise<HTMLSelectEleme
   return selects[1] as HTMLSelectElement;
 }
 
+function getSaveButtons(label: string): HTMLButtonElement[] {
+  return screen.getAllByRole('button', { name: label }) as HTMLButtonElement[];
+}
+
 describe('RoleModelConfig', () => {
   beforeEach(() => {
     mockApi.getModels.mockReset();
@@ -162,7 +166,10 @@ describe('RoleModelConfig', () => {
 
     const modelSelect = await findModelSelectForRole(t.ternionAName);
     await user.selectOptions(modelSelect, 'gpt-5.3-codex');
-    await user.click(screen.getByRole('button', { name: t.saveChanges }));
+    await waitFor(() => {
+      expect(getSaveButtons(t.saveChanges)).toHaveLength(2);
+    });
+    await user.click(getSaveButtons(t.saveChanges)[1]);
 
     await waitFor(() => {
       expect(screen.getAllByText(t.code_MODEL_UNAVAILABLE).length).toBeGreaterThan(0);
@@ -173,7 +180,39 @@ describe('RoleModelConfig', () => {
     expect(
       screen.getByRole('button', { name: t.modelCatalogRefreshNow })
     ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.modelCatalogRetry }).className).toContain(
+      'whitespace-nowrap'
+    );
+    expect(screen.getByRole('button', { name: t.modelCatalogRefreshNow }).className).toContain(
+      'whitespace-nowrap'
+    );
     expect(showToast).toHaveBeenCalledWith(t.code_MODEL_UNAVAILABLE, 'error');
+  });
+
+  it('shows raw model ids in the model select', async () => {
+    const { t } = renderRoleModelConfig();
+
+    const modelSelect = await findModelSelectForRole(t.ternionAName);
+    const options = within(modelSelect).getAllByRole('option');
+
+    expect(options.some((option) => option.textContent === 'gpt-5.2-2025-12-11')).toBe(true);
+    expect(options.some((option) => option.textContent === 'gpt-5.3-codex')).toBe(true);
+  });
+
+  it('shows a floating save button after a role model change', async () => {
+    const user = userEvent.setup();
+    const { t } = renderRoleModelConfig();
+
+    const modelSelect = await findModelSelectForRole(t.ternionAName);
+    await user.selectOptions(modelSelect, 'gpt-5.3-codex');
+
+    await waitFor(() => {
+      expect(getSaveButtons(t.saveChanges)).toHaveLength(2);
+    });
+
+    const floatingSaveButton = getSaveButtons(t.saveChanges)[1];
+    expect(floatingSaveButton.style.position).toBe('fixed');
+    expect(floatingSaveButton.style.top).toBe('50%');
   });
 
   it('clears removed selections after refreshing the model catalog from the save error banner', async () => {
@@ -209,7 +248,10 @@ describe('RoleModelConfig', () => {
 
     const modelSelect = await findModelSelectForRole(t.ternionAName);
     await user.selectOptions(modelSelect, 'gpt-5.3-codex');
-    await user.click(screen.getByRole('button', { name: t.saveChanges }));
+    await waitFor(() => {
+      expect(getSaveButtons(t.saveChanges)).toHaveLength(2);
+    });
+    await user.click(getSaveButtons(t.saveChanges)[1]);
 
     await screen.findByRole('button', { name: t.modelCatalogRefreshNow });
     await user.click(screen.getByRole('button', { name: t.modelCatalogRefreshNow }));
@@ -233,7 +275,10 @@ describe('RoleModelConfig', () => {
 
     const modelSelect = await findModelSelectForRole(t.ternionAName);
     await user.selectOptions(modelSelect, 'gpt-5.3-codex');
-    await user.click(screen.getByRole('button', { name: t.saveChanges }));
+    await waitFor(() => {
+      expect(getSaveButtons(t.saveChanges)).toHaveLength(2);
+    });
+    await user.click(getSaveButtons(t.saveChanges)[1]);
 
     await waitFor(() => {
       expect(onConfigUpdate).toHaveBeenCalledWith(updatedConfig);

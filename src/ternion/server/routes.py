@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from ternion.core.budget import budget_manager
 from ternion.core.config_store import config_store
 from ternion.core.deliverable_policy import DeliverableType, resolve_deliverable_policy
+from ternion.core.exceptions import RuntimeModelUnavailableError
 from ternion.core.intent_classifier import (
     Intent,
     classify_intent_with_fallback,
@@ -121,6 +122,126 @@ _RESUMABLE_PHASE_STAGE_MAP = {
     "execution": SessionStage.EXECUTION_IN_PROGRESS,
     "optimizer": SessionStage.OPTIMIZER_IN_PROGRESS,
 }
+
+
+def _extract_runtime_model_unavailable_payload(
+    payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return a normalized runtime stale-model payload if present."""
+    if not isinstance(payload, dict):
+        return None
+    code = str(payload.get("code") or payload.get("detail") or "").strip()
+    provider = str(payload.get("provider") or "").strip()
+    model = str(payload.get("model") or "").strip()
+    if code != "MODEL_UNAVAILABLE" or not provider or not model:
+        return None
+    return {
+        "code": "MODEL_UNAVAILABLE",
+        "provider": provider,
+        "model": model,
+        "refresh_suggested": bool(payload.get("refresh_suggested", True)),
+        "provider_message": str(payload.get("provider_message") or "").strip(),
+    }
+
+
+def _build_runtime_model_unavailable_text(provider: str, model: str) -> str:
+    """Build a localized runtime stale-model message for HTTP and SSE responses."""
+    return t(
+        MessageKey.RUNTIME_MODEL_UNAVAILABLE,
+        provider=provider,
+        model=model,
+    )
+
+
+def _build_runtime_model_unavailable_response(payload: dict[str, Any]) -> JSONResponse:
+    """Build an OpenAI-compatible error response for runtime stale-model failures."""
+    normalized = _extract_runtime_model_unavailable_payload(payload)
+    if normalized is None:
+        logger.error(
+            "runtime_model_unavailable_payload_invalid",
+            payload_keys=sorted(payload.keys()) if isinstance(payload, dict) else [],
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "message": t(MessageKey.STREAM_ERROR_GENERIC).strip(),
+                    "type": "internal_error",
+                    "code": "INTERNAL_ERROR",
+                }
+            },
+        )
+    provider = str(normalized.get("provider") or "")
+    model = str(normalized.get("model") or "")
+    refresh_suggested = bool(normalized.get("refresh_suggested", True))
+    provider_message = str(normalized.get("provider_message") or "")
+    error_content: dict[str, Any] = {
+        "message": _build_runtime_model_unavailable_text(provider, model),
+        "type": "model_unavailable",
+        "code": "MODEL_UNAVAILABLE",
+        "provider": provider,
+        "model": model,
+        "refresh_suggested": refresh_suggested,
+    }
+    if provider_message:
+        error_content["provider_message"] = provider_message
+    return JSONResponse(
+        status_code=400,
+        content={"error": error_content},
+    )
+
+
+def _get_runtime_model_unavailable_response_from_state(
+    state: dict[str, Any] | None,
+) -> JSONResponse | None:
+    """Convert workflow runtime stale-model payloads into HTTP responses."""
+    if not isinstance(state, dict):
+        return None
+    payload = _extract_runtime_model_unavailable_payload(state.get("runtime_error_payload"))
+    if payload is None:
+        return None
+    return _build_runtime_model_unavailable_response(payload)
+
+
+async def _put_stream_exception(
+    stream_queue: StreamEventQueue,
+    exc: Exception,
+    *,
+    phase: str = "",
+) -> None:
+    """Emit a stream error, enriching recognized error types with metadata."""
+    if isinstance(exc, RuntimeModelUnavailableError):
+        await stream_queue.put_error(
+            str(exc),
+            phase=phase,
+            **exc.to_payload(),
+        )
+        return
+    await stream_queue.put_error(str(exc), phase=phase)
+
+
+def _get_stream_error_text(metadata: dict[str, Any]) -> str:
+    """Build stream-facing error text, specializing runtime stale-model failures."""
+    payload = _extract_runtime_model_unavailable_payload(metadata)
+    if payload is not None:
+        return _build_runtime_model_unavailable_text(
+            str(payload.get("provider") or ""),
+            str(payload.get("model") or ""),
+        )
+    return t(MessageKey.STREAM_ERROR_GENERIC)
+
+
+def _build_stream_error_backfill(errors: list[Any]) -> str:
+    """Build a fallback text block when streaming ends without user-visible output."""
+    if not errors:
+        return ""
+    output_parts = [t(MessageKey.DISCUSSION_NO_OUTPUT), "\n\n", t(MessageKey.DISCUSSION_ERRORS_HEADER)]
+    for err in errors:
+        err_msg = sanitize_for_cursor_display(str(err))
+        if err_msg:
+            output_parts.append(f"- {err_msg}\n")
+    return "".join(output_parts)
+
 
 _REPORT_SECTION_TITLE_KEYS = {
     "root_cause": MessageKey.REPORT_SECTION_ROOT_CAUSE_TITLE,
@@ -1932,7 +2053,7 @@ async def _run_discussion_streaming(
                 final_state = await run_discussion(context)
             except Exception as e:
                 logger.exception("streaming_workflow_error", error=str(e))
-                await stream_queue.put_error(str(e))
+                await _put_stream_exception(stream_queue, e)
             finally:
                 stream_queue.close()
 
@@ -2067,7 +2188,7 @@ async def _run_discussion_streaming(
 
                 if event.event_type == StreamEventType.ERROR:
                     # Forward error
-                    error_text = t(MessageKey.STREAM_ERROR_GENERIC)
+                    error_text = _get_stream_error_text(event.metadata)
                     chunk = ChatCompletionChunk(
                         id=chunk_id,
                         created=created,
@@ -2414,15 +2535,7 @@ async def _run_discussion_streaming(
                     yield f"data: {chunk.model_dump_json()}\n\n"
 
             if errors and not workflow_final and not streamed_content:
-                output_parts = [t(MessageKey.DISCUSSION_NO_OUTPUT)]
-                output_parts.append("\n\n")
-                output_parts.append(t(MessageKey.DISCUSSION_ERRORS_HEADER))
-                for err in errors:
-                    err_msg = sanitize_for_cursor_display(str(err))
-                    if err_msg:
-                        output_parts.append(f"- {err_msg}\n")
-                error_output = "".join(output_parts)
-                error_output = sanitize_for_cursor_display(error_output)
+                error_output = _build_stream_error_backfill(list(errors))
                 for i in range(0, len(error_output), 128):
                     text = error_output[i : i + 128]
                     if not text:
@@ -2523,7 +2636,7 @@ async def _run_implementation_streaming(
                 final_state = await run_implementation_stage(initial_state)
             except Exception as e:
                 logger.exception("streaming_implementation_error", error=str(e))
-                await stream_queue.put_error(str(e))
+                await _put_stream_exception(stream_queue, e)
             finally:
                 stream_queue.close()
 
@@ -2594,7 +2707,7 @@ async def _run_implementation_streaming(
                     return
 
                 if event.event_type == StreamEventType.ERROR:
-                    error_text = t(MessageKey.STREAM_ERROR_GENERIC)
+                    error_text = _get_stream_error_text(event.metadata)
                     chunk = ChatCompletionChunk(
                         id=chunk_id,
                         created=created,
@@ -2936,6 +3049,7 @@ async def _run_implementation_streaming(
             workflow_final = final_state.get("final_output", "") or final_state.get(
                 "generated_code", ""
             )
+            errors = final_state.get("errors", []) or []
             if workflow_final and not streamed_content:
                 if pending_phase_indicator:
                     chunk = ChatCompletionChunk(
@@ -2950,6 +3064,31 @@ async def _run_implementation_streaming(
                     pending_phase_indicator = None
                 for i in range(0, len(workflow_final), 128):
                     text = workflow_final[i : i + 128]
+                    chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+
+            if errors and not workflow_final and not streamed_content:
+                error_backfill = _build_stream_error_backfill(list(errors))
+                if pending_phase_indicator:
+                    chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        created=created,
+                        model=model,
+                        choices=[
+                            StreamChoice(delta=ChoiceDelta(content="\n" + pending_phase_indicator))
+                        ],
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+                    pending_phase_indicator = None
+                for i in range(0, len(error_backfill), 128):
+                    text = error_backfill[i : i + 128]
+                    if not text:
+                        continue
                     chunk = ChatCompletionChunk(
                         id=chunk_id,
                         created=created,
@@ -3462,6 +3601,9 @@ async def chat_completions(
 
         # Non-streaming: run workflow and return complete response
         final_state = await run_discussion(context)
+        runtime_model_response = _get_runtime_model_unavailable_response_from_state(final_state)
+        if runtime_model_response is not None:
+            return runtime_model_response
         pending_tool_calls = final_state.get("pending_tool_calls") or []
         if pending_tool_calls:
             cursor_prompt = (
@@ -3745,6 +3887,8 @@ async def chat_completions(
                 ],
             ).model_dump()
         )
+    except RuntimeModelUnavailableError as e:
+        return _build_runtime_model_unavailable_response(e.to_payload())
     except Exception as e:
         logger.exception("discussion_error", error=str(e))
         return JSONResponse(
@@ -3986,7 +4130,7 @@ async def handle_report_evidence_followup(
                         session_id=session.session_id,
                         error=str(e),
                     )
-                    await stream_queue.put_error(str(e), phase="report_evidence")
+                    await _put_stream_exception(stream_queue, e, phase="report_evidence")
                 finally:
                     stream_queue.close()
 
@@ -4104,7 +4248,7 @@ async def handle_report_evidence_followup(
                         return
 
                     if event.event_type == StreamEventType.ERROR:
-                        error_text = t(MessageKey.STREAM_ERROR_GENERIC)
+                        error_text = _get_stream_error_text(event.metadata)
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
                             created=created,
@@ -4419,6 +4563,7 @@ async def handle_report_evidence_followup(
                 workflow_final = final_state.get("final_output", "") or final_state.get(
                     "generated_code", ""
                 )
+                errors = final_state.get("errors", []) or []
                 if workflow_final and not streamed_content:
                     if pending_phase_indicator:
                         chunk = ChatCompletionChunk(
@@ -4435,6 +4580,33 @@ async def handle_report_evidence_followup(
                         pending_phase_indicator = None
                     for i in range(0, len(workflow_final), 128):
                         text = workflow_final[i : i + 128]
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                if errors and not workflow_final and not streamed_content:
+                    error_backfill = _build_stream_error_backfill(list(errors))
+                    if pending_phase_indicator:
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[
+                                StreamChoice(
+                                    delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                )
+                            ],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        pending_phase_indicator = None
+                    for i in range(0, len(error_backfill), 128):
+                        text = error_backfill[i : i + 128]
+                        if not text:
+                            continue
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
                             created=created,
@@ -4592,6 +4764,9 @@ async def handle_report_evidence_followup(
             getattr(session, "report_evidence_resume_phase", "") or ""
         ),
     )
+    runtime_model_response = _get_runtime_model_unavailable_response_from_state(final_state)
+    if runtime_model_response is not None:
+        return runtime_model_response
 
     pending_tool_calls = final_state.get("pending_tool_calls") or []
     workflow_phase = str(final_state.get("current_phase") or "report_evidence")
@@ -5073,7 +5248,7 @@ async def handle_evidence_followup(
                         session_id=session.session_id,
                         error=str(e),
                     )
-                    await stream_queue.put_error(str(e), phase="evidence")
+                    await _put_stream_exception(stream_queue, e, phase="evidence")
                 finally:
                     stream_queue.close()
 
@@ -5191,7 +5366,7 @@ async def handle_evidence_followup(
                         return
 
                     if event.event_type == StreamEventType.ERROR:
-                        error_text = t(MessageKey.STREAM_ERROR_GENERIC)
+                        error_text = _get_stream_error_text(event.metadata)
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
                             created=created,
@@ -5483,6 +5658,7 @@ async def handle_evidence_followup(
                 workflow_final = final_state.get("final_output", "") or final_state.get(
                     "generated_code", ""
                 )
+                errors = final_state.get("errors", []) or []
                 if workflow_final and not streamed_content:
                     if pending_phase_indicator:
                         chunk = ChatCompletionChunk(
@@ -5499,6 +5675,33 @@ async def handle_evidence_followup(
                         pending_phase_indicator = None
                     for i in range(0, len(workflow_final), 128):
                         text = workflow_final[i : i + 128]
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[StreamChoice(delta=ChoiceDelta(content=text))],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+
+                if errors and not workflow_final and not streamed_content:
+                    error_backfill = _build_stream_error_backfill(list(errors))
+                    if pending_phase_indicator:
+                        chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            created=created,
+                            model=request.model,
+                            choices=[
+                                StreamChoice(
+                                    delta=ChoiceDelta(content="\n" + pending_phase_indicator)
+                                )
+                            ],
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        pending_phase_indicator = None
+                    for i in range(0, len(error_backfill), 128):
+                        text = error_backfill[i : i + 128]
+                        if not text:
+                            continue
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
                             created=created,
@@ -5554,6 +5757,9 @@ async def handle_evidence_followup(
 
     # Run full workflow from evidence node (Phase 0)
     final_state = await run_discussion(evidence_context)
+    runtime_model_response = _get_runtime_model_unavailable_response_from_state(final_state)
+    if runtime_model_response is not None:
+        return runtime_model_response
 
     pending_tool_calls = final_state.get("pending_tool_calls") or []
     workflow_phase = str(final_state.get("current_phase") or "evidence")
@@ -6367,7 +6573,7 @@ async def handle_execution_followup(
                         session_id=session.session_id,
                         error=str(e),
                     )
-                    await stream_queue.put_error(str(e), phase="execution_followup")
+                    await _put_stream_exception(stream_queue, e, phase="execution_followup")
                 finally:
                     stream_queue.close()
 
@@ -6449,7 +6655,7 @@ async def handle_execution_followup(
                         return
 
                     if event.event_type == StreamEventType.ERROR:
-                        error_text = t(MessageKey.STREAM_ERROR_GENERIC)
+                        error_text = _get_stream_error_text(event.metadata)
                         chunk = ChatCompletionChunk(
                             id=chunk_id,
                             created=created,
@@ -6727,7 +6933,7 @@ async def handle_execution_followup(
                 errors = final_state.get("errors", []) or []
                 error_backfill = ""
                 if not final_output and not streamed_content and errors:
-                    error_backfill = sanitize_for_cursor_display(str(errors[0] or ""))
+                    error_backfill = _build_stream_error_backfill(list(errors))
                 new_stage = (
                     SessionStage.EXECUTED if not errors else SessionStage.EXECUTION_IN_PROGRESS
                 )
@@ -6898,6 +7104,9 @@ async def handle_execution_followup(
         )
 
     final_state = await run_implementation_stage(initial_state)
+    runtime_model_response = _get_runtime_model_unavailable_response_from_state(final_state)
+    if runtime_model_response is not None:
+        return runtime_model_response
     pending_tool_calls = final_state.get("pending_tool_calls") or []
 
     if pending_tool_calls:
@@ -7491,6 +7700,9 @@ async def handle_confirmed_session(
 
         # Non-streaming execution
         final_state = await run_implementation_stage(initial_state)
+        runtime_model_response = _get_runtime_model_unavailable_response_from_state(final_state)
+        if runtime_model_response is not None:
+            return runtime_model_response
 
         # Extract results
         thinking_logs = final_state.get("thinking_logs", [])
@@ -7596,6 +7808,9 @@ async def handle_rejected_session(
     )
 
     final_state = await run_discussion(context)
+    runtime_model_response = _get_runtime_model_unavailable_response_from_state(final_state)
+    if runtime_model_response is not None:
+        return runtime_model_response
 
     # Build output (this will be a new report with new session)
     thinking_logs = final_state.get("thinking_logs", [])

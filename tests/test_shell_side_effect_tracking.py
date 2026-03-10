@@ -170,10 +170,10 @@ async def test_execution_followup_streaming_pending_tool_calls_does_not_crash() 
         mock_run.return_value = final_state
         mock_config_store.load.return_value = mock_user_config
         mock_session_store.update_session.return_value = session
-        mock_tool_policy.side_effect = lambda _workflow_phase, tool_calls: (tool_calls, None)
+        mock_tool_policy.side_effect = lambda **kwargs: (kwargs["tool_calls"], None)
         mock_deliverable_policy.side_effect = (
-            lambda _workflow_phase, tool_calls, _conversation_history, _ternion_report: (
-                tool_calls,
+            lambda **kwargs: (
+                kwargs["tool_calls"],
                 None,
                 None,
                 None,
@@ -247,12 +247,12 @@ async def test_execution_followup_streaming_dedupes_adjacent_execution_phase_ind
             "ternion.workflow.implementation_stage.run_implementation_stage", new_callable=AsyncMock
         ) as mock_run,
         patch("ternion.server.routes.config_store") as mock_config_store,
-        patch("ternion.utils.i18n.config_store") as mock_i18n_config,
+        patch("ternion.utils.i18n._load_user_config") as mock_i18n_config,
         patch("ternion.server.routes.session_store") as mock_session_store,
     ):
         mock_run.side_effect = run_impl_with_duplicate_phase
         mock_config_store.load.return_value = mock_user_config
-        mock_i18n_config.load.return_value = mock_user_config
+        mock_i18n_config.return_value = mock_user_config
         mock_session_store.update_session.return_value = session
         mock_session_store.load_session.return_value = session
 
@@ -328,12 +328,12 @@ async def test_execution_followup_streaming_backfills_first_error_when_final_out
             "ternion.workflow.implementation_stage.run_implementation_stage", new_callable=AsyncMock
         ) as mock_run,
         patch("ternion.server.routes.config_store") as mock_config_store,
-        patch("ternion.utils.i18n.config_store") as mock_i18n_config,
+        patch("ternion.utils.i18n._load_user_config") as mock_i18n_config,
         patch("ternion.server.routes.session_store") as mock_session_store,
     ):
         mock_run.return_value = final_state
         mock_config_store.load.return_value = mock_user_config
-        mock_i18n_config.load.return_value = mock_user_config
+        mock_i18n_config.return_value = mock_user_config
         mock_session_store.update_session.return_value = session
         mock_session_store.load_session.return_value = session
 
@@ -408,12 +408,12 @@ async def test_execution_followup_streaming_hides_execution_start_after_announce
             "ternion.workflow.implementation_stage.run_implementation_stage", new_callable=AsyncMock
         ) as mock_run,
         patch("ternion.server.routes.config_store") as mock_config_store,
-        patch("ternion.utils.i18n.config_store") as mock_i18n_config,
+        patch("ternion.utils.i18n._load_user_config") as mock_i18n_config,
         patch("ternion.server.routes.session_store") as mock_session_store,
     ):
         mock_run.side_effect = run_impl_with_execution_phase
         mock_config_store.load.return_value = mock_user_config
-        mock_i18n_config.load.return_value = mock_user_config
+        mock_i18n_config.return_value = mock_user_config
         mock_session_store.update_session.return_value = session
         mock_session_store.load_session.return_value = session
 

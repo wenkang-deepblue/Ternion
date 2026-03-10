@@ -133,7 +133,9 @@ class TestControlRoutesModelCatalog:
                 "anomaly_report_available": False,
                 "enabled_providers": ["openai"],
             }
-            mock_catalog_service.get_models_payload.assert_awaited_once()
+            mock_catalog_service.get_models_payload.assert_awaited_once_with(
+                allow_remote_fetch=False
+            )
 
     def test_get_models_exposes_uninitialized_state(self) -> None:
         """`GET /api/models` should expose bootstrap status when catalog is empty."""
@@ -435,7 +437,7 @@ class TestControlRoutesModelCatalog:
             mock_config_store.get_enabled_providers.return_value = ["openai"]
             mock_config_store.get_provider_api_key.return_value = "sk-test"
             mock_config_store.to_safe_dict.return_value = {"roles": "safe"}
-            mock_catalog_service.get_model = AsyncMock(return_value=catalog_model)
+            mock_catalog_service.get_model_cached.return_value = catalog_model
             mock_probe_service.probe_model = AsyncMock(return_value=_build_probe_result())
             mock_log_manager.emit = MagicMock()
 
@@ -481,7 +483,7 @@ class TestControlRoutesModelCatalog:
             mock_config_store.load.return_value = config
             mock_config_store.get_enabled_providers.return_value = ["openai"]
             mock_config_store.get_provider_api_key.return_value = "sk-test"
-            mock_catalog_service.get_model = AsyncMock(return_value=catalog_model)
+            mock_catalog_service.get_model_cached.return_value = catalog_model
             mock_probe_service.probe_model = AsyncMock(
                 return_value=_build_probe_result(
                     ok=False,
@@ -530,7 +532,7 @@ class TestControlRoutesModelCatalog:
             mock_config_store.get_enabled_providers.return_value = ["openai"]
             mock_config_store.get_provider_api_key.return_value = "sk-test"
             mock_config_store.to_safe_dict.return_value = {"roles": "safe"}
-            mock_catalog_service.get_model = AsyncMock(return_value=catalog_model)
+            mock_catalog_service.get_model_cached.return_value = catalog_model
             mock_probe_service.probe_model = AsyncMock(return_value=_build_probe_result())
             mock_log_manager.emit = MagicMock()
 
@@ -564,7 +566,7 @@ class TestControlRoutesModelCatalog:
             selected_key_id="google-1",
         )
 
-        async def get_model(model_id: str) -> CatalogModel | None:
+        def get_model(model_id: str) -> CatalogModel | None:
             if model_id == "gpt-5.2-2025-12-11":
                 return _build_catalog_model()
             if model_id == "gemini-3-pro":
@@ -588,7 +590,7 @@ class TestControlRoutesModelCatalog:
                 "google": "google-key",
             }[provider]
             mock_config_store.to_safe_dict.return_value = {"roles": "safe"}
-            mock_catalog_service.get_model = AsyncMock(side_effect=get_model)
+            mock_catalog_service.get_model_cached.side_effect = get_model
             mock_probe_service.probe_model = AsyncMock(
                 side_effect=[
                     _build_probe_result(
@@ -647,7 +649,7 @@ class TestControlRoutesModelCatalog:
         ):
             mock_config_store.load.return_value = config
             mock_config_store.get_enabled_providers.return_value = ["google"]
-            mock_catalog_service.get_model = AsyncMock(return_value=catalog_model)
+            mock_catalog_service.get_model_cached.return_value = catalog_model
 
             client = TestClient(app)
             response = client.post(
@@ -677,7 +679,7 @@ class TestControlRoutesModelCatalog:
         ):
             mock_config_store.load.return_value = config
             mock_config_store.get_enabled_providers.return_value = ["openai"]
-            mock_catalog_service.get_model = AsyncMock(return_value=None)
+            mock_catalog_service.get_model_cached.return_value = None
 
             client = TestClient(app)
             response = client.post(
@@ -707,7 +709,7 @@ class TestControlRoutesModelCatalog:
             patch("ternion.server.control_routes.log_manager") as mock_log_manager,
         ):
             mock_config_store.get_enabled_providers.return_value = ["openai"]
-            mock_catalog_service.get_model = AsyncMock(return_value=catalog_model)
+            mock_catalog_service.get_model_cached.return_value = catalog_model
             mock_log_manager.emit = MagicMock()
 
             client = TestClient(app)
@@ -736,7 +738,7 @@ class TestControlRoutesModelCatalog:
             patch("ternion.server.control_routes.model_catalog_service") as mock_catalog_service,
         ):
             mock_config_store.get_enabled_providers.return_value = ["google"]
-            mock_catalog_service.get_model = AsyncMock(return_value=catalog_model)
+            mock_catalog_service.get_model_cached.return_value = catalog_model
 
             client = TestClient(app)
             response = client.post(

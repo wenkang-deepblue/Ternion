@@ -482,6 +482,32 @@ async def test_get_models_payload_marks_empty_catalog_as_uninitialized(
 
 
 @pytest.mark.asyncio
+async def test_get_models_payload_skips_remote_fetch_when_explicitly_uninitialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readonly payload loading should not auto-bootstrap the remote catalog."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+    calls = 0
+
+    async def failing_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("remote fetch should not be attempted")
+
+    monkeypatch.setattr(service, "_download_catalog_json", failing_download)
+
+    payload = await service.get_models_payload(allow_remote_fetch=False)
+
+    assert calls == 0
+    assert payload["catalog_initialized"] is False
+    assert payload["requires_initialization"] is True
+    assert payload["model_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_get_models_payload_passes_force_refresh_to_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -489,10 +515,13 @@ async def test_get_models_payload_passes_force_refresh_to_snapshot(
     """Payload generation should propagate force_refresh to snapshot loading."""
     service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
     snapshot = service._build_empty_snapshot()
-    calls: list[bool] = []
+    calls: list[tuple[bool, bool]] = []
 
-    async def fake_get_snapshot(force_refresh: bool = False) -> CatalogSnapshot:
-        calls.append(force_refresh)
+    async def fake_get_snapshot(
+        force_refresh: bool = False,
+        allow_remote_fetch: bool = True,
+    ) -> CatalogSnapshot:
+        calls.append((force_refresh, allow_remote_fetch))
         return snapshot
 
     monkeypatch.setattr(service, "get_snapshot", fake_get_snapshot)
@@ -500,7 +529,7 @@ async def test_get_models_payload_passes_force_refresh_to_snapshot(
     payload = await service.get_models_payload(force_refresh=True)
 
     assert payload["model_count"] == 0
-    assert calls == [True]
+    assert calls == [(True, True)]
 
 
 @pytest.mark.asyncio

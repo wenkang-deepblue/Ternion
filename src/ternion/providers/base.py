@@ -160,14 +160,7 @@ class BaseProvider(ABC):
         """
         result = []
         for msg in messages:
-            if isinstance(msg.content, str):
-                result.append(
-                    {
-                        "role": msg.role.value,
-                        "content": msg.content,
-                    }
-                )
-            elif isinstance(msg.content, list):
+            if isinstance(msg.content, str | list):
                 result.append(
                     {
                         "role": msg.role.value,

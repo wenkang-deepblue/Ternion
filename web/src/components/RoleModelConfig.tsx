@@ -8,7 +8,7 @@
  * - Reviewer: Code reviewer
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
 import api from '../api/client';
 import type { ApiErrorPayload, Config, RoleConfig, ModelsData, ModelInfo } from '../api/client';
 import { isApiError } from '../api/client';
@@ -17,6 +17,7 @@ import type { Translations } from '../i18n';
 import { getErrorMessage, isCJKLanguage } from '../i18n';
 import type { Language } from '../i18n';
 import {
+  getCatalogModelDisplayLabel,
   getModelName,
   getModelSeriesName,
   getProviderDisplayName,
@@ -91,8 +92,11 @@ export function RoleModelConfig({
   const [hasChanges, setHasChanges] = useState(false);
   const [invalidatedRoles, setInvalidatedRoles] = useState<string[]>([]);
   const [modelUnavailableState, setModelUnavailableState] = useState<ModelUnavailableState | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
   const previousReloadSignalRef = useRef(modelsReloadSignal);
   const selfTriggeredReloadRef = useRef(false);
+  const [floatingLeft, setFloatingLeft] = useState<number | null>(null);
+  const [floatingHidden, setFloatingHidden] = useState(false);
   const unsavedSeparator = isCJKLanguage(language) ? '，' : ', ';
 
   const isRoleDisabled = (role: string) => {
@@ -422,11 +426,83 @@ export function RoleModelConfig({
   });
   const hasIncompleteRoles = !allRolesConfigured;
   const showSaveButton = enabledProviders.length > 0 && (hasAnySelection || hasChanges || allRolesConfigured);
-  const canSave = hasChanges && allRolesConfigured && enabledProviders.length > 0 && !saving && !refreshingModels;
+  const canSave = hasChanges && allRolesConfigured && enabledProviders.length > 0 && !saving;
   const saveButtonTitle = hasIncompleteRoles ? t.roleNotSaved : '';
+  const shouldShowFloatingSave = canSave;
+
+  const updateFloatingPosition = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const element = cardRef.current;
+    if (!element) {
+      setFloatingLeft(null);
+      return;
+    }
+
+    const rect = element.getBoundingClientRect();
+    const gap = 16;
+    const left = Math.round(rect.right + gap);
+
+    // Keep the floating action behavior additive and avoid overlapping the
+    // layout on narrow screens.
+    const minViewportWidth = 1024;
+    const buttonApproxWidth = 140;
+    const wouldOverflow = left + buttonApproxWidth > window.innerWidth - 8;
+    const hide = window.innerWidth < minViewportWidth || wouldOverflow;
+
+    setFloatingHidden(hide);
+    setFloatingLeft(left);
+  }, []);
+
+  useLayoutEffect(() => {
+    updateFloatingPosition();
+  }, [updateFloatingPosition, isDarkMode, executionMode, modelsData, hasChanges, saving]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !shouldShowFloatingSave) {
+      return;
+    }
+
+    let rafId: number | null = null;
+
+    const schedulePositionUpdate = () => {
+      if (rafId != null) {
+        return;
+      }
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        updateFloatingPosition();
+      });
+    };
+
+    const handleResize = () => schedulePositionUpdate();
+    const handleScroll = () => schedulePositionUpdate();
+
+    window.addEventListener('resize', handleResize, { passive: true });
+    window.addEventListener('scroll', handleScroll, { passive: true });
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && cardRef.current) {
+      resizeObserver = new ResizeObserver(() => schedulePositionUpdate());
+      resizeObserver.observe(cardRef.current);
+    }
+
+    schedulePositionUpdate();
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('scroll', handleScroll);
+      resizeObserver?.disconnect();
+      if (rafId != null) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, [shouldShowFloatingSave, updateFloatingPosition]);
 
   return (
-    <div className="card">
+    <div className="card" ref={cardRef}>
       <div className="card-header flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -457,10 +533,30 @@ export function RoleModelConfig({
             disabled={!canSave}
             title={saveButtonTitle}
           >
-            {saving ? t.roleConfigValidatingModel : t.saveChanges}
+            {saving ? t.saving : t.saveChanges}
           </button>
         )}
       </div>
+      {shouldShowFloatingSave && !floatingHidden && floatingLeft != null && (
+        <button
+          className="btn btn-primary text-xs whitespace-nowrap"
+          onClick={handleSave}
+          disabled={!canSave}
+          aria-label={t.saveChanges}
+          title={t.saveChanges}
+          style={{
+            position: 'fixed',
+            top: '50%',
+            left: `${floatingLeft}px`,
+            transform: 'translateY(-50%)',
+            height: '45px',
+            minWidth: '120px',
+            zIndex: 9000,
+          }}
+        >
+          {saving ? t.saving : t.saveChanges}
+        </button>
+      )}
       <div className="card-body space-y-6">
         {modelUnavailableState && (
           <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-4 dark:border-amber-700 dark:bg-amber-950/40">
@@ -488,12 +584,18 @@ export function RoleModelConfig({
                   </p>
                 )}
               </div>
-              <div className="flex items-center gap-2">
-                <button className="btn btn-primary" onClick={handleSave} disabled={saving || refreshingModels}>
-                  {saving ? t.roleConfigValidatingModel : t.modelCatalogRetry}
+              <div className="flex shrink-0 items-center gap-2 self-start">
+                <button
+                  className="btn btn-primary h-11 whitespace-nowrap px-3 text-[13px] leading-none"
+                  style={{ minWidth: '0' }}
+                  onClick={handleSave}
+                  disabled={saving || refreshingModels}
+                >
+                  {saving ? t.saving : t.modelCatalogRetry}
                 </button>
                 <button
-                  className="btn btn-secondary"
+                  className="btn btn-secondary h-11 whitespace-nowrap px-3 text-[13px] leading-none"
+                  style={{ minWidth: '0' }}
                   onClick={handleRefreshModels}
                   disabled={refreshingModels || saving}
                 >
@@ -572,7 +674,7 @@ export function RoleModelConfig({
                     </option>
                     {availableModels.map((model: ModelInfo) => (
                       <option key={model.id} value={model.id}>
-                        {model.name}
+                        {getCatalogModelDisplayLabel(model)}
                       </option>
                     ))}
                   </select>

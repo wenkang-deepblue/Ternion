@@ -141,17 +141,36 @@ class LiteLLMModelCatalogService:
         self._anomaly_report_checked = False
         self._refresh_lock = asyncio.Lock()
 
-    async def get_snapshot(self, force_refresh: bool = False) -> CatalogSnapshot:
+    async def get_snapshot(
+        self,
+        force_refresh: bool = False,
+        allow_remote_fetch: bool = True,
+    ) -> CatalogSnapshot:
         """Return the latest normalized catalog snapshot.
 
         Args:
             force_refresh: Whether to bypass freshness checks and revalidate
                 against the remote catalog immediately.
+            allow_remote_fetch: Whether the call may hit the remote LiteLLM
+                catalog when no usable local snapshot is already available.
 
         Returns:
             A normalized snapshot backed by remote data, disk cache, or an
             empty snapshot when no data source is available.
         """
+        if not allow_remote_fetch:
+            if self._memory_snapshot is not None:
+                return self._memory_snapshot
+
+            disk_snapshot = self._load_disk_cache()
+            if disk_snapshot is not None:
+                self._set_memory_snapshot(disk_snapshot)
+                return disk_snapshot
+
+            empty_snapshot = self._build_empty_snapshot()
+            self._set_memory_snapshot(empty_snapshot)
+            return empty_snapshot
+
         if (
             not force_refresh
             and self._memory_snapshot
@@ -303,12 +322,15 @@ class LiteLLMModelCatalogService:
         self,
         current_config: "UserConfig | None" = None,
         force_refresh: bool = False,
+        allow_remote_fetch: bool = True,
     ) -> dict[str, Any]:
         """Build the control-panel payload for model selection.
 
         Args:
             current_config: Reserved for future config-aware filtering.
             force_refresh: Whether to bypass cache freshness checks.
+            allow_remote_fetch: Whether payload generation may initialize the
+                catalog from the remote source when no local snapshot exists.
 
         Returns:
             A payload containing serialized provider-grouped models, the latest
@@ -316,7 +338,10 @@ class LiteLLMModelCatalogService:
             initialization flags for the control panel.
         """
         _ = current_config
-        snapshot = await self.get_snapshot(force_refresh=force_refresh)
+        snapshot = await self.get_snapshot(
+            force_refresh=force_refresh,
+            allow_remote_fetch=allow_remote_fetch,
+        )
         models: dict[str, list[dict[str, Any]]] = {}
         for provider in CATALOG_PROVIDERS:
             provider_models = snapshot.models_by_provider.get(provider, [])
@@ -696,35 +721,33 @@ class LiteLLMModelCatalogService:
         """Format an Anthropic model ID into a display name.
 
         Supported forms include family-first IDs such as
-        ``claude-sonnet-4-5`` and legacy version-first IDs such as
-        ``claude-4-1-sonnet-latest``.
+        ``claude-sonnet-4-6``, ``claude-sonnet-4-5-20250929``, and legacy
+        version-first IDs such as ``claude-4-1-sonnet-latest``.
         """
         parts = model_id.split("-")
-        if (
-            len(parts) >= 5
-            and parts[1] in {"sonnet", "opus"}
-            and parts[2].isdigit()
-            and parts[3].isdigit()
-        ):
-            family = parts[1].capitalize()
-            version = f"{parts[2]}.{parts[3]}"
-            return f"Claude {family} {version}"
+
+        # Family-first: claude-{family}-{major}-{minor}[-date...]
         if len(parts) >= 4 and parts[1] in {"sonnet", "opus"} and parts[2].isdigit():
             family = parts[1].capitalize()
+            if len(parts) >= 4 and parts[3].isdigit() and not self._looks_like_date(parts[3]):
+                return f"Claude {family} {parts[2]}.{parts[3]}"
             return f"Claude {family} {parts[2]}"
-        if (
-            len(parts) >= 5
-            and parts[1].isdigit()
-            and parts[2].isdigit()
-            and parts[3] in {"sonnet", "opus"}
-        ):
-            family = parts[3].capitalize()
-            version = f"{parts[1]}.{parts[2]}"
-            return f"Claude {family} {version}"
-        if len(parts) >= 4 and parts[1].isdigit() and parts[2] in {"sonnet", "opus"}:
-            family = parts[2].capitalize()
-            return f"Claude {family} {parts[1]}"
+
+        # Version-first: claude-{major}-{minor}-{family}[-...]
+        if len(parts) >= 4 and parts[1].isdigit():
+            if len(parts) >= 5 and parts[2].isdigit() and parts[3] in {"sonnet", "opus"}:
+                family = parts[3].capitalize()
+                return f"Claude {family} {parts[1]}.{parts[2]}"
+            if parts[2] in {"sonnet", "opus"}:
+                family = parts[2].capitalize()
+                return f"Claude {family} {parts[1]}"
+
         return model_id
+
+    @staticmethod
+    def _looks_like_date(token: str) -> bool:
+        """Return True if a token looks like a YYYYMMDD date prefix."""
+        return len(token) >= 8 and token[:8].isdigit()
 
     def _is_raw_candidate(self, provider: str, model_id: str, meta: dict[str, Any]) -> bool:
         """Return whether an entry should appear in anomaly raw-candidate diagnostics."""

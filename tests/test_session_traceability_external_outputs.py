@@ -104,12 +104,12 @@ async def test_execution_followup_records_shell_external_output_path_in_meta_and
             "ternion.workflow.implementation_stage.run_implementation_stage", new_callable=AsyncMock
         ) as mock_run,
         patch("ternion.server.routes.config_store") as mock_config_store,
-        patch("ternion.utils.i18n.config_store") as mock_i18n_config,
+        patch("ternion.utils.i18n._load_user_config") as mock_i18n_config,
         patch("ternion.server.routes.session_store") as mock_session_store,
     ):
         mock_run.return_value = final_state
         mock_config_store.load.return_value = mock_user_config
-        mock_i18n_config.load.return_value = mock_user_config
+        mock_i18n_config.return_value = mock_user_config
         mock_session_store.update_session.return_value = session
 
         _resp = await handle_execution_followup(session, request, skip_budget_confirm=True)

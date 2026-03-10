@@ -7,6 +7,7 @@ to emit incremental tokens to SSE consumers in real-time, solving the
 """
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -213,12 +214,8 @@ class StreamEventQueue:
         if not self._closed:
             self._closed = True
             # Put None as sentinel to signal end
-            try:
+            with suppress(asyncio.QueueFull):
                 self._queue.put_nowait(None)
-            except asyncio.QueueFull:
-                # If the queue is full (maxsize > 0), the sentinel may not fit.
-                # Consumers should also rely on the `is_closed` flag.
-                pass
 
     async def get(self) -> StreamEvent | None:
         """
