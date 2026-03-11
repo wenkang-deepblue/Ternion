@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../api/client';
 import type { Config, ModelsData } from '../api/client';
@@ -141,6 +141,18 @@ function getSaveButtons(label: string): HTMLButtonElement[] {
 }
 
 describe('RoleModelConfig', () => {
+  const mockRect: DOMRect = {
+    x: 100,
+    y: 120,
+    width: 900,
+    height: 1000,
+    top: 120,
+    right: 1000,
+    bottom: 1120,
+    left: 100,
+    toJSON: () => ({}),
+  } as DOMRect;
+
   beforeEach(() => {
     mockApi.getModels.mockReset();
     mockApi.logRoleSelection.mockReset();
@@ -149,6 +161,13 @@ describe('RoleModelConfig', () => {
 
     mockApi.getModels.mockResolvedValue(buildModelsData());
     mockApi.logRoleSelection.mockResolvedValue({ success: true, pending: true });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(mockRect);
+    Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 900, configurable: true });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('shows retry and refresh actions when save fails with MODEL_UNAVAILABLE', async () => {
@@ -167,9 +186,9 @@ describe('RoleModelConfig', () => {
     const modelSelect = await findModelSelectForRole(t.ternionAName);
     await user.selectOptions(modelSelect, 'gpt-5.3-codex');
     await waitFor(() => {
-      expect(getSaveButtons(t.saveChanges)).toHaveLength(2);
+      expect(getSaveButtons(t.saveChanges)).toHaveLength(1);
     });
-    await user.click(getSaveButtons(t.saveChanges)[1]);
+    await user.click(getSaveButtons(t.saveChanges)[0]);
 
     await waitFor(() => {
       expect(screen.getAllByText(t.code_MODEL_UNAVAILABLE).length).toBeGreaterThan(0);
@@ -207,12 +226,12 @@ describe('RoleModelConfig', () => {
     await user.selectOptions(modelSelect, 'gpt-5.3-codex');
 
     await waitFor(() => {
-      expect(getSaveButtons(t.saveChanges)).toHaveLength(2);
+      expect(getSaveButtons(t.saveChanges)).toHaveLength(1);
     });
 
-    const floatingSaveButton = getSaveButtons(t.saveChanges)[1];
-    expect(floatingSaveButton.style.position).toBe('fixed');
-    expect(floatingSaveButton.style.top).toBe('50%');
+    const floatingSaveButton = getSaveButtons(t.saveChanges)[0];
+    expect(floatingSaveButton.style.position).toBe('sticky');
+    expect(floatingSaveButton.style.top).toBe('calc(50vh - 22.5px)');
   });
 
   it('clears removed selections after refreshing the model catalog from the save error banner', async () => {
@@ -249,9 +268,9 @@ describe('RoleModelConfig', () => {
     const modelSelect = await findModelSelectForRole(t.ternionAName);
     await user.selectOptions(modelSelect, 'gpt-5.3-codex');
     await waitFor(() => {
-      expect(getSaveButtons(t.saveChanges)).toHaveLength(2);
+      expect(getSaveButtons(t.saveChanges)).toHaveLength(1);
     });
-    await user.click(getSaveButtons(t.saveChanges)[1]);
+    await user.click(getSaveButtons(t.saveChanges)[0]);
 
     await screen.findByRole('button', { name: t.modelCatalogRefreshNow });
     await user.click(screen.getByRole('button', { name: t.modelCatalogRefreshNow }));
@@ -276,9 +295,9 @@ describe('RoleModelConfig', () => {
     const modelSelect = await findModelSelectForRole(t.ternionAName);
     await user.selectOptions(modelSelect, 'gpt-5.3-codex');
     await waitFor(() => {
-      expect(getSaveButtons(t.saveChanges)).toHaveLength(2);
+      expect(getSaveButtons(t.saveChanges)).toHaveLength(1);
     });
-    await user.click(getSaveButtons(t.saveChanges)[1]);
+    await user.click(getSaveButtons(t.saveChanges)[0]);
 
     await waitFor(() => {
       expect(onConfigUpdate).toHaveBeenCalledWith(updatedConfig);

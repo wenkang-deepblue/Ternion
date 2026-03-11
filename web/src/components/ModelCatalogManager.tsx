@@ -192,15 +192,23 @@ export function ModelCatalogManager({
   return (
     <>
       <div className="card">
-        <div className="card-header flex items-center justify-between gap-4">
-          <div>
+        <div className="card-header relative flex items-center justify-between gap-4 min-h-[72px]">
+          <div className="shrink-0">
             <h2 className="text-lg font-semibold">{t.modelCatalogTitle}</h2>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
               {t.modelCatalogDescription}
             </p>
           </div>
+
+          {modelsData?.requires_initialization && (
+            <div className="absolute inset-x-0 top-[18px] flex justify-center pointer-events-none">
+              <div className="rounded border border-[#F57F17] bg-[#FFFDE7] px-4 py-[2px] text-[13px] leading-5 text-[#F57F17] dark:bg-[#2b1f00] dark:border-[#F57F17] dark:text-[#FFB300] w-[550px] max-w-[55vw] text-center pointer-events-auto shadow-sm">
+                {t.modelCatalogFirstUseBanner}
+              </div>
+            </div>
+          )}
           <button
-            className="btn btn-primary"
+            className="btn btn-primary whitespace-nowrap"
             onClick={handleRefresh}
             disabled={refreshing || loading}
           >
@@ -293,11 +301,11 @@ export function ModelCatalogManager({
                 </p>
               </div>
               <button
-                className="btn btn-secondary"
+                className="btn btn-primary"
                 onClick={handleSaveSchedule}
                 disabled={savingSchedule || !scheduleDirty}
               >
-                {savingSchedule ? t.saving : t.saveChanges}
+                {savingSchedule ? t.saving : t.execModeSave}
               </button>
             </div>
 
@@ -386,7 +394,7 @@ export function ModelCatalogManager({
               </button>
             </div>
             <div className="overflow-auto p-5">
-              <pre className="whitespace-pre-wrap break-words text-sm text-slate-800 dark:text-slate-200">
+              <pre className="whitespace-pre-wrap wrap-break-word text-sm text-slate-800 dark:text-slate-200">
                 {detailsMarkdown}
               </pre>
             </div>

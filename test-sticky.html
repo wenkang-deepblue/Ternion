@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { height: 2000px; padding: 200px; margin: 0; font-family: sans-serif; }
+  .card {
+    position: relative;
+    width: 600px;
+    height: 800px;
+    background: #f0f0f0;
+    border: 1px solid #ccc;
+    border-radius: 12px;
+  }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 24px;
+    border-bottom: 1px solid #ddd;
+  }
+  .placeholder-btn {
+    width: 100px;
+    height: 45px;
+    /* This occupies the space of the original button so the layout doesn't collapse */
+  }
+  .wrapper {
+    position: absolute;
+    /* align exactly with the placeholder */
+    top: 16px; /* card-header padding-top */
+    bottom: 24px; /* card-body padding-bottom */
+    right: 24px; /* card-header padding-right */
+    width: 100px; /* same as placeholder */
+    pointer-events: none;
+    z-index: 9000;
+  }
+  .sticky-btn {
+    position: sticky;
+    top: calc(50vh - 22.5px); /* center in viewport */
+    height: 45px;
+    width: 100px;
+    background: blue;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="card-header">
+      <h2>Title</h2>
+      <!-- We leave a placeholder for the original fixed button -->
+      <div class="placeholder-btn"></div>
+    </div>
+    
+    <div class="wrapper">
+      <div class="sticky-btn">Save</div>
+    </div>
+    
+    <div style="padding: 24px; height: 1000px">Content</div>
+  </div>
+</body>
+</html>

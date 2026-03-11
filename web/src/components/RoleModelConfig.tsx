@@ -8,7 +8,7 @@
  * - Reviewer: Code reviewer
  */
 
-import { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../api/client';
 import type { ApiErrorPayload, Config, RoleConfig, ModelsData, ModelInfo } from '../api/client';
 import { isApiError } from '../api/client';
@@ -66,7 +66,6 @@ interface RoleModelConfigProps {
 const DRAFT_STORAGE_KEY = 'ternion_role_model_draft';
 const CONFIG_NONEMPTY_MARKER_KEY = 'ternion_config_nonempty';
 const ROLE_KEYS = ['ternion_a', 'ternion_b', 'ternion_c', 'arbiter', 'writer', 'reviewer'] as const;
-
 interface ModelUnavailableState {
   provider: string;
   model: string;
@@ -95,8 +94,6 @@ export function RoleModelConfig({
   const cardRef = useRef<HTMLDivElement | null>(null);
   const previousReloadSignalRef = useRef(modelsReloadSignal);
   const selfTriggeredReloadRef = useRef(false);
-  const [floatingLeft, setFloatingLeft] = useState<number | null>(null);
-  const [floatingHidden, setFloatingHidden] = useState(false);
   const unsavedSeparator = isCJKLanguage(language) ? '，' : ', ';
 
   const isRoleDisabled = (role: string) => {
@@ -420,89 +417,13 @@ export function RoleModelConfig({
     const available = (modelsData?.models[roleConfig.provider] || []).map(m => m.id);
     return available.includes(roleConfig.model);
   });
-  const hasAnySelection = ROLE_KEYS.some(role => {
-    const roleConfig = selectedRoles[role];
-    return Boolean(roleConfig?.provider || roleConfig?.model);
-  });
   const hasIncompleteRoles = !allRolesConfigured;
-  const showSaveButton = enabledProviders.length > 0 && (hasAnySelection || hasChanges || allRolesConfigured);
+  const showSaveButton = hasChanges;
   const canSave = hasChanges && allRolesConfigured && enabledProviders.length > 0 && !saving;
   const saveButtonTitle = hasIncompleteRoles ? t.roleNotSaved : '';
-  const shouldShowFloatingSave = canSave;
-
-  const updateFloatingPosition = useCallback(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    const element = cardRef.current;
-    if (!element) {
-      setFloatingLeft(null);
-      return;
-    }
-
-    const rect = element.getBoundingClientRect();
-    const gap = 16;
-    const left = Math.round(rect.right + gap);
-
-    // Keep the floating action behavior additive and avoid overlapping the
-    // layout on narrow screens.
-    const minViewportWidth = 1024;
-    const buttonApproxWidth = 140;
-    const wouldOverflow = left + buttonApproxWidth > window.innerWidth - 8;
-    const hide = window.innerWidth < minViewportWidth || wouldOverflow;
-
-    setFloatingHidden(hide);
-    setFloatingLeft(left);
-  }, []);
-
-  useLayoutEffect(() => {
-    updateFloatingPosition();
-  }, [updateFloatingPosition, isDarkMode, executionMode, modelsData, hasChanges, saving]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !shouldShowFloatingSave) {
-      return;
-    }
-
-    let rafId: number | null = null;
-
-    const schedulePositionUpdate = () => {
-      if (rafId != null) {
-        return;
-      }
-      rafId = window.requestAnimationFrame(() => {
-        rafId = null;
-        updateFloatingPosition();
-      });
-    };
-
-    const handleResize = () => schedulePositionUpdate();
-    const handleScroll = () => schedulePositionUpdate();
-
-    window.addEventListener('resize', handleResize, { passive: true });
-    window.addEventListener('scroll', handleScroll, { passive: true });
-
-    let resizeObserver: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined' && cardRef.current) {
-      resizeObserver = new ResizeObserver(() => schedulePositionUpdate());
-      resizeObserver.observe(cardRef.current);
-    }
-
-    schedulePositionUpdate();
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      window.removeEventListener('scroll', handleScroll);
-      resizeObserver?.disconnect();
-      if (rafId != null) {
-        window.cancelAnimationFrame(rafId);
-      }
-    };
-  }, [shouldShowFloatingSave, updateFloatingPosition]);
 
   return (
-    <div className="card" ref={cardRef}>
+    <div className="card relative" ref={cardRef}>
       <div className="card-header flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -526,36 +447,38 @@ export function RoleModelConfig({
           </p>
         </div>
         {showSaveButton && (
-          <button
-            style={{ minWidth: '100px', height: '45px', flexShrink: 0 }}
-            className={`btn text-xs whitespace-nowrap ${canSave ? 'btn-primary' : 'btn-disabled'}`}
-            onClick={handleSave}
-            disabled={!canSave}
-            title={saveButtonTitle}
-          >
-            {saving ? t.saving : t.saveChanges}
-          </button>
+          <div style={{ minWidth: '100px', height: '45px', flexShrink: 0 }} />
         )}
       </div>
-      {shouldShowFloatingSave && !floatingHidden && floatingLeft != null && (
-        <button
-          className="btn btn-primary text-xs whitespace-nowrap"
-          onClick={handleSave}
-          disabled={!canSave}
-          aria-label={t.saveChanges}
-          title={t.saveChanges}
+      {showSaveButton && (
+        <div
           style={{
-            position: 'fixed',
-            top: '50%',
-            left: `${floatingLeft}px`,
-            transform: 'translateY(-50%)',
-            height: '45px',
-            minWidth: '120px',
+            position: 'absolute',
+            top: '16px',
+            bottom: '24px',
+            right: '24px',
+            width: `100px`,
+            pointerEvents: 'none',
             zIndex: 9000,
           }}
         >
-          {saving ? t.saving : t.saveChanges}
-        </button>
+          <button
+            className={`btn text-xs whitespace-nowrap shadow-lg shadow-black/10 ${canSave ? 'btn-primary' : 'btn-disabled'}`}
+            onClick={handleSave}
+            disabled={!canSave}
+            aria-label={t.saveChanges}
+            title={saveButtonTitle || t.saveChanges}
+            style={{
+              position: 'sticky',
+              top: `calc(50vh - 22.5px)`,
+              height: `45px`,
+              minWidth: `100px`,
+              pointerEvents: 'auto',
+            }}
+          >
+            {saving ? t.saving : t.saveChanges}
+          </button>
+        </div>
       )}
       <div className="card-body space-y-6">
         {modelUnavailableState && (
@@ -579,7 +502,7 @@ export function RoleModelConfig({
                   )}
                 </p>
                 {modelUnavailableState.message && (
-                  <p className="text-xs text-amber-700 dark:text-amber-300 break-words">
+                  <p className="text-xs text-amber-700 dark:text-amber-300 wrap-break-word">
                     {modelUnavailableState.message}
                   </p>
                 )}
@@ -594,7 +517,7 @@ export function RoleModelConfig({
                   {saving ? t.saving : t.modelCatalogRetry}
                 </button>
                 <button
-                  className="btn btn-secondary h-11 whitespace-nowrap px-3 text-[13px] leading-none"
+                  className="btn btn-success h-11 whitespace-nowrap px-3 text-[13px] leading-none"
                   style={{ minWidth: '0' }}
                   onClick={handleRefreshModels}
                   disabled={refreshingModels || saving}

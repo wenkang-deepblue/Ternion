@@ -122,6 +122,44 @@ describe('ModelCatalogManager', () => {
     expect(document.querySelector('input[type="time"]')).toBeDisabled();
   });
 
+  it('uses the short primary save button label for automatic refresh', async () => {
+    const user = userEvent.setup();
+    const updatedConfig = buildConfig({
+      model_catalog_refresh: {
+        enabled: true,
+        mode: 'daily',
+        time_of_day: '04:00',
+        interval_value: 1,
+        last_refresh_at: '',
+        next_refresh_at: '',
+      },
+    });
+    mockApi.updateConfig.mockResolvedValue(updatedConfig);
+
+    const { t } = renderModelCatalogManager(
+      buildConfig({
+        model_catalog_refresh: {
+          enabled: false,
+          mode: 'daily',
+          time_of_day: '03:00',
+          interval_value: 1,
+          last_refresh_at: '',
+          next_refresh_at: '',
+        },
+      })
+    );
+
+    await waitFor(() => {
+      expect(mockApi.getModels).toHaveBeenCalledTimes(1);
+    });
+
+    const checkbox = screen.getByRole('checkbox');
+    await user.click(checkbox);
+
+    const saveButton = screen.getByRole('button', { name: t.execModeSave });
+    expect(saveButton.className).toContain('btn-primary');
+  });
+
   it('switches from time input to interval input for interval schedules', async () => {
     const user = userEvent.setup();
     const { t } = renderModelCatalogManager(
