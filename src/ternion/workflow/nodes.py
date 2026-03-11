@@ -31,6 +31,7 @@ from ternion.core.exceptions import (
     TernionTimeoutError as TernionTimeout,
 )
 from ternion.core.intent_classifier import get_latest_user_message
+from ternion.core.model_catalog import model_catalog_service
 from ternion.core.model_probe import classify_runtime_model_unavailable
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.core.session_store import (
@@ -571,6 +572,21 @@ def _format_optimizer_verification_retry_policy(tool_results_meta: dict[str, Any
     )
 
 
+def _resolve_api_mode(provider: Any, model: str) -> str | None:
+    """
+    Resolve the API mode for a provider/model pair from the model catalog.
+
+    Returns ``"responses"`` for OpenAI models that require the Responses API,
+    or ``None`` when no special routing is needed.
+    """
+    if getattr(provider, "name", None) != "openai":
+        return None
+    catalog_model = model_catalog_service.get_model_cached(model)
+    if catalog_model is not None and catalog_model.mode == "responses":
+        return "responses"
+    return None
+
+
 async def _call_with_timeout(
     provider: Any,
     messages: list[ChatMessage],
@@ -581,6 +597,9 @@ async def _call_with_timeout(
 ) -> Any:
     """
     Call provider.chat_completion with timeout protection (CR-030).
+
+    Automatically resolves and injects ``api_mode`` for OpenAI models
+    that require the Responses API, based on the model catalog.
 
     Args:
         provider: Provider instance with chat_completion method
@@ -595,6 +614,11 @@ async def _call_with_timeout(
     Raises:
         TernionTimeout: If request times out (status_code=504)
     """
+    if "api_mode" not in kwargs:
+        api_mode = _resolve_api_mode(provider, model)
+        if api_mode is not None:
+            kwargs["api_mode"] = api_mode
+
     timeout = timeout_seconds or DEFAULT_TIMEOUT_SECONDS
     try:
         return await asyncio.wait_for(
@@ -670,6 +694,11 @@ async def _call_with_stream(
             timeout_seconds=timeout_seconds,
             **kwargs,
         )
+
+    if "api_mode" not in kwargs:
+        api_mode = _resolve_api_mode(provider, model)
+        if api_mode is not None:
+            kwargs["api_mode"] = api_mode
 
     timeout = timeout_seconds or DEFAULT_TIMEOUT_SECONDS
     full_content = ""

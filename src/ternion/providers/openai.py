@@ -88,21 +88,34 @@ class OpenAIProvider(BaseProvider):
             ProviderResponse with the generated content
         """
         model = model or self._default_model
+        api_mode = kwargs.pop("api_mode", None)
         converted = self._convert_messages(messages)
 
         logger.debug(
             "openai_chat_completion",
             model=model,
             message_count=len(messages),
+            api_mode=api_mode or "auto",
         )
+
+        # Proactive routing: skip Chat Completions entirely for Responses API models.
+        if api_mode == "responses":
+            return await self._responses_chat_completion(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
 
         api_params: dict[str, Any] = {
             "model": model,
             "messages": converted,
-            "temperature": temperature,
             "stream": False,
             **kwargs,
         }
+        if self._supports_temperature(model):
+            api_params["temperature"] = temperature
         if max_tokens is not None:
             api_params["max_tokens"] = max_tokens
         try:
@@ -258,22 +271,37 @@ class OpenAIProvider(BaseProvider):
             Content chunks as they are generated
         """
         model = model or self._default_model
+        api_mode = kwargs.pop("api_mode", None)
         converted = self._convert_messages(messages)
 
         logger.debug(
             "openai_chat_completion_stream",
             model=model,
             message_count=len(messages),
+            api_mode=api_mode or "auto",
         )
+
+        # Proactive routing: skip Chat Completions entirely for Responses API models.
+        if api_mode == "responses":
+            async for chunk in self._responses_chat_completion_stream(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            ):
+                yield chunk
+            return
 
         api_params: dict[str, Any] = {
             "model": model,
             "messages": converted,
-            "temperature": temperature,
             "stream": True,
             "stream_options": {"include_usage": True},
             **kwargs,
         }
+        if self._supports_temperature(model):
+            api_params["temperature"] = temperature
         if max_tokens is not None:
             api_params["max_tokens"] = max_tokens
 
@@ -396,16 +424,16 @@ class OpenAIProvider(BaseProvider):
         Returns:
             ProviderResponse with the generated content
         """
-        input_items = self._convert_messages_to_responses_input(messages)
+        input_items, previous_response_id = self._prepare_responses_input(messages)
 
-        params: dict[str, Any] = {
-            "model": model,
-            "input": input_items,
-            "temperature": temperature,
-            **self._filter_responses_kwargs(kwargs),
-        }
-        if max_tokens is not None:
-            params["max_output_tokens"] = max_tokens
+        params = self._build_responses_request_params(
+            model=model,
+            input_items=input_items,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            kwargs=kwargs,
+            previous_response_id=previous_response_id,
+        )
 
         response = await self._client.responses.create(**params)  # type: ignore
 
@@ -464,17 +492,17 @@ class OpenAIProvider(BaseProvider):
         Yields:
             Content chunks as they are generated
         """
-        input_items = self._convert_messages_to_responses_input(messages)
+        input_items, previous_response_id = self._prepare_responses_input(messages)
 
-        params: dict[str, Any] = {
-            "model": model,
-            "input": input_items,
-            "temperature": temperature,
-            "stream": True,
-            **self._filter_responses_kwargs(kwargs),
-        }
-        if max_tokens is not None:
-            params["max_output_tokens"] = max_tokens
+        params = self._build_responses_request_params(
+            model=model,
+            input_items=input_items,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            kwargs=kwargs,
+            stream=True,
+            previous_response_id=previous_response_id,
+        )
 
         stream = await self._client.responses.create(**params)  # type: ignore
 
@@ -719,9 +747,64 @@ class OpenAIProvider(BaseProvider):
             )
 
     @staticmethod
+    def _convert_tools_for_responses_api(tools: list[Any]) -> list[dict[str, Any]]:
+        """
+        Convert Chat Completions tool schemas to Responses API format.
+
+        Chat Completions format nests name/parameters inside a ``function`` key::
+
+            {"type": "function", "function": {"name": "read", "parameters": {...}}}
+
+        The Responses API requires ``name`` and ``parameters`` at the top level::
+
+            {"type": "function", "name": "read", "parameters": {...}}
+
+        Tools already in Responses format (top-level ``name``) are passed through unchanged.
+
+        Args:
+            tools: List of tool definitions in either format.
+
+        Returns:
+            List of tool definitions in Responses API format.
+        """
+        converted: list[dict[str, Any]] = []
+        for tool in tools or []:
+            if not isinstance(tool, dict):
+                continue
+
+            # Already in Responses API format (has top-level name).
+            if isinstance(tool.get("name"), str) and tool["name"].strip():
+                converted.append(tool)
+                continue
+
+            # Chat Completions format: extract from nested function key.
+            fn = tool.get("function")
+            if not isinstance(fn, dict):
+                continue
+            name = fn.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+
+            resp_tool: dict[str, Any] = {
+                "type": "function",
+                "name": name,
+            }
+            if "description" in fn:
+                resp_tool["description"] = fn["description"]
+            if "parameters" in fn:
+                resp_tool["parameters"] = fn["parameters"]
+            if "strict" in fn:
+                resp_tool["strict"] = fn["strict"]
+            converted.append(resp_tool)
+        return converted
+
+    @staticmethod
     def _filter_responses_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         """
         Strip kwargs unsupported by the OpenAI Responses API (/v1/responses) before forwarding.
+
+        Also converts ``tools`` from Chat Completions schema to Responses API schema
+        when a nested ``function`` key is detected (see ``_convert_tools_for_responses_api``).
 
         Args:
             kwargs: Raw kwargs passed to chat_completion methods.
@@ -746,7 +829,151 @@ class OpenAIProvider(BaseProvider):
         for key, value in (kwargs or {}).items():
             if key in allowed:
                 filtered[key] = value
+
+        # Convert tools from Chat Completions format to Responses API format.
+        if "tools" in filtered and isinstance(filtered["tools"], list):
+            filtered["tools"] = OpenAIProvider._convert_tools_for_responses_api(filtered["tools"])
+
         return filtered
+
+    @staticmethod
+    def _normalize_model_name(model: str) -> str:
+        """Normalize a model ID for capability checks."""
+        return str(model or "").strip().lower()
+
+    @classmethod
+    def _supports_temperature(cls, model: str) -> bool:
+        """Return whether the target model accepts the temperature parameter."""
+        normalized = cls._normalize_model_name(model)
+        return not normalized.startswith("gpt-5")
+
+    @classmethod
+    def _build_responses_request_params(
+        cls,
+        *,
+        model: str,
+        input_items: list[dict[str, Any]],
+        temperature: float,
+        max_tokens: int | None,
+        kwargs: dict[str, Any],
+        stream: bool = False,
+        previous_response_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a sanitized Responses API request payload."""
+        params: dict[str, Any] = {
+            "model": model,
+            "input": input_items,
+            **cls._filter_responses_kwargs(kwargs),
+        }
+        if stream:
+            params["stream"] = True
+        if isinstance(previous_response_id, str) and previous_response_id.strip():
+            params["previous_response_id"] = previous_response_id.strip()
+        if cls._supports_temperature(model):
+            params["temperature"] = temperature
+        if max_tokens is not None:
+            params["max_output_tokens"] = max_tokens
+        return params
+
+    def _prepare_responses_input(
+        self,
+        messages: list[ChatMessage],
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """
+        Prepare Responses API input items, preferring `previous_response_id` tool follow-ups.
+
+        Returns:
+            Tuple of `(input_items, previous_response_id)`.
+        """
+        followup = self._build_responses_tool_followup_input(messages)
+        if followup is not None:
+            input_items, previous_response_id = followup
+            logger.info(
+                "openai_responses_followup_resume",
+                previous_response_id=previous_response_id,
+                message_count=len(messages),
+                input_item_count=len(input_items),
+            )
+            return input_items, previous_response_id
+
+        if self._has_responses_tool_followup_without_response_id(messages):
+            logger.warning(
+                "openai_responses_followup_missing_response_id",
+                message_count=len(messages),
+            )
+
+        return self._convert_messages_to_responses_input(messages), None
+
+    def _build_responses_tool_followup_input(
+        self,
+        messages: list[ChatMessage],
+    ) -> tuple[list[dict[str, Any]], str] | None:
+        """
+        Build follow-up input using `previous_response_id` after a Responses API tool turn.
+
+        This avoids replaying reasoning items manually for GPT-5 reasoning models.
+        """
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if msg.role != MessageRole.ASSISTANT or not msg.tool_calls:
+                continue
+
+            response_ids = {
+                tc.get("responses_api_response_id")
+                for tc in msg.tool_calls
+                if isinstance(tc, dict)
+                and isinstance(tc.get("responses_api_response_id"), str)
+                and tc.get("responses_api_response_id", "").strip()
+            }
+            if len(response_ids) != 1:
+                continue
+
+            suffix = messages[idx + 1 :]
+            if not suffix or any(item.role != MessageRole.TOOL for item in suffix):
+                continue
+
+            tool_call_map: dict[str, str] = {}
+            for tc in msg.tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                internal_id = tc.get("id")
+                if not isinstance(internal_id, str) or not internal_id.strip():
+                    continue
+                _item_id, call_id = self._extract_responses_api_ids(tc)
+                if isinstance(call_id, str) and call_id.strip():
+                    tool_call_map[internal_id] = call_id
+
+            input_items: list[dict[str, Any]] = []
+            for tool_msg in suffix:
+                raw_tool_call_id = tool_msg.tool_call_id or ""
+                call_id = tool_call_map.get(raw_tool_call_id, raw_tool_call_id)
+                input_items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": self._content_to_text(tool_msg.content) or "",
+                    }
+                )
+
+            if input_items:
+                return input_items, next(iter(response_ids))
+
+        return None
+
+    def _has_responses_tool_followup_without_response_id(
+        self,
+        messages: list[ChatMessage],
+    ) -> bool:
+        """Return whether a tool follow-up exists but lacks preserved response metadata."""
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if msg.role != MessageRole.ASSISTANT or not msg.tool_calls:
+                continue
+            suffix = messages[idx + 1 :]
+            if not suffix or any(item.role != MessageRole.TOOL for item in suffix):
+                continue
+            return True
+        return False
 
     def _convert_messages_to_responses_input(
         self, messages: list[ChatMessage]
@@ -756,6 +983,9 @@ class OpenAIProvider(BaseProvider):
 
         Tool-role messages are mapped to `function_call_output` items; assistant tool_calls
         are expanded into separate `function_call` items per the Responses API schema.
+        When follow-up history was rewritten for Cursor routing, preserved
+        ``responses_api_call_id`` and ``responses_api_item_id`` metadata is used
+        to restore the original OpenAI identifiers.
 
         Args:
             messages: Conversation history including any tool interaction turns.
@@ -764,10 +994,12 @@ class OpenAIProvider(BaseProvider):
             List of input items compatible with /v1/responses `input` parameter.
         """
         items: list[dict[str, Any]] = []
+        responses_call_ids_by_tool_id: dict[str, str] = {}
         for msg in messages:
             if msg.role == MessageRole.TOOL:
                 tool_text = self._content_to_text(msg.content) or ""
-                call_id = msg.tool_call_id or ""
+                raw_tool_call_id = msg.tool_call_id or ""
+                call_id = responses_call_ids_by_tool_id.get(raw_tool_call_id, raw_tool_call_id)
                 items.append(
                     {
                         "type": "function_call_output",
@@ -811,11 +1043,14 @@ class OpenAIProvider(BaseProvider):
                     function = tc.get("function") if isinstance(tc.get("function"), dict) else {}
                     name = function.get("name")
                     arguments = function.get("arguments")
-                    tc_call_id = tc.get("id")
+                    tc_internal_id = tc.get("id")
+                    responses_item_id, responses_call_id = self._extract_responses_api_ids(tc)
                     if not isinstance(name, str) or not name.strip():
                         continue
-                    if not isinstance(tc_call_id, str) or not tc_call_id.strip():
+                    if not isinstance(tc_internal_id, str) or not tc_internal_id.strip():
                         continue
+                    tc_call_id = responses_call_id or tc_internal_id
+                    responses_call_ids_by_tool_id[tc_internal_id] = tc_call_id
                     if arguments is None:
                         arguments_str = "{}"
                     elif isinstance(arguments, str):
@@ -825,17 +1060,41 @@ class OpenAIProvider(BaseProvider):
 
                         arguments_str = json.dumps(arguments, ensure_ascii=False)
 
-                    items.append(
-                        {
-                            "type": "function_call",
-                            "call_id": tc_call_id,
-                            "id": tc_call_id,
-                            "name": name,
-                            "arguments": arguments_str,
-                        }
-                    )
+                    item: dict[str, Any] = {
+                        "type": "function_call",
+                        "call_id": tc_call_id,
+                        "name": name,
+                        "arguments": arguments_str,
+                    }
+                    if responses_item_id is not None:
+                        item["id"] = responses_item_id
+                    items.append(item)
 
         return items
+
+    @staticmethod
+    def _extract_responses_api_ids(tool_call: dict[str, Any]) -> tuple[str | None, str | None]:
+        """
+        Extract preserved Responses API identifiers from a tool call dictionary.
+
+        Args:
+            tool_call: Tool call payload stored in conversation history.
+
+        Returns:
+            Tuple of ``(responses_item_id, responses_call_id)``.
+        """
+        raw_id = tool_call.get("id")
+        item_id = tool_call.get("responses_api_item_id")
+        call_id = tool_call.get("responses_api_call_id") or tool_call.get("call_id")
+
+        if not isinstance(item_id, str) or not item_id.strip():
+            item_id = raw_id if isinstance(raw_id, str) and raw_id.startswith("fc_") else None
+        if not isinstance(call_id, str) or not call_id.strip():
+            call_id = raw_id if isinstance(raw_id, str) and raw_id.startswith("call_") else None
+
+        normalized_item_id = item_id.strip() if isinstance(item_id, str) and item_id.strip() else None
+        normalized_call_id = call_id.strip() if isinstance(call_id, str) and call_id.strip() else None
+        return normalized_item_id, normalized_call_id
 
     @staticmethod
     def _usage_dict_from_responses_usage(usage: Any) -> dict[str, int]:
@@ -895,7 +1154,10 @@ class OpenAIProvider(BaseProvider):
 
             name = getattr(item, "name", None)
             arguments = getattr(item, "arguments", None)
-            call_id = getattr(item, "call_id", None) or getattr(item, "id", None)
+            response_item_id = getattr(item, "id", None)
+            response_call_id = getattr(item, "call_id", None)
+            response_id = getattr(response, "id", None)
+            call_id = response_call_id or response_item_id
             if not isinstance(name, str) or not name.strip():
                 continue
             if not isinstance(call_id, str) or not call_id.strip():
@@ -903,13 +1165,18 @@ class OpenAIProvider(BaseProvider):
             if not isinstance(arguments, str):
                 arguments = "{}" if arguments is None else str(arguments)
 
-            tool_calls.append(
-                {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": name, "arguments": arguments},
-                }
-            )
+            tool_call: dict[str, Any] = {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+            if isinstance(response_item_id, str) and response_item_id.strip():
+                tool_call["responses_api_item_id"] = response_item_id
+            if isinstance(response_call_id, str) and response_call_id.strip():
+                tool_call["responses_api_call_id"] = response_call_id
+            if isinstance(response_id, str) and response_id.strip():
+                tool_call["responses_api_response_id"] = response_id
+            tool_calls.append(tool_call)
 
         return tool_calls or None
 

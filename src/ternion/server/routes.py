@@ -634,18 +634,52 @@ def _rewrite_tool_call_ids(
             arguments_str = _rewrite_tool_call_repo_paths(name, arguments_str)
 
         new_id = f"ternion_{session_id}_r{round_index:04d}_c{idx:02d}"
-        rewritten.append(
-            {
-                "id": new_id,
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": arguments_str,
-                },
-            }
-        )
+        rewritten_call = {
+            "id": new_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": arguments_str,
+            },
+        }
+
+        responses_item_id = tc.get("responses_api_item_id")
+        responses_call_id = tc.get("responses_api_call_id")
+        responses_response_id = tc.get("responses_api_response_id")
+        raw_id = tc.get("id")
+        if (
+            not isinstance(responses_item_id, str) or not responses_item_id.strip()
+        ) and isinstance(raw_id, str) and raw_id.startswith("fc_"):
+            responses_item_id = raw_id
+        if (
+            not isinstance(responses_call_id, str) or not responses_call_id.strip()
+        ) and isinstance(raw_id, str) and raw_id.startswith("call_"):
+            responses_call_id = raw_id
+
+        if isinstance(responses_item_id, str) and responses_item_id.strip():
+            rewritten_call["responses_api_item_id"] = responses_item_id.strip()
+        if isinstance(responses_call_id, str) and responses_call_id.strip():
+            rewritten_call["responses_api_call_id"] = responses_call_id.strip()
+        if isinstance(responses_response_id, str) and responses_response_id.strip():
+            rewritten_call["responses_api_response_id"] = responses_response_id.strip()
+
+        rewritten.append(rewritten_call)
 
     return rewritten
+
+
+def _strip_internal_tool_call_fields(tool_calls: list[dict] | None) -> list[dict]:
+    """Return tool calls without internal metadata used for provider round-tripping."""
+    public_tool_calls: list[dict] = []
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        public_tc = dict(tc)
+        public_tc.pop("responses_api_item_id", None)
+        public_tc.pop("responses_api_call_id", None)
+        public_tc.pop("responses_api_response_id", None)
+        public_tool_calls.append(public_tc)
+    return public_tool_calls
 
 
 def _append_assistant_tool_call_message(
@@ -2434,6 +2468,7 @@ async def _run_discussion_streaming(
                     round_index=1,
                     workflow_phase=workflow_phase,
                 )
+                cursor_tool_calls = _strip_internal_tool_call_fields(rewritten_tool_calls)
                 execution_messages = _append_assistant_tool_call_message(
                     session.execution_messages,
                     rewritten_tool_calls,
@@ -2470,7 +2505,7 @@ async def _run_discussion_streaming(
                             delta=ChoiceDelta(
                                 role="assistant",
                                 content=None,
-                                tool_calls=rewritten_tool_calls,
+                                tool_calls=cursor_tool_calls,
                             ),
                         )
                     ],
@@ -2964,6 +2999,7 @@ async def _run_implementation_streaming(
                     round_index=next_round,
                     workflow_phase=workflow_phase,
                 )
+                cursor_tool_calls = _strip_internal_tool_call_fields(rewritten_tool_calls)
                 execution_messages = (
                     list(getattr(session, "execution_messages", []) or [])
                     if (session is not None)
@@ -3028,7 +3064,7 @@ async def _run_implementation_streaming(
                             delta=ChoiceDelta(
                                 role="assistant",
                                 content=None,
-                                tool_calls=rewritten_tool_calls,
+                                tool_calls=cursor_tool_calls,
                             ),
                         )
                     ],
@@ -3794,6 +3830,7 @@ async def chat_completions(
                 round_index=1,
                 workflow_phase=workflow_phase,
             )
+            cursor_tool_calls = _strip_internal_tool_call_fields(rewritten_tool_calls)
             execution_messages = _append_assistant_tool_call_message(
                 session.execution_messages,
                 rewritten_tool_calls,
@@ -3829,7 +3866,7 @@ async def chat_completions(
                             message=ChatMessage(
                                 role=MessageRole.ASSISTANT,
                                 content=None,
-                                tool_calls=rewritten_tool_calls,
+                                tool_calls=cursor_tool_calls,
                             ),
                         )
                     ],
@@ -4435,6 +4472,7 @@ async def handle_report_evidence_followup(
                         round_index=next_round,
                         workflow_phase=workflow_phase,
                     )
+                    cursor_tool_calls = _strip_internal_tool_call_fields(rewritten_tool_calls)
                     execution_messages = _append_assistant_tool_call_message(
                         updated_execution_messages,
                         rewritten_tool_calls,
@@ -4527,7 +4565,7 @@ async def handle_report_evidence_followup(
                                 delta=ChoiceDelta(
                                     role="assistant",
                                     content=None,
-                                    tool_calls=rewritten_tool_calls,
+                                    tool_calls=cursor_tool_calls,
                                 ),
                             )
                         ],
@@ -4856,6 +4894,7 @@ async def handle_report_evidence_followup(
             round_index=next_round,
             workflow_phase=workflow_phase,
         )
+        cursor_tool_calls = _strip_internal_tool_call_fields(rewritten_tool_calls)
         execution_messages = _append_assistant_tool_call_message(
             updated_execution_messages,
             rewritten_tool_calls,
@@ -4936,7 +4975,7 @@ async def handle_report_evidence_followup(
                         message=ChatMessage(
                             role=MessageRole.ASSISTANT,
                             content=None,
-                            tool_calls=rewritten_tool_calls,
+                            tool_calls=cursor_tool_calls,
                         ),
                     )
                 ],
@@ -5553,6 +5592,7 @@ async def handle_evidence_followup(
                         round_index=next_round,
                         workflow_phase=workflow_phase,
                     )
+                    cursor_tool_calls = _strip_internal_tool_call_fields(rewritten_tool_calls)
                     execution_messages = _append_assistant_tool_call_message(
                         updated_execution_messages,
                         rewritten_tool_calls,
@@ -5622,7 +5662,7 @@ async def handle_evidence_followup(
                                 delta=ChoiceDelta(
                                     role="assistant",
                                     content=None,
-                                    tool_calls=rewritten_tool_calls,
+                                    tool_calls=cursor_tool_calls,
                                 ),
                             )
                         ],
@@ -5849,6 +5889,7 @@ async def handle_evidence_followup(
             round_index=next_round,
             workflow_phase=workflow_phase,
         )
+        cursor_tool_calls = _strip_internal_tool_call_fields(rewritten_tool_calls)
         execution_messages = _append_assistant_tool_call_message(
             updated_execution_messages,
             rewritten_tool_calls,
@@ -5912,7 +5953,7 @@ async def handle_evidence_followup(
                         message=ChatMessage(
                             role=MessageRole.ASSISTANT,
                             content=None,
-                            tool_calls=rewritten_tool_calls,
+                            tool_calls=cursor_tool_calls,
                         ),
                     )
                 ],
@@ -6392,6 +6433,7 @@ async def handle_execution_followup(
             round_index=next_round,
             workflow_phase=workflow_phase,
         )
+        cursor_tool_calls = _strip_internal_tool_call_fields(rewritten_tool_calls)
         execution_messages = _append_assistant_tool_call_message(
             updated_execution_messages,
             rewritten_tool_calls,
@@ -6432,7 +6474,7 @@ async def handle_execution_followup(
             return StreamingResponse(
                 create_sse_tool_calls_stream(
                     model=request.model,
-                    tool_calls=rewritten_tool_calls,
+                    tool_calls=cursor_tool_calls,
                     content=None,
                 ),
                 media_type="text/event-stream",
@@ -6447,7 +6489,7 @@ async def handle_execution_followup(
                         message=ChatMessage(
                             role=MessageRole.ASSISTANT,
                             content=None,
-                            tool_calls=rewritten_tool_calls,
+                            tool_calls=cursor_tool_calls,
                         ),
                     )
                 ],
@@ -6826,6 +6868,7 @@ async def handle_execution_followup(
                         round_index=next_round,
                         workflow_phase=workflow_phase,
                     )
+                    cursor_tool_calls = _strip_internal_tool_call_fields(rewritten_tool_calls)
                     execution_messages = _append_assistant_tool_call_message(
                         updated_execution_messages,
                         rewritten_tool_calls,
@@ -6910,7 +6953,7 @@ async def handle_execution_followup(
                                 delta=ChoiceDelta(
                                     role="assistant",
                                     content=None,
-                                    tool_calls=rewritten_tool_calls,
+                                    tool_calls=cursor_tool_calls,
                                 ),
                             )
                         ],
@@ -7273,6 +7316,7 @@ async def handle_execution_followup(
             round_index=next_round,
             workflow_phase=workflow_phase,
         )
+        cursor_tool_calls = _strip_internal_tool_call_fields(rewritten_tool_calls)
         updated_execution_messages = _append_assistant_tool_call_message(
             updated_execution_messages,
             rewritten_tool_calls,
@@ -7343,7 +7387,7 @@ async def handle_execution_followup(
             return StreamingResponse(
                 create_sse_tool_calls_stream(
                     model=request.model,
-                    tool_calls=rewritten_tool_calls,
+                    tool_calls=cursor_tool_calls,
                     content=None,
                 ),
                 media_type="text/event-stream",
@@ -7358,7 +7402,7 @@ async def handle_execution_followup(
                         message=ChatMessage(
                             role=MessageRole.ASSISTANT,
                             content=None,
-                            tool_calls=rewritten_tool_calls,
+                            tool_calls=cursor_tool_calls,
                         ),
                     )
                 ],

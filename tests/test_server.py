@@ -2054,6 +2054,35 @@ class TestChatCompletions:
         assert '"offset": 1' in args
         assert '"limit"' in args
 
+    def test_rewrite_tool_call_ids_preserves_responses_metadata_internally(
+        self, client: TestClient
+    ) -> None:
+        """Internal session copies should keep Responses API metadata while public copies hide it."""
+        from ternion.server.routes import _rewrite_tool_call_ids, _strip_internal_tool_call_fields
+
+        tool_calls = [
+            {
+                "id": "call_abc",
+                "type": "function",
+                "function": {"name": "Read", "arguments": '{"path":"/tmp/a.py"}'},
+                "responses_api_item_id": "fc_123",
+                "responses_api_call_id": "call_abc",
+                "responses_api_response_id": "resp_123",
+            }
+        ]
+
+        rewritten = _rewrite_tool_call_ids(tool_calls, session_id="0123456789ab", round_index=1)
+        public = _strip_internal_tool_call_fields(rewritten)
+
+        assert rewritten[0]["id"] == "ternion_0123456789ab_r0001_c00"
+        assert rewritten[0]["responses_api_item_id"] == "fc_123"
+        assert rewritten[0]["responses_api_call_id"] == "call_abc"
+        assert rewritten[0]["responses_api_response_id"] == "resp_123"
+        assert public[0]["id"] == "ternion_0123456789ab_r0001_c00"
+        assert "responses_api_item_id" not in public[0]
+        assert "responses_api_call_id" not in public[0]
+        assert "responses_api_response_id" not in public[0]
+
     def test_rewrite_tool_call_ids_normalizes_repo_relative_read_paths(
         self, client: TestClient
     ) -> None:

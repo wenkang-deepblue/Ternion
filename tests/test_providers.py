@@ -4,7 +4,9 @@ Tests for provider adapters.
 
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.providers.base import BaseProvider, ProviderResponse
@@ -123,3 +125,348 @@ class TestOpenAIProviderFallback:
 
         other = RuntimeError("Error code: 404 - {'error': {'message': 'Model not found'}}")
         assert OpenAIProvider._is_non_chat_model_error(other) is False
+
+
+class TestConvertToolsForResponsesApi:
+    """Tests for Chat Completions → Responses API tool schema conversion."""
+
+    def test_converts_chat_completions_format(self) -> None:
+        """Nested function key should be flattened to top-level name/parameters."""
+        from ternion.providers.openai import OpenAIProvider
+
+        chat_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Read",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                },
+            }
+        ]
+        converted = OpenAIProvider._convert_tools_for_responses_api(chat_tools)
+        assert len(converted) == 1
+        assert converted[0]["name"] == "Read"
+        assert converted[0]["description"] == "Read a file"
+        assert "parameters" in converted[0]
+        assert "function" not in converted[0]
+
+    def test_passthrough_responses_format(self) -> None:
+        """Tools already in Responses format should pass through unchanged."""
+        from ternion.providers.openai import OpenAIProvider
+
+        resp_tools = [
+            {
+                "type": "function",
+                "name": "Grep",
+                "description": "Search files",
+                "parameters": {"type": "object"},
+            }
+        ]
+        converted = OpenAIProvider._convert_tools_for_responses_api(resp_tools)
+        assert len(converted) == 1
+        assert converted[0]["name"] == "Grep"
+
+    def test_skips_invalid_tools(self) -> None:
+        """Non-dict entries and tools without name/function should be skipped."""
+        from ternion.providers.openai import OpenAIProvider
+
+        bad_tools = [
+            "not a dict",
+            {"type": "function"},  # no function or name
+            {"type": "function", "function": {}},  # function without name
+            {"type": "function", "function": {"name": ""}},  # empty name
+        ]
+        converted = OpenAIProvider._convert_tools_for_responses_api(bad_tools)
+        assert converted == []
+
+    def test_empty_list(self) -> None:
+        """Empty or None input should return an empty list."""
+        from ternion.providers.openai import OpenAIProvider
+
+        assert OpenAIProvider._convert_tools_for_responses_api([]) == []
+        assert OpenAIProvider._convert_tools_for_responses_api(None) == []  # type: ignore[arg-type]
+
+
+class TestResolveApiMode:
+    """Tests for _resolve_api_mode helper in workflow nodes."""
+
+    def test_returns_responses_for_openai_responses_model(self) -> None:
+        """OpenAI model with mode='responses' in catalog should return 'responses'."""
+        from unittest.mock import MagicMock
+
+        from ternion.workflow.nodes import _resolve_api_mode
+
+        provider = MagicMock()
+        provider.name = "openai"
+
+        catalog_model = MagicMock()
+        catalog_model.mode = "responses"
+
+        with patch(
+            "ternion.workflow.nodes.model_catalog_service"
+        ) as mock_catalog:
+            mock_catalog.get_model_cached.return_value = catalog_model
+            result = _resolve_api_mode(provider, "gpt-5-pro")
+
+        assert result == "responses"
+
+    def test_returns_none_for_openai_chat_model(self) -> None:
+        """OpenAI model with mode='chat' should return None (use default routing)."""
+        from unittest.mock import MagicMock
+
+        from ternion.workflow.nodes import _resolve_api_mode
+
+        provider = MagicMock()
+        provider.name = "openai"
+
+        catalog_model = MagicMock()
+        catalog_model.mode = "chat"
+
+        with patch(
+            "ternion.workflow.nodes.model_catalog_service"
+        ) as mock_catalog:
+            mock_catalog.get_model_cached.return_value = catalog_model
+            result = _resolve_api_mode(provider, "gpt-5")
+
+        assert result is None
+
+    def test_returns_none_for_non_openai_provider(self) -> None:
+        """Non-OpenAI providers should always return None."""
+        from unittest.mock import MagicMock
+
+        from ternion.workflow.nodes import _resolve_api_mode
+
+        provider = MagicMock()
+        provider.name = "anthropic"
+        result = _resolve_api_mode(provider, "claude-sonnet-4-5")
+        assert result is None
+
+    def test_returns_none_when_model_not_in_catalog(self) -> None:
+        """Unknown model should return None (fall back to default routing)."""
+        from unittest.mock import MagicMock
+
+        from ternion.workflow.nodes import _resolve_api_mode
+
+        provider = MagicMock()
+        provider.name = "openai"
+
+        with patch(
+            "ternion.workflow.nodes.model_catalog_service"
+        ) as mock_catalog:
+            mock_catalog.get_model_cached.return_value = None
+            result = _resolve_api_mode(provider, "unknown-model")
+
+        assert result is None
+
+
+class TestOpenAIResponsesCompatibility:
+    """Tests for Responses API compatibility fallbacks."""
+
+    def test_extract_tool_calls_from_responses_preserves_response_ids(self) -> None:
+        """Responses tool-call extraction should keep original item/call/response identifiers."""
+        from ternion.providers.openai import OpenAIProvider
+
+        response = type(
+            "MockResponse",
+            (),
+            {
+                "id": "resp_123",
+                "output": [
+                    type(
+                        "FunctionCallItem",
+                        (),
+                        {
+                            "type": "function_call",
+                            "id": "fc_123",
+                            "call_id": "call_123",
+                            "name": "Read",
+                            "arguments": '{"path":"/tmp/a.py"}',
+                        },
+                    )()
+                ]
+            },
+        )()
+
+        tool_calls = OpenAIProvider._extract_tool_calls_from_responses(response)
+
+        assert tool_calls is not None
+        assert tool_calls[0]["id"] == "call_123"
+        assert tool_calls[0]["responses_api_item_id"] == "fc_123"
+        assert tool_calls[0]["responses_api_call_id"] == "call_123"
+        assert tool_calls[0]["responses_api_response_id"] == "resp_123"
+
+    def test_convert_messages_to_responses_input_restores_original_call_ids(self) -> None:
+        """Responses follow-up history should replay original OpenAI function-call IDs."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        messages = [
+            ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content=None,
+                tool_calls=[
+                    {
+                        "id": "ternion_0123456789ab_r0001_c00",
+                        "type": "function",
+                        "function": {"name": "Read", "arguments": '{"path":"/tmp/a.py"}'},
+                        "responses_api_item_id": "fc_123",
+                        "responses_api_call_id": "call_123",
+                    }
+                ],
+            ),
+            ChatMessage(
+                role=MessageRole.TOOL,
+                content="RESULT_A",
+                tool_call_id="ternion_0123456789ab_r0001_c00",
+            ),
+        ]
+
+        converted = provider._convert_messages_to_responses_input(messages)
+
+        assert converted == [
+            {
+                "type": "function_call",
+                "id": "fc_123",
+                "call_id": "call_123",
+                "name": "Read",
+                "arguments": '{"path":"/tmp/a.py"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": "RESULT_A",
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_gpt5_responses_model_omits_temperature(self) -> None:
+        """Responses API payload should omit unsupported temperature for GPT-5 models."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+
+        response = type(
+            "MockResponse",
+            (),
+            {"output_text": "ok", "output": [], "usage": None},
+        )()
+
+        with patch.object(
+            provider._client.responses,
+            "create",
+            AsyncMock(return_value=response),
+        ) as mock_create:
+            await provider.chat_completion(
+                messages=messages,
+                model="gpt-5.4-pro",
+                temperature=0.3,
+                api_mode="responses",
+            )
+
+        assert "temperature" not in mock_create.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_responses_tool_followup_uses_previous_response_id(self) -> None:
+        """Tool-result follow-ups should resume via previous_response_id instead of replaying function calls."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        messages = [
+            ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content=None,
+                tool_calls=[
+                    {
+                        "id": "ternion_0123456789ab_r0001_c00",
+                        "type": "function",
+                        "function": {"name": "Read", "arguments": '{"path":"/tmp/a.py"}'},
+                        "responses_api_item_id": "fc_123",
+                        "responses_api_call_id": "call_123",
+                        "responses_api_response_id": "resp_123",
+                    }
+                ],
+            ),
+            ChatMessage(
+                role=MessageRole.TOOL,
+                content="RESULT_A",
+                tool_call_id="ternion_0123456789ab_r0001_c00",
+            ),
+        ]
+
+        response = type(
+            "MockResponse",
+            (),
+            {"output_text": "ok", "output": [], "usage": None},
+        )()
+
+        with patch.object(
+            provider._client.responses,
+            "create",
+            AsyncMock(return_value=response),
+        ) as mock_create:
+            await provider.chat_completion(
+                messages=messages,
+                model="gpt-5.4-pro",
+                temperature=0.3,
+                api_mode="responses",
+            )
+
+        kwargs = mock_create.await_args.kwargs
+        assert kwargs["previous_response_id"] == "resp_123"
+        assert kwargs["input"] == [
+            {
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": "RESULT_A",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_gpt5_chat_model_omits_temperature(self) -> None:
+        """Chat Completions payload should omit unsupported temperature for GPT-5 models."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+
+        chat_choice = type(
+            "MockChoice",
+            (),
+            {
+                "message": type("MockMessage", (), {"content": "ok", "tool_calls": None})(),
+                "finish_reason": "stop",
+            },
+        )()
+        chat_response = type(
+            "MockChatResponse",
+            (),
+            {
+                "choices": [chat_choice],
+                "usage": type(
+                    "MockUsage",
+                    (),
+                    {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                        "completion_tokens_details": None,
+                    },
+                )(),
+            },
+        )()
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            AsyncMock(return_value=chat_response),
+        ) as mock_create:
+            await provider.chat_completion(
+                messages=messages,
+                model="gpt-5.4",
+                temperature=0.3,
+            )
+
+        assert "temperature" not in mock_create.await_args.kwargs
+

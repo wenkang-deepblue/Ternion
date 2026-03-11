@@ -1088,6 +1088,7 @@ class LiteLLMModelCatalogService:
         return {
             "id": model.id,
             "name": model.name,
+            "mode": model.mode,
             "stale": model.stale,
             "pricing_available": any(
                 value is not None
