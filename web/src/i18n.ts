@@ -224,6 +224,7 @@ export interface Translations {
   // Toast messages
   toastConfigSaved: string;
   toastNotConfigured: string;
+  toastMissingRolesForTernionFull: string;
 
   // Footer
   footerApiDocs: string;
@@ -508,6 +509,7 @@ const EN: Translations = {
   // Toast messages
   toastConfigSaved: 'Configuration saved',
   toastNotConfigured: 'not configured',
+  toastMissingRolesForTernionFull: 'Ternion Full mode selected. Please configure missing role models: {roles}',
 
   // Footer
   footerApiDocs: 'API Docs',
@@ -788,6 +790,7 @@ const ZH: Translations = {
   // Toast messages
   toastConfigSaved: '配置已保存',
   toastNotConfigured: '尚未配置',
+  toastMissingRolesForTernionFull: '当前已选择ternion 归因+实现，请配置缺失的角色模型：{roles}',
 
   // Footer
   footerApiDocs: 'API 文档',
@@ -1066,6 +1069,7 @@ const ES: Translations = {
   // Toast messages
   toastConfigSaved: 'Configuración guardada',
   toastNotConfigured: 'no configurado',
+  toastMissingRolesForTernionFull: 'Modo Ternion Completo seleccionado. Por favor, configure los modelos faltantes: {roles}',
 
   // Footer
   footerApiDocs: 'Documentación API',
@@ -1346,6 +1350,7 @@ const FR: Translations = {
   // Toast messages
   toastConfigSaved: 'Configuration sauvegardée',
   toastNotConfigured: 'non configuré',
+  toastMissingRolesForTernionFull: 'Mode Ternion Complet sélectionné. Veuillez configurer les modèles manquants : {roles}',
 
   // Footer
   footerApiDocs: 'Documentation API',
@@ -1626,6 +1631,7 @@ const DE: Translations = {
   // Toast messages
   toastConfigSaved: 'Konfiguration gespeichert',
   toastNotConfigured: 'nicht konfiguriert',
+  toastMissingRolesForTernionFull: 'Ternion Full-Modus ausgewählt. Bitte konfigurieren Sie die fehlenden Modelle: {roles}',
 
   // Footer
   footerApiDocs: 'API-Dokumentation',
@@ -1906,6 +1912,7 @@ const JA: Translations = {
   // Toast messages
   toastConfigSaved: '設定を保存しました',
   toastNotConfigured: '未設定',
+  toastMissingRolesForTernionFull: 'Ternion Full モードが選択されました。不足しているモデルを設定してください: {roles}',
 
   // Footer
   footerApiDocs: 'APIドキュメント',
@@ -2186,6 +2193,7 @@ const KO: Translations = {
   // Toast messages
   toastConfigSaved: '설정 저장됨',
   toastNotConfigured: '구성되지 않음',
+  toastMissingRolesForTernionFull: 'Ternion Full 모드가 선택되었습니다. 누락된 모델을 구성해 주세요: {roles}',
 
   // Footer
   footerApiDocs: 'API 문서',

@@ -193,12 +193,18 @@ async def _get_catalog_model_for_provider(provider: str, model_id: str) -> Catal
     """
     model = model_catalog_service.get_model_cached(model_id)
     if model is None or model.provider != provider:
+        log_manager.emit("ERROR", "ERROR", f"Model '{model_id}' is not available for provider '{provider}' in the current catalog.")
         raise HTTPException(status_code=400, detail="MODEL_NOT_AVAILABLE")
     return model
 
 
 def _build_model_probe_failure_response(result: ModelAvailabilityProbeResult) -> JSONResponse:
     """Build a structured HTTP response for a failed model probe."""
+    log_manager.emit(
+        "ERROR",
+        "ERROR",
+        f"Model probe failed for {result.provider} / {result.model}: {result.code} - {redact_secrets(result.message)}"
+    )
     return JSONResponse(
         status_code=400,
         content={
@@ -388,8 +394,10 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
             if role_update is None:
                 continue
             if not role_update.provider or not role_update.model:
+                log_manager.emit("ERROR", "USER_ACTION", f"Role update failed: Incomplete configuration for {role_name}")
                 raise HTTPException(status_code=400, detail=f"ROLES_INCOMPLETE:{role_name}")
             if role_update.provider not in enabled_providers:
+                log_manager.emit("ERROR", "USER_ACTION", f"Role update failed: Provider '{role_update.provider}' is not enabled")
                 raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
             await _get_catalog_model_for_provider(role_update.provider, role_update.model)
             validated_roles[role_name] = role_update
@@ -406,13 +414,16 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
                 missing_roles.append(role_name)
                 continue
             if role_cfg.provider not in enabled_providers:
+                log_manager.emit("ERROR", "USER_ACTION", f"Role validation failed: Provider '{role_cfg.provider}' is not enabled")
                 raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
             await _get_catalog_model_for_provider(role_cfg.provider, role_cfg.model)
 
         if missing_roles:
+            missing_roles_str = ','.join(missing_roles)
+            log_manager.emit("ERROR", "USER_ACTION", f"Role validation failed: Missing configuration for roles: {missing_roles_str}")
             raise HTTPException(
                 status_code=400,
-                detail=f"ROLES_INCOMPLETE:{','.join(missing_roles)}",
+                detail=f"ROLES_INCOMPLETE:{missing_roles_str}",
             )
 
         unique_pairs: set[tuple[str, str]] = set()
@@ -423,6 +434,7 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
         for provider, model in sorted(unique_pairs):
             api_key = config_store.get_provider_api_key(provider)
             if not api_key:
+                log_manager.emit("ERROR", "USER_ACTION", f"Model probe skipped: Provider '{provider}' has no valid API key")
                 raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
 
             probe_result = await model_availability_probe_service.probe_model(
@@ -558,6 +570,7 @@ async def log_role_selection(request: RoleSelectionLogRequest) -> dict:
     """
     enabled = set(config_store.get_enabled_providers())
     if request.provider not in enabled:
+        log_manager.emit("ERROR", "USER_ACTION", f"Role model selection failed: Provider '{request.provider}' is not enabled")
         raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
 
     await _get_catalog_model_for_provider(request.provider, request.model)
@@ -814,6 +827,7 @@ async def refresh_models() -> dict:
     try:
         payload = await refresh_catalog_and_update_schedule("manual")
     except Exception as exc:
+        log_manager.emit("ERROR", "ERROR", f"Model catalog refresh failed: {str(exc)}")
         raise HTTPException(status_code=503, detail="MODEL_CATALOG_REFRESH_FAILED") from exc
 
     if payload["requires_initialization"]:
@@ -822,6 +836,7 @@ async def refresh_models() -> dict:
             model_count=payload.get("model_count", 0),
             last_updated_at=payload.get("last_updated_at", ""),
         )
+        log_manager.emit("ERROR", "ERROR", "Model catalog refresh resulted in empty catalog or initialization required")
         raise HTTPException(status_code=503, detail="MODEL_CATALOG_REFRESH_FAILED")
 
     payload["success"] = not payload.get("catalog_anomaly_detected", False)
@@ -834,6 +849,7 @@ async def get_model_anomaly_report() -> PlainTextResponse:
     """Return the latest model catalog anomaly report as Markdown."""
     report_markdown = model_catalog_service.get_anomaly_report_markdown()
     if report_markdown is None:
+        log_manager.emit("WARN", "ERROR", "Model catalog anomaly report requested but not found")
         raise HTTPException(status_code=404, detail="MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND")
     return PlainTextResponse(report_markdown, media_type="text/markdown")
 

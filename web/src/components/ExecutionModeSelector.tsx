@@ -10,7 +10,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import type { Config } from '../api/client';
 import api from '../api/client';
-import type { Translations } from '../i18n';
+import type { Translations, Language } from '../i18n';
+import { isCJKLanguage } from '../i18n';
+import { useToast } from './toastContext';
 
 // Section icon
 import reasoningIconLight from '../assets/icons/reasoning_light_mode_50dp.svg';
@@ -30,6 +32,8 @@ interface ExecutionModeSelectorProps {
   t: Translations;
   /** Whether the application is currently in dark mode. */
   isDarkMode: boolean;
+  /** The currently selected language code. */
+  language: Language;
 }
 
 type ExecutionMode = 'cursor_handoff' | 'ternion_full' | '';
@@ -165,6 +169,7 @@ export function ExecutionModeSelector({
   onLogMessage,
   t,
   isDarkMode,
+  language,
 }: ExecutionModeSelectorProps) {
   // Saved mode from config
   const savedMode: ExecutionMode = (config?.execution_mode as ExecutionMode) || '';
@@ -173,6 +178,7 @@ export function ExecutionModeSelector({
   const [selectedMode, setSelectedMode] = useState<ExecutionMode>('');
   const [isSaving, setIsSaving] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const { showToast } = useToast();
 
   // Determine if a mode is pending save
   const isPendingSave = selectedMode !== '' && selectedMode !== savedMode;
@@ -211,6 +217,18 @@ export function ExecutionModeSelector({
   const handleSave = useCallback(async () => {
     if (!selectedMode || selectedMode === savedMode) return;
 
+    if (selectedMode === 'ternion_full') {
+      const hasWriter = config?.roles?.writer?.provider && config?.roles?.writer?.model;
+      const hasReviewer = config?.roles?.reviewer?.provider && config?.roles?.reviewer?.model;
+      if (!hasWriter || !hasReviewer) {
+        const missing = [];
+        if (!hasWriter) missing.push(t.writerName);
+        if (!hasReviewer) missing.push(t.reviewerName);
+        const rolesStr = missing.join(isCJKLanguage(language) ? '，' : ', ');
+        showToast(t.toastMissingRolesForTernionFull.replace('{roles}', rolesStr), 'info');
+      }
+    }
+
     setIsSaving(true);
     try {
       const updatedConfig = await api.updateConfig({
@@ -225,7 +243,7 @@ export function ExecutionModeSelector({
     } finally {
       setIsSaving(false);
     }
-  }, [selectedMode, savedMode, onConfigUpdate, onLogMessage, getModeDisplayName]);
+  }, [selectedMode, savedMode, onConfigUpdate, onLogMessage, getModeDisplayName, config, showToast, t, language]);
 
   // Click outside -> cancel pending selection (do not change saved state)
   useEffect(() => {

@@ -318,7 +318,7 @@ function AppContent() {
               language={effectiveLanguage}
             />
             <ApiKeyManager config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} language={effectiveLanguage} />
-            <ExecutionModeSelector config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} />
+            <ExecutionModeSelector config={config} onConfigUpdate={handleConfigUpdate} t={t} isDarkMode={isDarkMode} language={effectiveLanguage} />
             <RoleModelConfig
               config={config}
               onConfigUpdate={handleConfigUpdate}

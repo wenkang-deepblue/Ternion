@@ -316,6 +316,17 @@ export function RoleModelConfig({
   };
 
   const handleSave = async () => {
+    if (missingRoles.length > 0 || enabledProviders.length === 0) {
+      if (enabledProviders.length === 0) {
+        showToast(t.code_ROLES_INCOMPLETE, 'error');
+      } else {
+        const missingNames = missingRoles.map(role => ROLE_DISPLAY_NAMES[role] || role).join(unsavedSeparator);
+        const suffix = t.code_ROLES_INCOMPLETE_SUFFIX.replace('{roles}', missingNames);
+        showToast(`${t.code_ROLES_INCOMPLETE}${suffix}`, 'error');
+      }
+      return;
+    }
+
     setSaving(true);
     try {
       // Only submit roles that are required (skip disabled roles under cursor_handoff)
@@ -402,25 +413,25 @@ export function RoleModelConfig({
 
   const enabledProviders = modelsData?.enabled_providers || [];
   const allProviders = Object.keys(modelsData?.models || {});
-  const allRolesConfigured = ROLE_KEYS.every(role => {
+  const missingRoles = ROLE_KEYS.filter(role => {
     if (isRoleDisabled(role)) {
       // cursor_handoff: writer/reviewer are disabled and should not block saving.
-      return true;
+      return false;
     }
     const roleConfig = selectedRoles[role];
     if (!roleConfig?.provider || !roleConfig?.model) {
-      return false;
+      return true;
     }
     if (!enabledProviders.includes(roleConfig.provider)) {
-      return false;
+      return true;
     }
     const available = (modelsData?.models[roleConfig.provider] || []).map(m => m.id);
-    return available.includes(roleConfig.model);
+    return !available.includes(roleConfig.model);
   });
-  const hasIncompleteRoles = !allRolesConfigured;
+  const hasIncompleteRoles = missingRoles.length > 0;
   const showSaveButton = hasChanges;
-  const canSave = hasChanges && allRolesConfigured && enabledProviders.length > 0 && !saving;
-  const saveButtonTitle = hasIncompleteRoles ? t.roleNotSaved : '';
+  const canSave = hasChanges && !saving;
+  const saveButtonTitle = hasIncompleteRoles ? t.code_ROLES_INCOMPLETE : '';
 
   return (
     <div className="card relative" ref={cardRef}>
