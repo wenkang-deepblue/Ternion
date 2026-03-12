@@ -72,8 +72,20 @@ function buildModelsData(): ModelsData {
           pricing_available: true,
         },
         {
+          id: 'gpt-5.2-pro-2025-12-11',
+          name: 'GPT 5.2 Pro',
+          stale: false,
+          pricing_available: true,
+        },
+        {
           id: 'gpt-5.3-codex',
           name: 'GPT 5.3 Codex',
+          stale: false,
+          pricing_available: true,
+        },
+        {
+          id: 'gpt-5.4-pro-2026-03-05',
+          name: 'GPT 5.4 Pro',
           stale: false,
           pricing_available: true,
         },
@@ -83,7 +95,7 @@ function buildModelsData(): ModelsData {
     },
     enabled_providers: ['openai'],
     last_updated_at: '2026-03-08T12:00:00Z',
-    model_count: 2,
+    model_count: 4,
     catalog_initialized: true,
     requires_initialization: false,
     catalog_anomaly_detected: false,
@@ -101,9 +113,11 @@ function renderRoleModelConfig(
     onConfigUpdate?: (config: Config) => void;
     onModelsReload?: () => void;
     executionMode?: string;
+    language?: 'en' | 'zh' | 'es' | 'fr' | 'de' | 'ja' | 'ko';
   } = {}
 ) {
-  const t = getTranslations('zh');
+  const language = overrides.language || 'zh';
+  const t = getTranslations(language);
   const showToast = vi.fn();
   const onConfigUpdate = overrides.onConfigUpdate || vi.fn();
   const onModelsReload = overrides.onModelsReload || vi.fn();
@@ -117,7 +131,7 @@ function renderRoleModelConfig(
         t={t}
         isDarkMode={false}
         executionMode={overrides.executionMode ?? 'cursor_handoff'}
-        language="zh"
+        language={language}
         modelsReloadSignal={overrides.modelsReloadSignal ?? 0}
       />
     </ToastContext.Provider>
@@ -134,6 +148,11 @@ async function findModelSelectForRole(roleName: string): Promise<HTMLSelectEleme
   const card = heading.closest('[class*="rounded-lg"]')!;
   const selects = within(card as HTMLElement).getAllByRole('combobox');
   return selects[1] as HTMLSelectElement;
+}
+
+async function findRoleCard(roleName: string): Promise<HTMLElement> {
+  const heading = await screen.findByText(roleName);
+  return heading.closest('[class*="rounded-lg"]') as HTMLElement;
 }
 
 function getSaveButtons(label: string): HTMLButtonElement[] {
@@ -216,6 +235,8 @@ describe('RoleModelConfig', () => {
 
     expect(options.some((option) => option.textContent === 'gpt-5.2-2025-12-11')).toBe(true);
     expect(options.some((option) => option.textContent === 'gpt-5.3-codex')).toBe(true);
+    expect(options.some((option) => option.textContent === 'gpt-5.2-pro-2025-12-11')).toBe(true);
+    expect(options.some((option) => option.textContent === 'gpt-5.4-pro-2026-03-05')).toBe(true);
   });
 
   it('shows a floating save button after a role model change', async () => {
@@ -232,6 +253,120 @@ describe('RoleModelConfig', () => {
     const floatingSaveButton = getSaveButtons(t.saveChanges)[0];
     expect(floatingSaveButton.style.position).toBe('sticky');
     expect(floatingSaveButton.style.top).toBe('calc(50vh - 22.5px)');
+  });
+
+  it('shows the pro warning immediately for supported pro models and hides it for others', async () => {
+    const user = userEvent.setup();
+    const { t } = renderRoleModelConfig();
+
+    const roleCard = await findRoleCard(t.ternionAName);
+    const modelSelect = await findModelSelectForRole(t.ternionAName);
+
+    expect(
+      within(roleCard).queryByRole('link', { name: t.roleConfigProModelWarningLinkLabel })
+    ).not.toBeInTheDocument();
+
+    await user.selectOptions(modelSelect, 'gpt-5.2-pro-2025-12-11');
+
+    await waitFor(() => {
+      expect(
+        within(roleCard).getByRole('link', { name: t.roleConfigProModelWarningLinkLabel })
+      ).toBeInTheDocument();
+    });
+
+    await user.selectOptions(modelSelect, 'gpt-5.3-codex');
+
+    await waitFor(() => {
+      expect(
+        within(roleCard).queryByRole('link', { name: t.roleConfigProModelWarningLinkLabel })
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it('allows dismissing the pro warning until the model changes', async () => {
+    const user = userEvent.setup();
+    const { t } = renderRoleModelConfig();
+
+    const roleCard = await findRoleCard(t.ternionAName);
+    const modelSelect = await findModelSelectForRole(t.ternionAName);
+
+    await user.selectOptions(modelSelect, 'gpt-5.2-pro-2025-12-11');
+
+    await waitFor(() => {
+      expect(
+        within(roleCard).getByRole('link', { name: t.roleConfigProModelWarningLinkLabel })
+      ).toBeInTheDocument();
+    });
+
+    await user.click(within(roleCard).getByRole('button', { name: t.logsDismiss }));
+
+    await waitFor(() => {
+      expect(
+        within(roleCard).queryByRole('link', { name: t.roleConfigProModelWarningLinkLabel })
+      ).not.toBeInTheDocument();
+    });
+
+    await user.selectOptions(modelSelect, 'gpt-5.4-pro-2026-03-05');
+
+    await waitFor(() => {
+      expect(
+        within(roleCard).getByRole('link', { name: t.roleConfigProModelWarningLinkLabel })
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('links the warning to the selected pro model documentation', async () => {
+    const user = userEvent.setup();
+    const { t } = renderRoleModelConfig();
+
+    const roleCard = await findRoleCard(t.ternionAName);
+    const modelSelect = await findModelSelectForRole(t.ternionAName);
+
+    await user.selectOptions(modelSelect, 'gpt-5.2-pro-2025-12-11');
+
+    await waitFor(() => {
+      expect(
+        within(roleCard).getByRole('link', { name: t.roleConfigProModelWarningLinkLabel })
+      ).toHaveAttribute('href', 'https://developers.openai.com/api/docs/models/gpt-5.2-pro');
+    });
+
+    await user.selectOptions(modelSelect, 'gpt-5.4-pro-2026-03-05');
+
+    await waitFor(() => {
+      expect(
+        within(roleCard).getByRole('link', { name: t.roleConfigProModelWarningLinkLabel })
+      ).toHaveAttribute('href', 'https://developers.openai.com/api/docs/models/gpt-5.4-pro');
+    });
+  });
+
+  it('uses a smaller warning font for non-Chinese and non-Korean languages', async () => {
+    const user = userEvent.setup();
+    const { t } = renderRoleModelConfig({ language: 'en' });
+
+    const roleCard = await findRoleCard(t.ternionAName);
+    const modelSelect = await findModelSelectForRole(t.ternionAName);
+
+    await user.selectOptions(modelSelect, 'gpt-5.2-pro-2025-12-11');
+
+    const link = await within(roleCard).findByRole('link', { name: t.roleConfigProModelWarningLinkLabel });
+    const warningText = link.closest('p');
+
+    expect(warningText?.className).toContain('text-[11px]');
+  });
+
+  it('keeps the current warning font size for Chinese and Korean', async () => {
+    const user = userEvent.setup();
+    const { t } = renderRoleModelConfig({ language: 'ko' });
+
+    const roleCard = await findRoleCard(t.ternionAName);
+    const modelSelect = await findModelSelectForRole(t.ternionAName);
+
+    await user.selectOptions(modelSelect, 'gpt-5.2-pro-2025-12-11');
+
+    const link = await within(roleCard).findByRole('link', { name: t.roleConfigProModelWarningLinkLabel });
+    const warningText = link.closest('p');
+
+    expect(warningText?.className).toContain('text-[13px]');
   });
 
   it('clears removed selections after refreshing the model catalog from the save error banner', async () => {

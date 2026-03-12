@@ -73,6 +73,28 @@ interface ModelUnavailableState {
   refreshSuggested: boolean;
 }
 
+const PRO_WARNING_MODEL_PATTERNS = [/^gpt-5\.2-pro(?:-|$)/, /^gpt-5\.4-pro(?:-|$)/];
+
+function shouldShowProModelWarning(provider?: string, model?: string): boolean {
+  if (provider !== 'openai' || !model) {
+    return false;
+  }
+  return PRO_WARNING_MODEL_PATTERNS.some((pattern) => pattern.test(model));
+}
+
+function getProModelWarningUrl(model?: string): string | null {
+  if (!model) {
+    return null;
+  }
+  if (/^gpt-5\.2-pro(?:-|$)/.test(model)) {
+    return 'https://developers.openai.com/api/docs/models/gpt-5.2-pro';
+  }
+  if (/^gpt-5\.4-pro(?:-|$)/.test(model)) {
+    return 'https://developers.openai.com/api/docs/models/gpt-5.4-pro';
+  }
+  return null;
+}
+
 export function RoleModelConfig({
   config,
   onConfigUpdate,
@@ -91,6 +113,7 @@ export function RoleModelConfig({
   const [hasChanges, setHasChanges] = useState(false);
   const [invalidatedRoles, setInvalidatedRoles] = useState<string[]>([]);
   const [modelUnavailableState, setModelUnavailableState] = useState<ModelUnavailableState | null>(null);
+  const [dismissedProWarnings, setDismissedProWarnings] = useState<Record<string, string>>({});
   const cardRef = useRef<HTMLDivElement | null>(null);
   const previousReloadSignalRef = useRef(modelsReloadSignal);
   const selfTriggeredReloadRef = useRef(false);
@@ -284,6 +307,14 @@ export function RoleModelConfig({
       persistDraft(next);
       return next;
     });
+    setDismissedProWarnings(prev => {
+      if (!prev[role]) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[role];
+      return next;
+    });
     setInvalidatedRoles(prev => prev.filter(item => item !== role));
     setModelUnavailableState(null);
     setHasChanges(true);
@@ -297,6 +328,14 @@ export function RoleModelConfig({
         [role]: { ...prev[role], model },
       };
       persistDraft(next);
+      return next;
+    });
+    setDismissedProWarnings(prev => {
+      if (!prev[role] || prev[role] === model) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[role];
       return next;
     });
     setInvalidatedRoles(prev => prev.filter(item => item !== role));
@@ -313,6 +352,16 @@ export function RoleModelConfig({
       const errorCode = error instanceof Error ? error.message : String(error);
       showToast(getErrorMessage(t, errorCode, language), 'error');
     }
+  };
+
+  const handleDismissProModelWarning = (role: string, model: string) => {
+    if (!model) {
+      return;
+    }
+    setDismissedProWarnings(prev => ({
+      ...prev,
+      [role]: model,
+    }));
   };
 
   const handleSave = async () => {
@@ -547,6 +596,12 @@ export function RoleModelConfig({
           const availableModels = modelsData?.models[selectedProvider] || [];
           const disabled = isRoleDisabled(role);
           const highlighted = invalidatedRoles.includes(role);
+          const proModelWarningUrl = getProModelWarningUrl(selectedModel);
+          const proWarningTextClass =
+            language === 'zh' || language === 'ko' ? 'text-[13px] leading-5' : 'text-[11px] leading-4';
+          const showProModelWarning =
+            shouldShowProModelWarning(selectedProvider, selectedModel) &&
+            dismissedProWarnings[role] !== selectedModel;
 
           return (
             <div
@@ -557,12 +612,45 @@ export function RoleModelConfig({
                   : 'border-slate-200 dark:border-slate-700'
               }`}
             >
-              <div className="flex items-center gap-2 mb-4">
-                <img src={getRoleIcon(role)} alt="" className="w-6 h-6" />
-                <div>
-                  <h3 className="font-medium">{info.name}</h3>
-                  <p className="text-sm text-slate-500">{info.description}</p>
+              <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div className="flex items-center gap-2">
+                  <img src={getRoleIcon(role)} alt="" className="w-6 h-6" />
+                  <div>
+                    <h3 className="font-medium">{info.name}</h3>
+                    <p className="text-sm text-slate-500">{info.description}</p>
+                  </div>
                 </div>
+                {showProModelWarning && (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-[11px] dark:border-amber-700 dark:bg-amber-950/40 md:max-w-[44rem]">
+                    <div className="flex items-start gap-3">
+                      <p className={`flex-1 text-amber-800 dark:text-amber-200 ${proWarningTextClass}`}>
+                        {t.roleConfigProModelWarningPrefix}
+                        {proModelWarningUrl ? (
+                          <a
+                            href={proModelWarningUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-medium underline underline-offset-2"
+                          >
+                            {t.roleConfigProModelWarningLinkLabel}
+                          </a>
+                        ) : (
+                          t.roleConfigProModelWarningLinkLabel
+                        )}
+                        {t.roleConfigProModelWarningSuffix}
+                      </p>
+                      <button
+                        type="button"
+                        className="shrink-0 text-lg leading-none text-amber-700 transition hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100"
+                        aria-label={t.logsDismiss}
+                        title={t.logsDismiss}
+                        onClick={() => handleDismissProModelWarning(role, selectedModel)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4">

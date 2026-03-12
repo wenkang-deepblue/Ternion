@@ -163,6 +163,9 @@ export interface Translations {
   roleConfigValidatingModel: string;
   roleConfigRemovedSelectionHint: string;
   roleConfigRefreshSuggested: string;
+  roleConfigProModelWarningPrefix: string;
+  roleConfigProModelWarningLinkLabel: string;
+  roleConfigProModelWarningSuffix: string;
 
   // Budget Settings
   budgetTitle: string;
@@ -371,6 +374,10 @@ const EN: Translations = {
   roleConfigValidatingModel: 'Validating model...',
   roleConfigRemovedSelectionHint: 'Some selected models were removed from the refreshed catalog. Please reselect them.',
   roleConfigRefreshSuggested: 'The model catalog may be outdated. Try refreshing the model list to resolve this issue.',
+  roleConfigProModelWarningPrefix: 'OpenAI notes that ',
+  roleConfigProModelWarningLinkLabel: 'Pro models',
+  roleConfigProModelWarningSuffix:
+    ' are the slowest, may take several minutes, and cost more. Choose carefully.',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Please configure Ternion A model',
@@ -652,6 +659,9 @@ const ZH: Translations = {
   roleConfigValidatingModel: '正在验证模型...',
   roleConfigRemovedSelectionHint: '部分已选模型已从最新模型列表中移除，请重新选择。',
   roleConfigRefreshSuggested: '模型列表可能已过期，请尝试刷新模型列表以解决此问题。',
+  roleConfigProModelWarningPrefix: 'OpenAI 官方提示：',
+  roleConfigProModelWarningLinkLabel: 'Pro 系列',
+  roleConfigProModelWarningSuffix: ' 响应最慢，部分请求可能耗时数分钟，且成本更高，请谨慎选择。',
 
   // Status Bar - Ternion
   statusConfigTernionA: '请配置Ternion A 模型',
@@ -931,6 +941,10 @@ const ES: Translations = {
   roleConfigValidatingModel: 'Validando modelo...',
   roleConfigRemovedSelectionHint: 'Algunos modelos seleccionados fueron eliminados del catálogo actualizado. Vuelva a seleccionarlos.',
   roleConfigRefreshSuggested: 'El catálogo de modelos puede estar desactualizado. Intente actualizar la lista de modelos para resolver este problema.',
+  roleConfigProModelWarningPrefix: 'OpenAI indica que ',
+  roleConfigProModelWarningLinkLabel: 'los modelos Pro',
+  roleConfigProModelWarningSuffix:
+    ' son los más lentos, pueden tardar varios minutos y cuestan más. Elija con cuidado.',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Configure modelo de Ternion A',
@@ -1212,6 +1226,10 @@ const FR: Translations = {
   roleConfigValidatingModel: 'Validation du modèle...',
   roleConfigRemovedSelectionHint: 'Certains modèles sélectionnés ont été retirés du catalogue actualisé. Veuillez les sélectionner à nouveau.',
   roleConfigRefreshSuggested: 'Le catalogue de modèles est peut-être obsolète. Essayez d\'actualiser la liste des modèles pour résoudre ce problème.',
+  roleConfigProModelWarningPrefix: 'OpenAI indique que ',
+  roleConfigProModelWarningLinkLabel: 'les modèles Pro',
+  roleConfigProModelWarningSuffix:
+    ' sont les plus lents, peuvent prendre plusieurs minutes et coûtent plus cher. Choisissez avec prudence.',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Configurez le modèle Ternion A',
@@ -1493,6 +1511,10 @@ const DE: Translations = {
   roleConfigValidatingModel: 'Modell wird geprüft...',
   roleConfigRemovedSelectionHint: 'Einige ausgewählte Modelle wurden aus dem aktualisierten Katalog entfernt. Bitte wählen Sie sie erneut aus.',
   roleConfigRefreshSuggested: 'Der Modellkatalog ist möglicherweise veraltet. Versuchen Sie, die Modellliste zu aktualisieren, um das Problem zu beheben.',
+  roleConfigProModelWarningPrefix: 'OpenAI weist darauf hin, dass ',
+  roleConfigProModelWarningLinkLabel: 'Pro-Modelle',
+  roleConfigProModelWarningSuffix:
+    ' am langsamsten sind, mehrere Minuten dauern können und mehr kosten. Bitte mit Bedacht wählen.',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Bitte konfigurieren Sie das Ternion A Modell',
@@ -1774,6 +1796,10 @@ const JA: Translations = {
   roleConfigValidatingModel: 'モデルを検証中...',
   roleConfigRemovedSelectionHint: '選択していた一部のモデルが更新後のカタログから削除されました。再選択してください。',
   roleConfigRefreshSuggested: 'モデルカタログが古くなっている可能性があります。モデルリストを更新してこの問題を解決してください。',
+  roleConfigProModelWarningPrefix: 'OpenAI によると、',
+  roleConfigProModelWarningLinkLabel: 'Pro モデル',
+  roleConfigProModelWarningSuffix:
+    'は最も遅く、数分かかる場合があり、コストも高くなります。慎重に選択してください。',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Ternion A モデルを設定してください',
@@ -2055,6 +2081,10 @@ const KO: Translations = {
   roleConfigValidatingModel: '모델 검증 중...',
   roleConfigRemovedSelectionHint: '선택한 일부 모델이 새로고침된 카탈로그에서 제거되었습니다. 다시 선택해 주세요.',
   roleConfigRefreshSuggested: '모델 카탈로그가 최신이 아닐 수 있습니다. 모델 목록을 새로고침하여 이 문제를 해결해 보세요.',
+  roleConfigProModelWarningPrefix: 'OpenAI 안내에 따르면 ',
+  roleConfigProModelWarningLinkLabel: 'Pro 모델',
+  roleConfigProModelWarningSuffix:
+    '은 가장 느리고 몇 분이 걸릴 수 있으며 비용도 더 높습니다. 신중하게 선택해 주세요.',
 
   // Status Bar - Ternion
   statusConfigTernionA: 'Ternion A 모델을 구성해 주세요',
