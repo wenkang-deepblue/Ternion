@@ -2486,6 +2486,10 @@ async def _run_discussion_streaming(
                     evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
                     evidence_requests=str(final_state.get("evidence_requests", "") or ""),
                     evidence_chain_index=list(final_state.get("evidence_chain_index", []) or []),
+                    writer_output_files=dict(final_state.get("writer_output_files", {}) or {}),
+                    stabilized_document_paths=list(
+                        final_state.get("stabilized_document_paths", []) or []
+                    ),
                     evidence_topup_round=int(final_state.get("evidence_topup_round", 0) or 0),
                     report_evidence_resume_phase=str(
                         final_state.get("report_evidence_resume_phase", "") or ""
@@ -3256,6 +3260,11 @@ async def _run_implementation_streaming(
                         or getattr(session, "writer_output_files", {})
                         or {}
                     ),
+                    stabilized_document_paths=list(
+                        final_state.get("stabilized_document_paths")
+                        or getattr(session, "stabilized_document_paths", [])
+                        or []
+                    ),
                     optimizer_review_report=str(
                         final_state.get("optimizer_review_report")
                         or getattr(session, "optimizer_review_report", "")
@@ -3883,6 +3892,10 @@ async def chat_completions(
                 evidence_gaps=str(final_state.get("evidence_gaps", "") or ""),
                 evidence_requests=str(final_state.get("evidence_requests", "") or ""),
                 evidence_chain_index=list(final_state.get("evidence_chain_index", []) or []),
+                writer_output_files=dict(final_state.get("writer_output_files", {}) or {}),
+                stabilized_document_paths=list(
+                    final_state.get("stabilized_document_paths", []) or []
+                ),
                 evidence_topup_round=int(final_state.get("evidence_topup_round", 0) or 0),
                 report_evidence_resume_phase=str(
                     final_state.get("report_evidence_resume_phase", "") or ""
@@ -4934,6 +4947,11 @@ async def handle_report_evidence_followup(
                             or getattr(session, "writer_output_files", {})
                             or {}
                         ),
+                        stabilized_document_paths=list(
+                            final_state.get("stabilized_document_paths")
+                            or getattr(session, "stabilized_document_paths", [])
+                            or []
+                        ),
                         optimizer_review_report=str(
                             final_state.get("optimizer_review_report")
                             or getattr(session, "optimizer_review_report", "")
@@ -5238,6 +5256,11 @@ async def handle_report_evidence_followup(
             revision_count=int(final_state.get("revision_count", session.revision_count) or 0),
             writer_output_files=dict(
                 final_state.get("writer_output_files") or session.writer_output_files or {}
+            ),
+            stabilized_document_paths=list(
+                final_state.get("stabilized_document_paths")
+                or getattr(session, "stabilized_document_paths", [])
+                or []
             ),
             optimizer_review_report=str(
                 final_state.get("optimizer_review_report") or session.optimizer_review_report or ""
@@ -6279,6 +6302,12 @@ async def handle_execution_followup(
     baseline = dict(getattr(session, "baseline_file_snapshots", {}) or {})
     modified_files = list(getattr(session, "modified_files", []) or [])
     modified_set = set(modified_files)
+    writer_output_files = dict(getattr(session, "writer_output_files", {}) or {})
+    stabilized_document_paths = list(getattr(session, "stabilized_document_paths", []) or [])
+    stabilized_document_set = {
+        path for path in stabilized_document_paths if isinstance(path, str) and path.strip()
+    }
+    newly_stabilized_document_paths: list[str] = []
 
     git_cursor = dict(getattr(session, "tool_loop_pre_git_status", {}) or {})
     git_cursor_modified = {
@@ -6350,6 +6379,27 @@ async def handle_execution_followup(
             )
             if normalized:
                 git_cursor_modified.add(normalized)
+        if canonical_tool in {"write", "writefile"}:
+            target = _extract_mutation_target_path(tool_name or "", tool_args or "{}")
+            normalized = _normalize_file_path(
+                target or "",
+                getattr(session, "workspace_root", ""),
+            )
+            relative = _workspace_relative_path(
+                normalized or "",
+                getattr(session, "workspace_root", ""),
+            )
+            if normalized and relative and _is_document_like_target(relative):
+                snapshot = _read_text_file_best_effort(normalized)
+                if snapshot is not None:
+                    writer_output_files[normalized] = snapshot
+                    meta["document_output_stabilized"] = True
+                    meta["document_output_path"] = normalized
+                    meta["document_output_snapshot_chars"] = len(snapshot)
+                    if normalized not in stabilized_document_set:
+                        stabilized_document_paths.append(normalized)
+                        stabilized_document_set.add(normalized)
+                        newly_stabilized_document_paths.append(normalized)
         if canonical_tool in {"shell"}:
             shell_command = _extract_shell_command(tool_args or "{}") or ""
             shell_purpose = _extract_shell_purpose(tool_args or "{}")
@@ -6526,9 +6576,30 @@ async def handle_execution_followup(
         git_cursor["modified"] = sorted(git_cursor_modified)
         git_cursor["untracked"] = sorted(git_cursor_untracked)
 
+    resume_phase = str(getattr(session, "workflow_phase", "") or "execution").strip().lower()
+    deliverable_type, _allowed_scope = _resolve_deliverable_policy_from_context(
+        updated_execution_messages,
+        str(getattr(session, "ternion_report_raw", "") or ""),
+    )
+    auto_promote_doc_only = (
+        resume_phase == "execution"
+        and deliverable_type == DeliverableType.DOC_ONLY
+        and bool(newly_stabilized_document_paths)
+    )
+    if auto_promote_doc_only:
+        resume_phase = "optimizer"
+        guardrail_events_to_append.append(
+            {
+                "type": "doc_only_document_stabilized",
+                "role": "writer",
+                "deliverable_type": deliverable_type.value,
+                "paths": list(newly_stabilized_document_paths),
+            }
+        )
+
     deferred_plan = list(getattr(session, "deferred_tool_calls", []) or [])
-    if deferred_plan:
-        workflow_phase = str(getattr(session, "workflow_phase", "") or "execution").strip().lower()
+    if deferred_plan and not auto_promote_doc_only:
+        workflow_phase = resume_phase
         next_round = (session.round_index or 0) + 1
 
         filtered_tool_calls = list(deferred_plan)
@@ -6606,6 +6677,8 @@ async def handle_execution_followup(
                 tool_loop_pre_git_status=git_cursor,
                 modified_files=modified_files,
                 baseline_file_snapshots=baseline,
+                writer_output_files=writer_output_files,
+                stabilized_document_paths=stabilized_document_paths,
                 evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
                 evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
                 evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
@@ -6666,6 +6739,8 @@ async def handle_execution_followup(
                 tool_loop_pre_git_status=git_cursor,
                 modified_files=modified_files,
                 baseline_file_snapshots=baseline,
+                writer_output_files=writer_output_files,
+                stabilized_document_paths=stabilized_document_paths,
                 evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
                 evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
                 evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
@@ -6711,6 +6786,8 @@ async def handle_execution_followup(
             workflow_phase=workflow_phase,
             modified_files=modified_files,
             baseline_file_snapshots=baseline,
+            writer_output_files=writer_output_files,
+            stabilized_document_paths=stabilized_document_paths,
             evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
             evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
             evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
@@ -6749,7 +6826,6 @@ async def handle_execution_followup(
             ).model_dump()
         )
 
-    resume_phase = str(getattr(session, "workflow_phase", "") or "execution")
     resume_stage = (
         SessionStage.OPTIMIZER_IN_PROGRESS
         if resume_phase == "optimizer"
@@ -6763,11 +6839,15 @@ async def handle_execution_followup(
         cursor_tool_choice=cursor_tool_choice,
         execution_messages=updated_execution_messages,
         pending_tool_calls=[],
+        deferred_tool_calls=[],
+        workflow_phase=resume_phase,
         tool_results_raw=tool_results_raw,
         tool_results_meta=tool_results_meta,
         tool_loop_pre_git_status=git_cursor,
         modified_files=modified_files,
         baseline_file_snapshots=baseline,
+        writer_output_files=writer_output_files,
+        stabilized_document_paths=stabilized_document_paths,
         evidence_bundle=str(getattr(session, "evidence_bundle", "") or ""),
         evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
         evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
@@ -6818,7 +6898,7 @@ async def handle_execution_followup(
         "session_id": session.session_id,
         "execution_mode": session.execution_mode.value,
         "workspace_root": str(getattr(session, "workspace_root", "") or ""),
-        "current_phase": getattr(session, "workflow_phase", "execution") or "execution",
+        "current_phase": resume_phase or "execution",
         "thinking_logs": [],
         "errors": [],
         "generated_code": session.generated_code,
@@ -6835,8 +6915,9 @@ async def handle_execution_followup(
         ),
         "baseline_file_snapshots": baseline,
         "modified_files": modified_files,
-        "writer_output_files": dict(getattr(session, "writer_output_files", {}) or {}),
+        "writer_output_files": writer_output_files,
         "optimizer_review_report": str(getattr(session, "optimizer_review_report", "") or ""),
+        "stabilized_document_paths": stabilized_document_paths,
         "cursor_tools": cursor_tools,
         "cursor_tool_choice": cursor_tool_choice,
         "tool_results_meta": tool_results_meta,
@@ -7153,6 +7234,11 @@ async def handle_execution_followup(
                             or getattr(session, "writer_output_files", {})
                             or {}
                         ),
+                        stabilized_document_paths=list(
+                            final_state.get("stabilized_document_paths")
+                            or getattr(session, "stabilized_document_paths", [])
+                            or []
+                        ),
                         optimizer_review_report=str(
                             final_state.get("optimizer_review_report")
                             or getattr(session, "optimizer_review_report", "")
@@ -7262,6 +7348,11 @@ async def handle_execution_followup(
                         final_state.get("writer_output_files")
                         or getattr(session, "writer_output_files", {})
                         or {}
+                    ),
+                    stabilized_document_paths=list(
+                        final_state.get("stabilized_document_paths")
+                        or getattr(session, "stabilized_document_paths", [])
+                        or []
                     ),
                     optimizer_review_report=str(
                         final_state.get("optimizer_review_report")
@@ -7606,6 +7697,11 @@ async def handle_execution_followup(
                 or getattr(session, "writer_output_files", {})
                 or {}
             ),
+            stabilized_document_paths=list(
+                final_state.get("stabilized_document_paths")
+                or getattr(session, "stabilized_document_paths", [])
+                or []
+            ),
             optimizer_review_report=str(
                 final_state.get("optimizer_review_report")
                 or getattr(session, "optimizer_review_report", "")
@@ -7698,6 +7794,11 @@ async def handle_execution_followup(
             final_state.get("writer_output_files")
             or getattr(session, "writer_output_files", {})
             or {}
+        ),
+        stabilized_document_paths=list(
+            final_state.get("stabilized_document_paths")
+            or getattr(session, "stabilized_document_paths", [])
+            or []
         ),
         optimizer_review_report=str(
             final_state.get("optimizer_review_report")

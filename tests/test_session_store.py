@@ -185,6 +185,24 @@ class TestSessionStore:
         session_file = temp_sessions_dir / f"{session.session_id}.json"
         assert session_file.exists()
 
+    def test_create_session_canonicalizes_evidence_requests(self, store: SessionStore) -> None:
+        """Session creation should persist only structured evidence requests."""
+        session = store.create_session(
+            ternion_report="Test",
+            execution_mode=ExecutionMode.TERNION_FULL,
+            evidence_requests=(
+                "Narrative noise\n"
+                "- [P0] path=src/app.py:1-2\n"
+                "PURPOSE: Verify entrypoint.\n"
+                "<file_write>\n"
+            ),
+        )
+
+        assert session.evidence_requests == (
+            "- [P0] path=src/app.py:1-2\n"
+            "PURPOSE: Verify entrypoint."
+        )
+
     def test_load_session(self, store: SessionStore) -> None:
         """Should load a previously created session."""
         original = store.create_session(
@@ -220,9 +238,38 @@ class TestSessionStore:
         assert updated is not None
         assert updated.stage == SessionStage.CONFIRMED
 
+    def test_update_session_canonicalizes_evidence_requests(self, store: SessionStore) -> None:
+        """Session updates should canonicalize evidence request persistence."""
+        session = store.create_session(
+            ternion_report="Update test",
+            execution_mode=ExecutionMode.TERNION_FULL,
+        )
+
+        updated = store.update_session(
+            session.session_id,
+            evidence_requests=(
+                "junk\n"
+                "- [P0] path=docs/spec.md\n"
+                "PURPOSE: Verify docs scope.\n"
+            ),
+            stabilized_document_paths=["/tmp/doc.md"],
+        )
+
+        assert updated is not None
+        assert updated.evidence_requests == (
+            "- [P0] path=docs/spec.md\n"
+            "PURPOSE: Verify docs scope."
+        )
+        assert updated.stabilized_document_paths == ["/tmp/doc.md"]
+
         # Verify persistence
         reloaded = store.load_session(session.session_id)
-        assert reloaded.stage == SessionStage.CONFIRMED
+        assert reloaded is not None
+        assert reloaded.evidence_requests == (
+            "- [P0] path=docs/spec.md\n"
+            "PURPOSE: Verify docs scope."
+        )
+        assert reloaded.stabilized_document_paths == ["/tmp/doc.md"]
 
     def test_update_session_appends_guardrail_events_and_external_outputs_index(
         self, store: SessionStore

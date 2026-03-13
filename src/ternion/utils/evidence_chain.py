@@ -17,6 +17,7 @@ _BUNDLE_HEADER = "EVIDENCE_BUNDLE:"
 _GAPS_HEADER = "EVIDENCE_GAPS:"
 _PURPOSE_PREFIX = "PURPOSE:"
 _MISSING_PURPOSE_TAG = "[MISSING_PURPOSE]"
+_REQUEST_PRIORITY_RE = re.compile(r"^\[(P0|P1|P2)\]\s+.+$", re.IGNORECASE)
 MatchScope = Literal[
     "range_level",
     "range_level_partial",
@@ -69,6 +70,20 @@ def _extract_purpose(line: str) -> str | None:
     if normalized.upper().startswith(_PURPOSE_PREFIX):
         return normalized[len(_PURPOSE_PREFIX) :].strip()
     return None
+
+
+def _is_none_request_marker(line: str) -> bool:
+    """Return True when the line is the canonical empty-request marker."""
+    normalized = _strip_optional_bullet(line).strip().lower()
+    return normalized == "[p0] none"
+
+
+def _is_structured_request_line(line: str) -> bool:
+    """Return True when the line matches the supported evidence-request syntax."""
+    normalized = _strip_optional_bullet(line).strip()
+    if not normalized or _is_none_request_marker(normalized):
+        return False
+    return bool(_REQUEST_PRIORITY_RE.match(normalized))
 
 
 def _strip_format_indent(line: str) -> str:
@@ -478,22 +493,20 @@ def parse_evidence_requests(requests: str) -> list[EvidenceRequest]:
     current_request: str | None = None
     current_purpose: str = ""
 
-    def is_none_marker(line: str) -> bool:
-        normalized = line.strip().lower()
-        return normalized in ("- [p0] none", "[p0] none")
-
     if not lines:
         return []
-    if len(lines) == 1 and is_none_marker(lines[0]):
+    if len(lines) == 1 and _is_none_request_marker(lines[0]):
         return []
 
     for raw in lines:
-        if is_none_marker(raw):
+        if _is_none_request_marker(raw):
             continue
         maybe_purpose = _extract_purpose(raw)
         if maybe_purpose is not None:
             if current_request is not None and not current_purpose:
                 current_purpose = maybe_purpose
+            continue
+        if not _is_structured_request_line(raw):
             continue
         if current_request is not None:
             entries.append(_build_request_entry(current_request, current_purpose))
@@ -503,6 +516,29 @@ def parse_evidence_requests(requests: str) -> list[EvidenceRequest]:
     if current_request is not None:
         entries.append(_build_request_entry(current_request, current_purpose))
     return entries
+
+
+def canonicalize_evidence_requests_text(requests: str) -> str:
+    """
+    Canonicalize evidence requests into strict request/PURPOSE lines.
+
+    Unstructured noise is dropped. If no structured requests remain, the
+    canonical empty marker is returned.
+    """
+    entries = parse_evidence_requests(requests or "")
+    if not entries:
+        return "- [P0] None"
+
+    lines: list[str] = []
+    for entry in entries:
+        request_line = str(entry.request or "").strip()
+        if not request_line:
+            continue
+        lines.append(f"- {request_line}")
+        purpose_line = str(entry.purpose or "").strip()
+        if purpose_line:
+            lines.append(f"PURPOSE: {purpose_line}")
+    return "\n".join(lines) if lines else "- [P0] None"
 
 
 def _build_request_entry(request_line: str, purpose: str) -> EvidenceRequest:

@@ -98,6 +98,7 @@ class TernionState(TypedDict, total=False):
     modified_files: list[str]
     writer_output_files: dict[str, str]
     optimizer_review_report: str
+    stabilized_document_paths: list[str]
 
     # Error tracking
     errors: list[str]

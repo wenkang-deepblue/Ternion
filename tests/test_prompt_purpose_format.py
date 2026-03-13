@@ -44,3 +44,12 @@ def test_optimizer_prompt_includes_phase_15_evidence_topup_wrapper_protocol() ->
     assert "TERNION_EVIDENCE_REQUESTS_BEGIN" in OPTIMIZER_PROMPT
     assert "TERNION_EVIDENCE_REQUESTS_END" in OPTIMIZER_PROMPT
     assert "REQUESTER: optimizer" in OPTIMIZER_PROMPT
+
+
+def test_optimizer_prompt_includes_action_protocol_fields() -> None:
+    assert "ACTION_REQUIRED: true|false" in OPTIMIZER_PROMPT
+    assert "ACTION_TAKEN: none|tool_calls|evidence_topup" in OPTIMIZER_PROMPT
+    assert "ACTION_REASON: <single-line rationale grounded in acceptance criteria / evidence>" in (
+        OPTIMIZER_PROMPT
+    )
+    assert "REQUIRED_CHANGE_ITEMS:" in OPTIMIZER_PROMPT

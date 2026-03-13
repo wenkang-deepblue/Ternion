@@ -22,6 +22,7 @@ from typing import Any
 
 import structlog
 
+from ternion.utils.evidence_chain import canonicalize_evidence_requests_text
 from ternion.utils.log_manager import log_manager
 
 logger = structlog.get_logger(__name__)
@@ -154,6 +155,7 @@ class Session:
     evidence_gaps: str = ""
     evidence_requests: str = ""
     evidence_chain_index: list[dict[str, Any]] = field(default_factory=list)
+    stabilized_document_paths: list[str] = field(default_factory=list)
     # Step E: Execution/Optimizer evidence top-ups via Phase 1.5 (max 2 rounds).
     evidence_topup_round: int = 0
     # When report_evidence is used as an execution-time top-up, resume back to this phase.
@@ -199,6 +201,7 @@ class Session:
         data.setdefault("workspace_root", "")
         data.setdefault("evidence_topup_round", 0)
         data.setdefault("report_evidence_resume_phase", "")
+        data.setdefault("stabilized_document_paths", [])
         data.setdefault("tool_call_index", {})
         data.setdefault("tool_loop_pre_git_status", {})
         data.setdefault("deferred_tool_calls", [])
@@ -389,6 +392,7 @@ class SessionStore:
         evidence_gaps: str = "",
         evidence_requests: str = "",
         evidence_chain_index: list[dict[str, Any]] | None = None,
+        stabilized_document_paths: list[str] | None = None,
         evidence_topup_round: int = 0,
         report_evidence_resume_phase: str = "",
         ternion_analyses: list[dict[str, Any]] | None = None,
@@ -455,8 +459,9 @@ class SessionStore:
             execution_phase_announced=execution_phase_announced,
             evidence_bundle=evidence_bundle,
             evidence_gaps=evidence_gaps,
-            evidence_requests=evidence_requests,
+            evidence_requests=canonicalize_evidence_requests_text(evidence_requests),
             evidence_chain_index=list(evidence_chain_index or []),
+            stabilized_document_paths=list(stabilized_document_paths or []),
             evidence_topup_round=int(evidence_topup_round or 0),
             report_evidence_resume_phase=str(report_evidence_resume_phase or ""),
             ternion_analyses=list(ternion_analyses or []),
@@ -555,6 +560,7 @@ class SessionStore:
         evidence_gaps: str | None = None,
         evidence_requests: str | None = None,
         evidence_chain_index: list[dict[str, Any]] | None = None,
+        stabilized_document_paths: list[str] | None = None,
         evidence_topup_round: int | None = None,
         report_evidence_resume_phase: str | None = None,
         ternion_analyses: list[dict[str, Any]] | None = None,
@@ -679,9 +685,11 @@ class SessionStore:
         if evidence_gaps is not None:
             session.evidence_gaps = evidence_gaps
         if evidence_requests is not None:
-            session.evidence_requests = evidence_requests
+            session.evidence_requests = canonicalize_evidence_requests_text(evidence_requests)
         if evidence_chain_index is not None:
             session.evidence_chain_index = evidence_chain_index
+        if stabilized_document_paths is not None:
+            session.stabilized_document_paths = list(stabilized_document_paths)
         if evidence_topup_round is not None:
             session.evidence_topup_round = int(evidence_topup_round or 0)
         if report_evidence_resume_phase is not None:

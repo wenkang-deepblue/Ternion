@@ -51,6 +51,7 @@ from ternion.router.prompts import (
 )
 from ternion.utils.cursor_safety import sanitize_for_cursor_display, sanitize_for_preview
 from ternion.utils.evidence_chain import (
+    canonicalize_evidence_requests_text,
     compute_missing_ranges,
     is_deterministic_range_request,
     merge_adjacent_or_overlapping_ranges,
@@ -94,6 +95,13 @@ _OPTIMIZER_INTERNAL_BEGIN = "TERNION_OPTIMIZER_INTERNAL_REPORT_BEGIN"
 _OPTIMIZER_INTERNAL_END = "TERNION_OPTIMIZER_INTERNAL_REPORT_END"
 _OPTIMIZER_USER_BEGIN = "TERNION_OPTIMIZER_USER_SUMMARY_BEGIN"
 _OPTIMIZER_USER_END = "TERNION_OPTIMIZER_USER_SUMMARY_END"
+_OPTIMIZER_ACTION_REQUIRED_PREFIX = "ACTION_REQUIRED:"
+_OPTIMIZER_ACTION_TAKEN_PREFIX = "ACTION_TAKEN:"
+_OPTIMIZER_ACTION_REASON_PREFIX = "ACTION_REASON:"
+_OPTIMIZER_REQUIRED_CHANGE_ITEMS_PREFIX = "REQUIRED_CHANGE_ITEMS:"
+_OPTIMIZER_ACTION_FIELD_LINE_RE = re.compile(r"^[A-Z][A-Z0-9_]+:")
+_OPTIMIZER_ACTION_TAKEN_VALUES = {"none", "tool_calls", "evidence_topup"}
+
 
 def _build_runtime_model_unavailable_message(
     error: RuntimeModelUnavailableError,
@@ -263,6 +271,101 @@ def _detect_malformed_execution_tool_calls(
             )
 
     return issues
+
+
+def _normalize_tool_target_path(path_str: str, workspace_root: str | None = None) -> str | None:
+    """Normalize a tool target path against the current workspace root."""
+    if not isinstance(path_str, str) or not path_str.strip():
+        return None
+    path = Path(path_str).expanduser()
+    if not path.is_absolute():
+        root = Path(workspace_root or ".").expanduser()
+        path = root / path
+    try:
+        return str(path.resolve())
+    except Exception:
+        return str(path)
+
+
+def _extract_mutation_target_path_for_guardrail(
+    tool_name: str | None,
+    arguments_json: str,
+) -> str | None:
+    canonical = re.sub(r"[^a-z0-9]+", "", (tool_name or "").strip().lower())
+    args = _coerce_json_object(arguments_json)
+    if canonical not in {"write", "writefile"}:
+        return None
+    for key in ("file_path", "path", "target_file", "target_path"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _collect_stabilized_document_write_paths(
+    tool_calls: list[dict[str, Any]] | None,
+    *,
+    stabilized_document_paths: list[str] | None,
+    workspace_root: str | None,
+) -> list[str]:
+    """Collect whole-file Write targets that point to stabilized documents."""
+    stabilized_set = {
+        str(path).strip()
+        for path in (stabilized_document_paths or [])
+        if isinstance(path, str) and path.strip()
+    }
+    if not stabilized_set:
+        return []
+
+    blocked: list[str] = []
+    seen: set[str] = set()
+    for tc in tool_calls or []:
+        name, args_str = _extract_tool_name_and_arguments(tc)
+        target = _extract_mutation_target_path_for_guardrail(name, args_str)
+        normalized = _normalize_tool_target_path(target or "", workspace_root)
+        if not normalized or normalized not in stabilized_set or normalized in seen:
+            continue
+        seen.add(normalized)
+        blocked.append(normalized)
+    return blocked
+
+
+def _render_stabilized_document_path(path_str: str, workspace_root: str | None) -> str:
+    """Render a stabilized document path relative to the workspace when possible."""
+    try:
+        path = Path(path_str)
+        root = Path(workspace_root or "").expanduser()
+        if root and root.exists():
+            with contextlib.suppress(Exception):
+                return path.resolve().relative_to(root.resolve()).as_posix()
+    except Exception:
+        pass
+    return path_str
+
+
+def _build_stabilized_document_guardrail_feedback(
+    *,
+    blocked_paths: list[str],
+    deliverable_type: str,
+    workspace_root: str | None,
+) -> str:
+    rendered_paths = "\n".join(
+        f"- {_render_stabilized_document_path(path, workspace_root)}" for path in blocked_paths
+    )
+    deliverable_label = deliverable_type or "unknown"
+    return (
+        "The following document outputs are already stabilized after a successful whole-file "
+        "Write and MUST NOT be rewritten again in execution:\n"
+        f"{rendered_paths}\n\n"
+        f"Current deliverable type: `{deliverable_label}`.\n"
+        "Hard rules:\n"
+        "- Do NOT issue another whole-file `Write` for any stabilized document above.\n"
+        "- Keep those document outputs unchanged.\n"
+        "- If additional code work is still required, continue only with code/tool actions for "
+        "non-document targets.\n"
+        "- If the stabilized documents are complete and no more tool work is needed, finish so "
+        "the workflow can continue to Optimizer.\n"
+    )
 
 
 def _build_tool_call_validation_guardrail_feedback(
@@ -1466,13 +1569,6 @@ def _parse_evidence_output(content: str) -> tuple[str, str]:
 
 
 def _extract_evidence_requests(analyses: list[dict[str, Any]]) -> str:
-    def is_none_marker(line: str) -> bool:
-        normalized = line.strip()
-        if not normalized:
-            return False
-        normalized = normalized.lower()
-        return normalized in ("- [p0] none", "[p0] none")
-
     requests: list[str] = []
     for analysis in analyses:
         text = (analysis.get("analysis") or "").splitlines()
@@ -1486,14 +1582,7 @@ def _extract_evidence_requests(analyses: list[dict[str, Any]]) -> str:
                 break
             if capture and stripped:
                 requests.append(stripped)
-    if not requests:
-        return "- [P0] None"
-
-    # Canonicalize the empty marker to avoid downstream heuristic ambiguity.
-    non_empty = [line for line in requests if line.strip()]
-    if non_empty and all(is_none_marker(line) for line in non_empty):
-        return "- [P0] None"
-    return "\n".join(requests)
+    return canonicalize_evidence_requests_text("\n".join(requests))
 
 
 def _filter_conversation_history_for_analysis(
@@ -1830,6 +1919,141 @@ def _split_optimizer_output(text: str) -> tuple[str, str]:
     return internal or raw, ""
 
 
+def _parse_optimizer_action_contract(internal_report: str) -> dict[str, Any]:
+    """Parse structured optimizer action fields from the internal report."""
+    info: dict[str, Any] = {
+        "protocol_valid": False,
+        "action_required": None,
+        "action_taken": "",
+        "action_reason": "",
+        "required_change_items": [],
+    }
+    if not isinstance(internal_report, str) or not internal_report.strip():
+        return info
+
+    action_required: bool | None = None
+    action_taken = ""
+    action_reason = ""
+    required_items: list[str] = []
+    collecting_items = False
+
+    for raw_line in internal_report.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith(_OPTIMIZER_ACTION_REQUIRED_PREFIX):
+            collecting_items = False
+            value = line[len(_OPTIMIZER_ACTION_REQUIRED_PREFIX) :].strip().lower()
+            if value == "true":
+                action_required = True
+            elif value == "false":
+                action_required = False
+            continue
+
+        if line.startswith(_OPTIMIZER_ACTION_TAKEN_PREFIX):
+            collecting_items = False
+            value = line[len(_OPTIMIZER_ACTION_TAKEN_PREFIX) :].strip().lower()
+            if value in _OPTIMIZER_ACTION_TAKEN_VALUES:
+                action_taken = value
+            continue
+
+        if line.startswith(_OPTIMIZER_ACTION_REASON_PREFIX):
+            collecting_items = False
+            action_reason = line[len(_OPTIMIZER_ACTION_REASON_PREFIX) :].strip()
+            continue
+
+        if line.startswith(_OPTIMIZER_REQUIRED_CHANGE_ITEMS_PREFIX):
+            collecting_items = True
+            continue
+
+        if not collecting_items:
+            continue
+
+        if _OPTIMIZER_ACTION_FIELD_LINE_RE.match(line):
+            collecting_items = False
+            continue
+
+        if line.startswith("-") or line.startswith("*"):
+            item = line[1:].strip()
+            if item and item.lower() not in {"none", "n/a", "not applicable"}:
+                required_items.append(item)
+            continue
+
+        collecting_items = False
+
+    info["action_required"] = action_required
+    info["action_taken"] = action_taken
+    info["action_reason"] = action_reason
+    info["required_change_items"] = required_items
+    info["protocol_valid"] = (
+        action_required is not None
+        and action_taken in _OPTIMIZER_ACTION_TAKEN_VALUES
+        and bool(action_reason)
+    )
+    return info
+
+
+def _should_retry_optimizer_action_protocol(contract: dict[str, Any]) -> bool:
+    """Return True when optimizer finalization violates the action protocol."""
+    if not bool(contract.get("protocol_valid")):
+        return True
+
+    action_required = contract.get("action_required")
+    action_taken = str(contract.get("action_taken") or "").strip().lower()
+    if action_required is True:
+        return True
+    return action_taken in {"tool_calls", "evidence_topup"}
+
+
+def _summarize_optimizer_required_change_items(
+    required_change_items: list[str], *, limit: int = 5
+) -> str:
+    """Create a short log preview for unresolved optimizer-required changes."""
+    if not required_change_items:
+        return "None"
+    preview = " || ".join(item.strip() for item in required_change_items[:limit] if item.strip())
+    if len(required_change_items) > limit:
+        preview = f"{preview} || ..."
+    return preview or "None"
+
+
+def _build_optimizer_action_protocol_feedback(contract: dict[str, Any]) -> str:
+    """Build guardrail feedback for optimizer action-protocol violations."""
+    action_required = contract.get("action_required")
+    action_taken = str(contract.get("action_taken") or "").strip().lower() or "(missing)"
+    action_reason = str(contract.get("action_reason") or "").strip() or "(missing)"
+    required_items = [
+        sanitize_for_cursor_display(str(item).strip())
+        for item in list(contract.get("required_change_items") or [])
+        if str(item).strip()
+    ]
+    lines = [
+        "Your previous optimizer finalization violated the action protocol.",
+        f"- protocol_valid: {bool(contract.get('protocol_valid'))}",
+        f"- ACTION_REQUIRED: {action_required}",
+        f"- ACTION_TAKEN: {action_taken}",
+        f"- ACTION_REASON: {sanitize_for_cursor_display(action_reason)}",
+    ]
+    if required_items:
+        lines.append("- REQUIRED_CHANGE_ITEMS:")
+        lines.extend(f"  - {item}" for item in required_items[:10])
+        if len(required_items) > 10:
+            lines.append("  - ...")
+    else:
+        lines.append("- REQUIRED_CHANGE_ITEMS: None")
+    lines.extend(
+        [
+            "",
+            "Proceed as follows:",
+            "- If a required change still remains, do NOT finalize. Emit tool_calls with empty assistant content.",
+            "- If a required change depends on missing evidence, emit ONLY the strict evidence top-up block.",
+            "- If no required change remains, finalize with ACTION_REQUIRED: false, ACTION_TAKEN: none, and a concrete ACTION_REASON.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 async def divergence_node(state: TernionState) -> TernionState:
     """
     Step 1: The Divergence - Parallel Root Cause Analysis.
@@ -2085,7 +2309,7 @@ def _has_real_evidence_requests(requests: str) -> bool:
     Returns:
         True if there are real evidence requests, False otherwise.
     """
-    text = (requests or "").strip()
+    text = canonicalize_evidence_requests_text(requests or "").strip()
     if not text:
         return False
 
@@ -2602,9 +2826,11 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             purpose = str(getattr(entry, "purpose", "") or "").strip()
             if purpose:
                 non_det_lines.append(f"PURPOSE: {purpose}")
-        effective_evidence_requests = "\n".join(non_det_lines).strip()
+        effective_evidence_requests = canonicalize_evidence_requests_text(
+            "\n".join(non_det_lines).strip()
+        )
     else:
-        effective_evidence_requests = ""
+        effective_evidence_requests = canonicalize_evidence_requests_text("")
 
     if (
         deterministic_targets
@@ -2631,7 +2857,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
     if _has_real_evidence_requests(effective_evidence_requests):
         host_evidence_requests = effective_evidence_requests
     else:
-        host_evidence_requests = evidence_requests
+        host_evidence_requests = canonicalize_evidence_requests_text(evidence_requests)
 
     if updated_bundle != existing_bundle:
         state = {**state, "evidence_bundle": updated_bundle}
@@ -2966,7 +3192,9 @@ async def convergence_node(state: TernionState) -> TernionState:
         instruction_template.format(language_name=language_name) if instruction_template else ""
     )
 
-    convergence_prompt_with_lang = build_convergence_prompt(language_instruction=language_instruction)
+    convergence_prompt_with_lang = build_convergence_prompt(
+        language_instruction=language_instruction
+    )
 
     evidence_bundle = state.get("evidence_bundle") or "EVIDENCE_BUNDLE:\n- None"
     evidence_gaps = state.get("evidence_gaps") or "EVIDENCE_GAPS:\n- None"
@@ -3675,6 +3903,9 @@ async def execution_node(state: TernionState) -> TernionState:
     evidence_gaps = str(state.get("evidence_gaps") or "EVIDENCE_GAPS:\n- None")
     evidence_chain_index = list(state.get("evidence_chain_index") or [])
     topup_round_used = int(state.get("evidence_topup_round", 0) or 0)
+    report_scope_for_policy = _extract_report_scope_for_policy(ternion_report)
+    deliverable_policy = resolve_deliverable_policy(latest_user_message, report_scope_for_policy)
+    stabilized_document_paths = list(state.get("stabilized_document_paths") or [])
     deliverable_policy_text, evidence_chain_lines, topup_status_lines = (
         _build_execution_policy_context(
             ternion_report=ternion_report,
@@ -3701,6 +3932,21 @@ async def execution_node(state: TernionState) -> TernionState:
             [
                 "\n\n[TERNION TOOL CONTEXT DIGEST]\n\n",
                 tool_context_digest,
+            ]
+        )
+    if stabilized_document_paths:
+        rendered_paths = "\n".join(
+            f"- {_render_stabilized_document_path(path, state.get('workspace_root'))}"
+            for path in stabilized_document_paths
+        )
+        content_parts.extend(
+            [
+                "\n\n[STABILIZED DOCUMENT OUTPUTS]\n\n",
+                "These document-like outputs already completed a successful whole-file `Write` "
+                "and are now frozen for additional whole-file rewrites:\n",
+                rendered_paths,
+                "\nDo not rewrite those files with `Write` again. Continue only with "
+                "non-document code work, or finish if those document outputs are already complete.",
             ]
         )
 
@@ -3872,6 +4118,77 @@ async def execution_node(state: TernionState) -> TernionState:
                 raise ValueError("writer_returned_empty_output_after_retry")
 
             return retry_response
+
+        async def _retry_writer_if_rewriting_stabilized_docs(
+            response: ProviderResponse,
+            *,
+            extra_kwargs: dict[str, Any] | None = None,
+        ) -> ProviderResponse:
+            blocked_paths = _collect_stabilized_document_write_paths(
+                response.tool_calls,
+                stabilized_document_paths=stabilized_document_paths,
+                workspace_root=state.get("workspace_root"),
+            )
+            if not blocked_paths:
+                return response
+
+            log_manager.emit(
+                level="INFO",
+                category="GUARDRAIL",
+                message=(
+                    "execution_stabilized_document_soft_retry | "
+                    f"session_id={session_id} | "
+                    f"count={len(blocked_paths)}"
+                ),
+            )
+            with contextlib.suppress(Exception):
+                session_store.update_session(
+                    session_id,
+                    append_guardrail_events=[
+                        {
+                            "type": "stabilized_document_soft_retry",
+                            "phase": "execution",
+                            "role": "writer",
+                            "blocked_paths": list(blocked_paths),
+                        }
+                    ],
+                )
+
+            feedback = _build_stabilized_document_guardrail_feedback(
+                blocked_paths=blocked_paths,
+                deliverable_type=deliverable_policy.deliverable_type.value,
+                workspace_root=state.get("workspace_root"),
+            )
+            last = messages[-1] if messages else None
+            if last and last.role == MessageRole.USER and isinstance(last.content, str):
+                last.content += "\n\n[TERNION DOCUMENT STABILITY GUARDRAIL]\n\n" + feedback
+            else:
+                messages.append(
+                    ChatMessage(
+                        role=MessageRole.USER,
+                        content="[TERNION DOCUMENT STABILITY GUARDRAIL]\n\n" + feedback,
+                    )
+                )
+
+            retry_response = await _call_with_timeout(
+                provider=provider,
+                messages=messages,
+                model=model,
+                temperature=0.3,
+                timeout_seconds=writer_timeout,
+                **(extra_kwargs or {}),
+            )
+            if supports_text_tools and not retry_response.tool_calls:
+                parsed_tool_calls = extract_tool_calls_from_text(retry_response.content)
+                if parsed_tool_calls:
+                    retry_response.tool_calls = parsed_tool_calls
+                    retry_response.content = ""
+            return await _retry_writer_if_empty(
+                retry_response,
+                allow_tool_calls=True,
+                response_context="stabilized_document_guardrail_retry",
+                extra_kwargs=extra_kwargs,
+            )
 
         if supports_text_tools and messages:
             last_msg = messages[-1]
@@ -4110,6 +4427,44 @@ async def execution_node(state: TernionState) -> TernionState:
                             response_context="tool_mode_validation_retry",
                             extra_kwargs=extra_kwargs,
                         )
+                if response.tool_calls:
+                    response = await _retry_writer_if_rewriting_stabilized_docs(
+                        response,
+                        extra_kwargs=extra_kwargs,
+                    )
+                if response.tool_calls:
+                    blocked_stabilized = _collect_stabilized_document_write_paths(
+                        response.tool_calls,
+                        stabilized_document_paths=stabilized_document_paths,
+                        workspace_root=state.get("workspace_root"),
+                    )
+                    if blocked_stabilized:
+                        log_manager.emit(
+                            level="INFO",
+                            category="GUARDRAIL",
+                            message=(
+                                "execution_stabilized_document_forced_optimizer | "
+                                f"session_id={session_id} | "
+                                f"count={len(blocked_stabilized)}"
+                            ),
+                        )
+                        with contextlib.suppress(Exception):
+                            session_store.update_session(
+                                session_id,
+                                append_guardrail_events=[
+                                    {
+                                        "type": "stabilized_document_forced_optimizer",
+                                        "phase": "execution",
+                                        "role": "writer",
+                                        "blocked_paths": list(blocked_stabilized),
+                                    }
+                                ],
+                            )
+                        return {
+                            **state,
+                            "current_phase": WorkflowPhase.OPTIMIZER.value,
+                            "thinking_logs": thinking_logs,
+                        }
                 if response.tool_calls:
                     log_manager.emit(
                         level="INFO",
@@ -4682,81 +5037,106 @@ async def optimizer_node(state: TernionState) -> TernionState:
             ),
         )
 
-        if response.tool_calls:
-            blocked_tools, blocked_shell = _detect_blocked_execution_tool_calls(response.tool_calls)
-            if blocked_tools or blocked_shell:
-                log_manager.emit(
-                    level="INFO",
-                    category="GUARDRAIL",
-                    message=(
-                        "optimizer_tool_policy_soft_retry | "
-                        f"session_id={session_id} | "
-                        f"blocked_tools={len(blocked_tools)} | "
-                        f"blocked_shell={len(blocked_shell)}"
-                    ),
-                )
-                try:
-                    blocked_shell_session: list[dict[str, str]] = []
-                    for item in blocked_shell:
-                        tool = str(item.get("tool") or "Shell")
-                        cmd = str(item.get("command") or "")
-                        reason = str(item.get("reason") or "")
-                        blocked_shell_session.append(
-                            {
-                                "tool": tool,
-                                "command_preview": redact_secrets(cmd),
-                                "reason": reason,
-                            }
-                        )
-                    session_store.update_session(
-                        session_id,
-                        append_guardrail_events=[
-                            {
-                                "type": "optimizer_tool_policy_soft_retry",
-                                "phase": "optimizer",
-                                "role": "optimizer",
-                                "blocked_tools": list(blocked_tools or []),
-                                "blocked_shell": blocked_shell_session,
-                            }
-                        ],
-                    )
-                except Exception:
-                    pass
-                last = messages[-1] if messages else None
-                feedback = _build_tool_policy_guardrail_feedback(
-                    blocked_tools=blocked_tools,
-                    blocked_shell=blocked_shell,
-                    role_label="Optimizer (optimizer)",
-                )
-                if last and last.role == MessageRole.USER and isinstance(last.content, str):
-                    last.content += "\n\n[TERNION TOOL POLICY GUARDRAIL]\n\n" + feedback
-                else:
-                    messages.append(
-                        ChatMessage(
-                            role=MessageRole.USER,
-                            content="[TERNION TOOL POLICY GUARDRAIL]\n\n" + feedback,
-                        )
-                    )
+        tool_policy_retry_used = False
+        tool_call_validation_retry_used = False
+        topup_guardrail_retry_used = False
+        action_protocol_retry_used = False
 
-                # IMPORTANT: Use non-streaming retry to avoid duplicate phase-start
-                # indicators and noisy partial output in Cursor.
-                response = await _call_with_timeout(
-                    provider=provider,
-                    messages=messages,
-                    model=model,
-                    temperature=0.2,
-                    timeout_seconds=optimizer_timeout,
-                    **extra_kwargs,
-                )
-                if supports_text_tools and not response.tool_calls:
-                    parsed_tool_calls = extract_tool_calls_from_text(response.content)
-                    if parsed_tool_calls:
-                        response.tool_calls = parsed_tool_calls
-                        response.content = ""
-
+        while True:
             if response.tool_calls:
+                blocked_tools, blocked_shell = _detect_blocked_execution_tool_calls(
+                    response.tool_calls
+                )
+                if blocked_tools or blocked_shell:
+                    if tool_policy_retry_used:
+                        malformed = _detect_malformed_execution_tool_calls(response.tool_calls)
+                        if not malformed or tool_call_validation_retry_used:
+                            return {
+                                **state,
+                                "current_phase": WorkflowPhase.OPTIMIZER.value,
+                                "pending_tool_calls": response.tool_calls,
+                                "thinking_logs": thinking_logs,
+                            }
+                    else:
+                        tool_policy_retry_used = True
+                        log_manager.emit(
+                            level="INFO",
+                            category="GUARDRAIL",
+                            message=(
+                                "optimizer_tool_policy_soft_retry | "
+                                f"session_id={session_id} | "
+                                f"blocked_tools={len(blocked_tools)} | "
+                                f"blocked_shell={len(blocked_shell)}"
+                            ),
+                        )
+                        try:
+                            blocked_shell_session: list[dict[str, str]] = []
+                            for item in blocked_shell:
+                                tool = str(item.get("tool") or "Shell")
+                                cmd = str(item.get("command") or "")
+                                reason = str(item.get("reason") or "")
+                                blocked_shell_session.append(
+                                    {
+                                        "tool": tool,
+                                        "command_preview": redact_secrets(cmd),
+                                        "reason": reason,
+                                    }
+                                )
+                            session_store.update_session(
+                                session_id,
+                                append_guardrail_events=[
+                                    {
+                                        "type": "optimizer_tool_policy_soft_retry",
+                                        "phase": "optimizer",
+                                        "role": "optimizer",
+                                        "blocked_tools": list(blocked_tools or []),
+                                        "blocked_shell": blocked_shell_session,
+                                    }
+                                ],
+                            )
+                        except Exception:
+                            pass
+                        last = messages[-1] if messages else None
+                        feedback = _build_tool_policy_guardrail_feedback(
+                            blocked_tools=blocked_tools,
+                            blocked_shell=blocked_shell,
+                            role_label="Optimizer (optimizer)",
+                        )
+                        if last and last.role == MessageRole.USER and isinstance(last.content, str):
+                            last.content += "\n\n[TERNION TOOL POLICY GUARDRAIL]\n\n" + feedback
+                        else:
+                            messages.append(
+                                ChatMessage(
+                                    role=MessageRole.USER,
+                                    content="[TERNION TOOL POLICY GUARDRAIL]\n\n" + feedback,
+                                )
+                            )
+
+                        response = await _call_with_timeout(
+                            provider=provider,
+                            messages=messages,
+                            model=model,
+                            temperature=0.2,
+                            timeout_seconds=optimizer_timeout,
+                            **extra_kwargs,
+                        )
+                        if supports_text_tools and not response.tool_calls:
+                            parsed_tool_calls = extract_tool_calls_from_text(response.content)
+                            if parsed_tool_calls:
+                                response.tool_calls = parsed_tool_calls
+                                response.content = ""
+                        continue
+
                 malformed = _detect_malformed_execution_tool_calls(response.tool_calls)
                 if malformed:
+                    if tool_call_validation_retry_used:
+                        return {
+                            **state,
+                            "current_phase": WorkflowPhase.OPTIMIZER.value,
+                            "pending_tool_calls": response.tool_calls,
+                            "thinking_logs": thinking_logs,
+                        }
+                    tool_call_validation_retry_used = True
                     log_manager.emit(
                         level="INFO",
                         category="GUARDRAIL",
@@ -4807,8 +5187,8 @@ async def optimizer_node(state: TernionState) -> TernionState:
                         if parsed_tool_calls:
                             response.tool_calls = parsed_tool_calls
                             response.content = ""
+                    continue
 
-            if response.tool_calls:
                 return {
                     **state,
                     "current_phase": WorkflowPhase.OPTIMIZER.value,
@@ -4816,77 +5196,20 @@ async def optimizer_node(state: TernionState) -> TernionState:
                     "thinking_logs": thinking_logs,
                 }
 
-        topup_block = extract_evidence_requests_block(
-            response.content,
-            default_requester="optimizer",
-        )
-        if topup_block is not None:
-            used_round = int(state.get("evidence_topup_round", 0) or 0)
-            payload_error = _validate_evidence_requests_payload(topup_block.requests_text)
-            policy_error = _validate_evidence_topup_request(
-                used_round=used_round,
-                final_request=topup_block.final_request,
+            topup_block = extract_evidence_requests_block(
+                response.content,
+                default_requester="optimizer",
             )
-            topup_error = payload_error or policy_error
-            if topup_error:
-                last = messages[-1] if messages else None
-                if last and last.role == MessageRole.USER and isinstance(last.content, str):
-                    last.content += (
-                        "\n\n[TERNION EVIDENCE TOP-UP GUARDRAIL]\n\n"
-                        f"{sanitize_for_cursor_display(topup_error)}\n\n"
-                        "Proceed:\n"
-                        "- If you still need evidence and TOPUP_ROUNDS_REMAINING > 0, re-issue the evidence top-up block with correct PURPOSE lines.\n"
-                        "- If TOPUP_ROUNDS_REMAINING == 0, do NOT request more evidence. Proceed with the deliverable using existing evidence.\n"
-                    )
-
-                if stream_queue:
-                    response, _streamed_user_summary = await _call_optimizer_with_stream(
-                        provider=provider,
-                        messages=messages,
-                        model=model,
-                        temperature=0.2,
-                        stream_queue=stream_queue,
-                        phase="optimizer",
-                        message_id=session_id,
-                        timeout_seconds=optimizer_timeout,
-                        detect_tool_calls=should_use_tool_calls,
-                        **extra_kwargs,
-                    )
-                else:
-                    response = await _call_with_timeout(
-                        provider=provider,
-                        messages=messages,
-                        model=model,
-                        temperature=0.2,
-                        timeout_seconds=optimizer_timeout,
-                        **extra_kwargs,
-                    )
-                if supports_text_tools and not response.tool_calls:
-                    parsed_tool_calls = extract_tool_calls_from_text(response.content)
-                    if parsed_tool_calls:
-                        response.tool_calls = parsed_tool_calls
-                        response.content = ""
-                if response.tool_calls:
-                    return {
-                        **state,
-                        "current_phase": WorkflowPhase.OPTIMIZER.value,
-                        "pending_tool_calls": response.tool_calls,
-                        "thinking_logs": thinking_logs,
-                    }
-
-                retry_block = extract_evidence_requests_block(
-                    response.content,
-                    default_requester="optimizer",
+            if topup_block is not None:
+                used_round = int(state.get("evidence_topup_round", 0) or 0)
+                payload_error = _validate_evidence_requests_payload(topup_block.requests_text)
+                policy_error = _validate_evidence_topup_request(
+                    used_round=used_round,
+                    final_request=topup_block.final_request,
                 )
-                if retry_block is not None:
-                    used_round = int(state.get("evidence_topup_round", 0) or 0)
-                    payload_error = _validate_evidence_requests_payload(retry_block.requests_text)
-                    policy_error = _validate_evidence_topup_request(
-                        used_round=used_round,
-                        final_request=retry_block.final_request,
-                    )
-                    topup_error = payload_error or policy_error
-                    if topup_error:
+                topup_error = payload_error or policy_error
+                if topup_error:
+                    if topup_guardrail_retry_used:
                         return {
                             **state,
                             "current_phase": WorkflowPhase.COMPLETE.value,
@@ -4894,15 +5217,46 @@ async def optimizer_node(state: TernionState) -> TernionState:
                             "final_output": sanitize_for_cursor_display(topup_error),
                             "thinking_logs": thinking_logs,
                         }
-                    return {
-                        **state,
-                        "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
-                        "evidence_requests": retry_block.requests_text,
-                        "report_evidence_resume_phase": WorkflowPhase.OPTIMIZER.value,
-                        "evidence_topup_round": used_round + 1,
-                        "thinking_logs": thinking_logs,
-                    }
-            else:
+                    topup_guardrail_retry_used = True
+                    last = messages[-1] if messages else None
+                    if last and last.role == MessageRole.USER and isinstance(last.content, str):
+                        last.content += (
+                            "\n\n[TERNION EVIDENCE TOP-UP GUARDRAIL]\n\n"
+                            f"{sanitize_for_cursor_display(topup_error)}\n\n"
+                            "Proceed:\n"
+                            "- If you still need evidence and TOPUP_ROUNDS_REMAINING > 0, re-issue the evidence top-up block with correct PURPOSE lines.\n"
+                            "- If TOPUP_ROUNDS_REMAINING == 0, do NOT request more evidence. Proceed with the deliverable using existing evidence.\n"
+                        )
+
+                    if stream_queue:
+                        response, _streamed_user_summary = await _call_optimizer_with_stream(
+                            provider=provider,
+                            messages=messages,
+                            model=model,
+                            temperature=0.2,
+                            stream_queue=stream_queue,
+                            phase="optimizer",
+                            message_id=session_id,
+                            timeout_seconds=optimizer_timeout,
+                            detect_tool_calls=should_use_tool_calls,
+                            **extra_kwargs,
+                        )
+                    else:
+                        response = await _call_with_timeout(
+                            provider=provider,
+                            messages=messages,
+                            model=model,
+                            temperature=0.2,
+                            timeout_seconds=optimizer_timeout,
+                            **extra_kwargs,
+                        )
+                    if supports_text_tools and not response.tool_calls:
+                        parsed_tool_calls = extract_tool_calls_from_text(response.content)
+                        if parsed_tool_calls:
+                            response.tool_calls = parsed_tool_calls
+                            response.content = ""
+                    continue
+
                 return {
                     **state,
                     "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
@@ -4912,52 +5266,191 @@ async def optimizer_node(state: TernionState) -> TernionState:
                     "thinking_logs": thinking_logs,
                 }
 
-        internal_report, user_summary = _split_optimizer_output(response.content or "")
-        if not (user_summary or "").strip():
-            user_summary = t(MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR)
-        user_summary_safe = sanitize_for_cursor_display(user_summary)
-        if stream_queue and user_summary_safe and not streamed_user_summary:
-            # Ensure the user-visible summary is streamed even if the optimizer
-            # wrapper markers were missing or not detected during streaming.
-            for i in range(0, len(user_summary_safe), 128):
-                await stream_queue.put_token(
-                    delta=user_summary_safe[i : i + 128],
-                    phase="optimizer",
-                    message_id=session_id,
-                )
-
-        try:
-            from ternion.utils.reviewer_output_capture import (
-                build_reviewer_capture_payload,
-                schedule_reviewer_output_capture,
+            internal_report, user_summary = _split_optimizer_output(response.content or "")
+            action_contract = _parse_optimizer_action_contract(internal_report)
+            required_change_items = list(action_contract.get("required_change_items") or [])
+            required_items_preview = _summarize_optimizer_required_change_items(
+                required_change_items
             )
 
-            schedule_reviewer_output_capture(
-                build_reviewer_capture_payload(
-                    session_id=str(state.get("session_id") or ""),
-                    stage=WorkflowPhase.OPTIMIZER.value,
-                    provider=provider.name,
+            if _should_retry_optimizer_action_protocol(action_contract):
+                if action_protocol_retry_used:
+                    fail_close_message = t(MessageKey.OPTIMIZER_ACTION_PROTOCOL_FAIL_CLOSE)
+                    fail_close_safe = sanitize_for_cursor_display(fail_close_message)
+                    log_manager.emit(
+                        level="WARN",
+                        category="GUARDRAIL",
+                        message=(
+                            "optimizer_action_protocol_fail_close | "
+                            f"session_id={session_id} | "
+                            f"protocol_valid={bool(action_contract.get('protocol_valid'))} | "
+                            f"action_required={action_contract.get('action_required')} | "
+                            f"action_taken={action_contract.get('action_taken') or '(missing)'} | "
+                            f"required_items={required_items_preview}"
+                        ),
+                    )
+                    with contextlib.suppress(Exception):
+                        session_store.update_session(
+                            session_id,
+                            append_guardrail_events=[
+                                {
+                                    "type": "optimizer_action_protocol_fail_close",
+                                    "phase": "optimizer",
+                                    "role": "optimizer",
+                                    "protocol_valid": bool(action_contract.get("protocol_valid")),
+                                    "action_required": action_contract.get("action_required"),
+                                    "action_taken": str(action_contract.get("action_taken") or ""),
+                                    "action_reason": str(
+                                        action_contract.get("action_reason") or ""
+                                    ),
+                                    "required_change_items": required_change_items[:20],
+                                    "required_change_items_truncated": len(required_change_items)
+                                    > 20,
+                                }
+                            ],
+                        )
+                    if stream_queue and fail_close_safe and not streamed_user_summary:
+                        for i in range(0, len(fail_close_safe), 128):
+                            await stream_queue.put_token(
+                                delta=fail_close_safe[i : i + 128],
+                                phase="optimizer",
+                                message_id=session_id,
+                            )
+
+                    try:
+                        from ternion.utils.reviewer_output_capture import (
+                            build_reviewer_capture_payload,
+                            schedule_reviewer_output_capture,
+                        )
+
+                        schedule_reviewer_output_capture(
+                            build_reviewer_capture_payload(
+                                session_id=str(state.get("session_id") or ""),
+                                stage=WorkflowPhase.OPTIMIZER.value,
+                                provider=provider.name,
+                                model=model,
+                                review_status="OPTIMIZER_ACTION_PROTOCOL_FAIL_CLOSE",
+                                review_feedback=internal_report or (response.content or ""),
+                                revision_count=int(state.get("revision_count", 0) or 0),
+                                generated_code=generated_code,
+                            )
+                        )
+                    except Exception as capture_exc:
+                        logger.debug(
+                            "optimizer_capture_scheduling_failed",
+                            exc_type=type(capture_exc).__name__,
+                            error=str(capture_exc),
+                        )
+
+                    return {
+                        **state,
+                        "current_phase": WorkflowPhase.COMPLETE.value,
+                        "optimizer_review_report": internal_report,
+                        "final_output": fail_close_safe,
+                        "thinking_logs": thinking_logs,
+                    }
+
+                action_protocol_retry_used = True
+                log_manager.emit(
+                    level="INFO",
+                    category="GUARDRAIL",
+                    message=(
+                        "optimizer_action_protocol_soft_retry | "
+                        f"session_id={session_id} | "
+                        f"protocol_valid={bool(action_contract.get('protocol_valid'))} | "
+                        f"action_required={action_contract.get('action_required')} | "
+                        f"action_taken={action_contract.get('action_taken') or '(missing)'} | "
+                        f"required_items={required_items_preview}"
+                    ),
+                )
+                with contextlib.suppress(Exception):
+                    session_store.update_session(
+                        session_id,
+                        append_guardrail_events=[
+                            {
+                                "type": "optimizer_action_protocol_soft_retry",
+                                "phase": "optimizer",
+                                "role": "optimizer",
+                                "protocol_valid": bool(action_contract.get("protocol_valid")),
+                                "action_required": action_contract.get("action_required"),
+                                "action_taken": str(action_contract.get("action_taken") or ""),
+                                "action_reason": str(action_contract.get("action_reason") or ""),
+                                "required_change_items": required_change_items[:20],
+                                "required_change_items_truncated": len(required_change_items) > 20,
+                            }
+                        ],
+                    )
+                last = messages[-1] if messages else None
+                feedback = _build_optimizer_action_protocol_feedback(action_contract)
+                if last and last.role == MessageRole.USER and isinstance(last.content, str):
+                    last.content += "\n\n[TERNION OPTIMIZER ACTION PROTOCOL]\n\n" + feedback
+                else:
+                    messages.append(
+                        ChatMessage(
+                            role=MessageRole.USER,
+                            content="[TERNION OPTIMIZER ACTION PROTOCOL]\n\n" + feedback,
+                        )
+                    )
+
+                response = await _call_with_timeout(
+                    provider=provider,
+                    messages=messages,
                     model=model,
-                    review_status="OPTIMIZER_REPORT",
-                    review_feedback=internal_report or (response.content or ""),
-                    revision_count=int(state.get("revision_count", 0) or 0),
-                    generated_code=generated_code,
+                    temperature=0.2,
+                    timeout_seconds=optimizer_timeout,
+                    **extra_kwargs,
                 )
-            )
-        except Exception as capture_exc:
-            logger.debug(
-                "optimizer_capture_scheduling_failed",
-                exc_type=type(capture_exc).__name__,
-                error=str(capture_exc),
-            )
+                if supports_text_tools and not response.tool_calls:
+                    parsed_tool_calls = extract_tool_calls_from_text(response.content)
+                    if parsed_tool_calls:
+                        response.tool_calls = parsed_tool_calls
+                        response.content = ""
+                streamed_user_summary = False
+                continue
 
-        return {
-            **state,
-            "current_phase": WorkflowPhase.COMPLETE.value,
-            "optimizer_review_report": internal_report,
-            "final_output": user_summary_safe,
-            "thinking_logs": thinking_logs,
-        }
+            if not (user_summary or "").strip():
+                user_summary = t(MessageKey.OPTIMIZER_OUTPUT_PROTOCOL_ERROR)
+            user_summary_safe = sanitize_for_cursor_display(user_summary)
+            if stream_queue and user_summary_safe and not streamed_user_summary:
+                for i in range(0, len(user_summary_safe), 128):
+                    await stream_queue.put_token(
+                        delta=user_summary_safe[i : i + 128],
+                        phase="optimizer",
+                        message_id=session_id,
+                    )
+
+            try:
+                from ternion.utils.reviewer_output_capture import (
+                    build_reviewer_capture_payload,
+                    schedule_reviewer_output_capture,
+                )
+
+                schedule_reviewer_output_capture(
+                    build_reviewer_capture_payload(
+                        session_id=str(state.get("session_id") or ""),
+                        stage=WorkflowPhase.OPTIMIZER.value,
+                        provider=provider.name,
+                        model=model,
+                        review_status="OPTIMIZER_REPORT",
+                        review_feedback=internal_report or (response.content or ""),
+                        revision_count=int(state.get("revision_count", 0) or 0),
+                        generated_code=generated_code,
+                    )
+                )
+            except Exception as capture_exc:
+                logger.debug(
+                    "optimizer_capture_scheduling_failed",
+                    exc_type=type(capture_exc).__name__,
+                    error=str(capture_exc),
+                )
+
+            return {
+                **state,
+                "current_phase": WorkflowPhase.COMPLETE.value,
+                "optimizer_review_report": internal_report,
+                "final_output": user_summary_safe,
+                "thinking_logs": thinking_logs,
+            }
     except RuntimeModelUnavailableError as e:
         error_msg = _build_runtime_model_unavailable_message(e)
         logger.warning(

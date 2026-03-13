@@ -4,6 +4,7 @@ import pytest
 
 from ternion.core.config_store import RoleConfig
 from ternion.core.models import MessageRole
+from ternion.utils.i18n import MessageKey, _load_translations, t
 from ternion.workflow.nodes import execution_node, optimizer_node
 from ternion.workflow.state import WorkflowPhase
 
@@ -248,6 +249,91 @@ async def test_execution_soft_retries_malformed_edit_notebook_tool_call_once() -
 
 
 @pytest.mark.asyncio
+async def test_execution_soft_retries_stabilized_document_rewrite_once() -> None:
+    adapter = AsyncMock()
+    adapter.name = "openai"
+    adapter.supports_native_tool_calls = False
+
+    first = MagicMock()
+    first.content = ""
+    first.tool_calls = [
+        {
+            "type": "function",
+            "function": {
+                "name": "Write",
+                "arguments": '{"path":"docs/spec.md","content":"rewrite"}',
+            },
+        }
+    ]
+    first.usage = {"prompt_tokens": 1, "completion_tokens": 1}
+
+    second = MagicMock()
+    second.content = ""
+    second.tool_calls = [
+        {
+            "type": "function",
+            "function": {
+                "name": "Write",
+                "arguments": '{"path":"src/app.py","content":"print(1)\\n"}',
+            },
+        }
+    ]
+    second.usage = {"prompt_tokens": 1, "completion_tokens": 1}
+
+    adapter.chat_completion.side_effect = [first, second]
+
+    state = {
+        "cursor_system_prompt": None,
+        "ternion_report": "Deliver both docs and code updates.",
+        "conversation_history": [{"role": "user", "content": "请同时更新文档并修改代码。"}],
+        "cursor_tools": [
+            {"type": "function", "function": {"name": "Write"}},
+        ],
+        "cursor_tool_choice": None,
+        "session_id": "test-stable-doc",
+        "execution_mode": "ternion_full",
+        "revision_count": 0,
+        "review_feedback": "",
+        "generated_code": "",
+        "evidence_bundle": "EVIDENCE_BUNDLE:\n- None",
+        "evidence_gaps": "EVIDENCE_GAPS:\n- None",
+        "evidence_chain_index": [],
+        "evidence_topup_round": 0,
+        "stabilized_document_paths": ["/repo/docs/spec.md"],
+        "workspace_root": "/repo",
+        "thinking_logs": [],
+        "errors": [],
+    }
+
+    with (
+        patch("ternion.workflow.nodes.config_store") as mock_config_store,
+        patch("ternion.workflow.nodes.provider_manager") as mock_provider_mgr,
+    ):
+        mock_config_store.get_role_config.return_value = RoleConfig(
+            provider="openai",
+            model="gpt-4",
+        )
+        mock_provider_mgr.get_provider_for_role.return_value = adapter
+
+        out = await execution_node(state)
+
+    assert adapter.chat_completion.call_count == 2
+    assert out.get("current_phase") == WorkflowPhase.EXECUTION.value
+    tool_calls = out.get("pending_tool_calls") or []
+    assert tool_calls and tool_calls[0]["function"]["name"] == "Write"
+    assert '"src/app.py"' in tool_calls[0]["function"]["arguments"]
+
+    second_call_messages = adapter.chat_completion.call_args_list[1].kwargs["messages"]
+    last_user = next(
+        (m for m in reversed(second_call_messages) if m.role == MessageRole.USER), None
+    )
+    assert last_user is not None
+    assert isinstance(last_user.content, str)
+    assert "[TERNION DOCUMENT STABILITY GUARDRAIL]" in last_user.content
+    assert "docs/spec.md" in last_user.content
+
+
+@pytest.mark.asyncio
 async def test_optimizer_soft_retries_malformed_edit_notebook_tool_call_once() -> None:
     adapter = AsyncMock()
     adapter.name = "openai"
@@ -328,3 +414,182 @@ async def test_optimizer_soft_retries_malformed_edit_notebook_tool_call_once() -
     assert isinstance(last_user.content, str)
     assert "[TERNION TOOL CALL VALIDATION]" in last_user.content
     assert "target_notebook" in last_user.content
+
+
+@pytest.mark.asyncio
+async def test_optimizer_soft_retries_action_protocol_violation_once() -> None:
+    adapter = AsyncMock()
+    adapter.name = "openai"
+    adapter.supports_native_tool_calls = False
+
+    first = MagicMock()
+    first.content = (
+        "TERNION_OPTIMIZER_INTERNAL_REPORT_BEGIN\n"
+        "ACTION_REQUIRED: true\n"
+        "ACTION_TAKEN: none\n"
+        "ACTION_REASON: Slides comments coverage is still missing.\n"
+        "REQUIRED_CHANGE_ITEMS:\n"
+        "- Add Slides comments coverage to acceptance summary\n"
+        "- None\n"
+        "TERNION_OPTIMIZER_INTERNAL_REPORT_END\n"
+        "TERNION_OPTIMIZER_USER_SUMMARY_BEGIN\n"
+        "## Summary\n"
+        "- Missing Slides comments coverage\n"
+        "TERNION_OPTIMIZER_USER_SUMMARY_END\n"
+    )
+    first.tool_calls = []
+    first.usage = {"prompt_tokens": 1, "completion_tokens": 1}
+
+    second = MagicMock()
+    second.content = ""
+    second.tool_calls = [
+        {
+            "type": "function",
+            "function": {
+                "name": "Write",
+                "arguments": '{"path":"/tmp/fix.md","contents":"updated"}',
+            },
+        }
+    ]
+    second.usage = {"prompt_tokens": 1, "completion_tokens": 1}
+
+    adapter.chat_completion.side_effect = [first, second]
+
+    mock_user_config = MagicMock()
+    mock_user_config.language = "en"
+    mock_user_config.browser_language = "en"
+
+    state = {
+        "current_phase": WorkflowPhase.OPTIMIZER.value,
+        "execution_mode": "ternion_full",
+        "ternion_report": "REPORT",
+        "generated_code": "WRITER_OUTPUT",
+        "conversation_history": [{"role": "user", "content": "do it"}],
+        "cursor_tools": [
+            {"type": "function", "function": {"name": "Write"}},
+        ],
+        "cursor_tool_choice": None,
+        "session_id": "sess-action-retry",
+    }
+
+    with (
+        patch("ternion.workflow.nodes.config_store") as mock_config_store,
+        patch("ternion.workflow.nodes.provider_manager") as mock_provider_mgr,
+    ):
+        mock_config_store.load.return_value = mock_user_config
+        mock_config_store.get_role_config.return_value = RoleConfig(
+            provider="openai",
+            model="gpt-4",
+        )
+        mock_provider_mgr.get_provider_for_role.return_value = adapter
+
+        out = await optimizer_node(state)
+
+    assert adapter.chat_completion.call_count == 2
+    assert out.get("current_phase") == WorkflowPhase.OPTIMIZER.value
+    tool_calls = out.get("pending_tool_calls") or []
+    assert tool_calls and tool_calls[0]["function"]["name"] == "Write"
+
+    second_call_messages = adapter.chat_completion.call_args_list[1].kwargs["messages"]
+    last_user = next(
+        (m for m in reversed(second_call_messages) if m.role == MessageRole.USER), None
+    )
+    assert last_user is not None
+    assert isinstance(last_user.content, str)
+    assert "[TERNION OPTIMIZER ACTION PROTOCOL]" in last_user.content
+    assert "Slides comments coverage" in last_user.content
+
+
+@pytest.mark.asyncio
+async def test_optimizer_fail_closes_after_second_action_protocol_violation() -> None:
+    adapter = AsyncMock()
+    adapter.name = "openai"
+    adapter.supports_native_tool_calls = False
+
+    violation_content = (
+        "TERNION_OPTIMIZER_INTERNAL_REPORT_BEGIN\n"
+        "ACTION_REQUIRED: true\n"
+        "ACTION_TAKEN: none\n"
+        "ACTION_REASON: Slides comments coverage is still missing.\n"
+        "REQUIRED_CHANGE_ITEMS:\n"
+        "- Add Slides comments coverage to acceptance summary\n"
+        "TERNION_OPTIMIZER_INTERNAL_REPORT_END\n"
+        "TERNION_OPTIMIZER_USER_SUMMARY_BEGIN\n"
+        "## Summary\n"
+        "- Missing Slides comments coverage\n"
+        "TERNION_OPTIMIZER_USER_SUMMARY_END\n"
+    )
+
+    first = MagicMock()
+    first.content = violation_content
+    first.tool_calls = []
+    first.usage = {"prompt_tokens": 1, "completion_tokens": 1}
+
+    second = MagicMock()
+    second.content = violation_content
+    second.tool_calls = []
+    second.usage = {"prompt_tokens": 1, "completion_tokens": 1}
+
+    adapter.chat_completion.side_effect = [first, second]
+
+    mock_user_config = MagicMock()
+    mock_user_config.language = "en"
+    mock_user_config.browser_language = "en"
+
+    state = {
+        "current_phase": WorkflowPhase.OPTIMIZER.value,
+        "execution_mode": "ternion_full",
+        "ternion_report": "REPORT",
+        "generated_code": "WRITER_OUTPUT",
+        "conversation_history": [{"role": "user", "content": "do it"}],
+        "cursor_tools": [
+            {"type": "function", "function": {"name": "Write"}},
+        ],
+        "cursor_tool_choice": None,
+        "session_id": "sess-action-fail-close",
+    }
+
+    with (
+        patch("ternion.workflow.nodes.config_store") as mock_config_store,
+        patch("ternion.workflow.nodes.provider_manager") as mock_provider_mgr,
+        patch("ternion.workflow.nodes.session_store.update_session") as mock_update_session,
+        patch("ternion.workflow.nodes.log_manager.emit") as mock_log_emit,
+    ):
+        mock_config_store.load.return_value = mock_user_config
+        mock_config_store.get_role_config.return_value = RoleConfig(
+            provider="openai",
+            model="gpt-4",
+        )
+        mock_provider_mgr.get_provider_for_role.return_value = adapter
+
+        out = await optimizer_node(state)
+
+    assert adapter.chat_completion.call_count == 2
+    assert out.get("current_phase") == WorkflowPhase.COMPLETE.value
+    assert out.get("optimizer_review_report")
+    assert out.get("final_output") == t(MessageKey.OPTIMIZER_ACTION_PROTOCOL_FAIL_CLOSE)
+    assert not out.get("pending_tool_calls")
+
+    guardrail_events = [
+        event
+        for call in mock_update_session.call_args_list
+        for event in (call.kwargs.get("append_guardrail_events") or [])
+    ]
+    assert any(e.get("type") == "optimizer_action_protocol_soft_retry" for e in guardrail_events)
+    fail_close_event = next(
+        e for e in guardrail_events if e.get("type") == "optimizer_action_protocol_fail_close"
+    )
+    assert fail_close_event["required_change_items"] == [
+        "Add Slides comments coverage to acceptance summary"
+    ]
+
+    log_messages = [call.kwargs.get("message", "") for call in mock_log_emit.call_args_list]
+    assert any("optimizer_action_protocol_fail_close" in msg for msg in log_messages)
+    assert any("Slides comments coverage" in msg for msg in log_messages)
+
+
+def test_optimizer_action_protocol_fail_close_is_translated_for_all_languages() -> None:
+    translations = _load_translations()
+
+    for lang in ("en", "zh", "es", "fr", "de", "ja", "ko"):
+        assert MessageKey.OPTIMIZER_ACTION_PROTOCOL_FAIL_CLOSE.value in translations[lang]

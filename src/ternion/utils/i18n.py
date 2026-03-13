@@ -40,6 +40,7 @@ class MessageKey(str, Enum):
     EXECUTION_ERROR = "execution_error"
     OPTIMIZER_START = "optimizer_start"
     OPTIMIZER_OUTPUT_PROTOCOL_ERROR = "optimizer_output_protocol_error"
+    OPTIMIZER_ACTION_PROTOCOL_FAIL_CLOSE = "optimizer_action_protocol_fail_close"
     REVIEW_START = "review_start"
     REVIEW_APPROVED = "review_approved"
     REVIEW_REVISION = "review_revision"
@@ -250,4 +251,3 @@ def t(key: MessageKey, **kwargs: str) -> str:
         return template.format(**kwargs)
     except KeyError:
         return template  # Return unformatted on error
-

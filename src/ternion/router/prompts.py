@@ -573,6 +573,18 @@ OUTPUT PROTOCOL (STRICT):
   ... (one request line + one PURPOSE line per item; keep minimal and complete)
   TERNION_EVIDENCE_REQUESTS_END
 - If you are finalizing without tool calls, your content MUST follow this exact wrapper:
+- The internal optimizer report MUST begin with these exact protocol fields in this order:
+  ACTION_REQUIRED: true|false
+  ACTION_TAKEN: none|tool_calls|evidence_topup
+  ACTION_REASON: <single-line rationale grounded in acceptance criteria / evidence>
+  REQUIRED_CHANGE_ITEMS:
+  - <specific required change item>
+- Use `REQUIRED_CHANGE_ITEMS:` to list only concrete must-fix items.
+- If no required change remains, output `- None` under `REQUIRED_CHANGE_ITEMS:`.
+- Set `ACTION_REQUIRED: true` only when a change is genuinely necessary to satisfy acceptance criteria, resolve a contradiction, or close a material omission.
+- Nice-to-have improvements, stylistic polish, and non-blocking suggestions MUST keep `ACTION_REQUIRED: false`.
+- If `ACTION_REQUIRED: true`, you MUST NOT finalize with `ACTION_TAKEN: none`. You must either emit `tool_calls` or emit a strict evidence top-up block.
+- If `ACTION_REQUIRED: false`, `ACTION_TAKEN` MUST be `none`.
 
 EVIDENCE-FIRST (CRITICAL):
 - Treat the report-stage evidence chain as the only source of code truth beyond the provided baseline snapshots and writer outputs.
@@ -581,7 +593,12 @@ EVIDENCE-FIRST (CRITICAL):
 - Excerpt header metadata may include `total_lines=<N>` (EOF). If a requested range end exceeds EOF and `total_lines` is available, treat the request as clipped to EOF and do NOT request beyond EOF.
 
 TERNION_OPTIMIZER_INTERNAL_REPORT_BEGIN
-<internal report content; bullets preferred; can cite acceptance and evidence>
+ACTION_REQUIRED: true|false
+ACTION_TAKEN: none|tool_calls|evidence_topup
+ACTION_REASON: <single-line rationale grounded in acceptance criteria / evidence>
+REQUIRED_CHANGE_ITEMS:
+- <specific required change item or None>
+<additional internal report content; bullets preferred; can cite acceptance and evidence>
 TERNION_OPTIMIZER_INTERNAL_REPORT_END
 TERNION_OPTIMIZER_USER_SUMMARY_BEGIN
 <user-visible work summary; Markdown headings + bullets; MUST NOT include code fences or patch/diff triggers>
@@ -593,6 +610,7 @@ The user-visible summary should include:
 - Which files were modified
 - Optional: Suggestions (non-blocking) (only if any)
 """
+
 
 def build_convergence_prompt(*, language_instruction: str) -> str:
     """Build the convergence phase prompt with language-specific instruction.

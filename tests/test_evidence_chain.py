@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from ternion.utils.evidence_chain import (
+    canonicalize_evidence_requests_text,
     compute_missing_ranges,
     is_deterministic_range_request,
     merge_adjacent_or_overlapping_ranges,
@@ -481,6 +482,36 @@ def test_parse_evidence_requests_accepts_file_field_and_strips_cn_annotation() -
     )
     assert len(entries) == 1
     assert entries[0].path == "~/.ternion/usage.json"
+
+
+def test_parse_evidence_requests_ignores_unstructured_noise_lines() -> None:
+    entries = parse_evidence_requests(
+        "Please inspect the file before editing.\n"
+        "- [P0] path=src/app.py:10-20\n"
+        "PURPOSE: Verify handler logic.\n"
+        "<file_write path='src/app.py'>\n"
+    )
+    assert len(entries) == 1
+    assert entries[0].request == "[P0] path=src/app.py:10-20"
+    assert entries[0].purpose == "Verify handler logic."
+
+
+def test_canonicalize_evidence_requests_text_drops_noise_and_normalizes_lines() -> None:
+    text = (
+        "Narrative that should be ignored.\n"
+        "- [P0] path=src/app.py:10-20\n"
+        "- PURPOSE: Verify handler logic.\n"
+        "fake xml tag\n"
+        "- [P1] file=docs/spec.md\n"
+        "PURPOSE: Confirm the documented API shape.\n"
+    )
+    canonical = canonicalize_evidence_requests_text(text)
+    assert canonical == (
+        "- [P0] path=src/app.py:10-20\n"
+        "PURPOSE: Verify handler logic.\n"
+        "- [P1] file=docs/spec.md\n"
+        "PURPOSE: Confirm the documented API shape."
+    )
 
 
 def test_reconcile_matches_relative_request_to_absolute_evidence_path() -> None:
