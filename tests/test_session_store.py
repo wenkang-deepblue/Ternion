@@ -159,9 +159,11 @@ class TestSessionStore:
 
     def test_create_session(self, store: SessionStore) -> None:
         """Should create a new session with correct fields."""
+        workspace_root = "/tmp/test-workspace"
         session = store.create_session(
             ternion_report="Test report content",
             execution_mode=ExecutionMode.CURSOR_HANDOFF,
+            workspace_root=workspace_root,
         )
 
         assert len(session.session_id) == 12
@@ -169,6 +171,7 @@ class TestSessionStore:
         assert session.execution_mode == ExecutionMode.CURSOR_HANDOFF
         assert session.ternion_report == "Test report content"
         assert session.report_hash == compute_report_hash("Test report content")
+        assert session.workspace_root == workspace_root
 
     def test_create_session_persists_to_file(
         self, store: SessionStore, temp_sessions_dir: Path

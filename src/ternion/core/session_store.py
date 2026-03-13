@@ -124,6 +124,7 @@ class Session:
     cursor_system_prompt: str = ""
     cursor_tools: list[dict[str, Any]] = field(default_factory=list)
     cursor_tool_choice: Any | None = None
+    workspace_root: str = ""
     execution_messages: list[dict[str, Any]] = field(default_factory=list)
     pending_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     # Step 2: When a tool_calls response contains both mutation tools and shell verification,
@@ -195,6 +196,7 @@ class Session:
             data["ternion_report_safe"] = sanitize_for_cursor_display(raw_report)
 
         data.setdefault("confirmation_reason", None)
+        data.setdefault("workspace_root", "")
         data.setdefault("evidence_topup_round", 0)
         data.setdefault("report_evidence_resume_phase", "")
         data.setdefault("tool_call_index", {})
@@ -366,6 +368,7 @@ class SessionStore:
         cursor_system_prompt: str = "",
         cursor_tools: list[dict[str, Any]] | None = None,
         cursor_tool_choice: Any | None = None,
+        workspace_root: str = "",
         execution_messages: list[dict[str, Any]] | None = None,
         pending_tool_calls: list[dict[str, Any]] | None = None,
         deferred_tool_calls: list[dict[str, Any]] | None = None,
@@ -433,6 +436,7 @@ class SessionStore:
             cursor_system_prompt=cursor_system_prompt,
             cursor_tools=list(cursor_tools or []),
             cursor_tool_choice=cursor_tool_choice,
+            workspace_root=str(workspace_root or ""),
             execution_messages=list(execution_messages or []),
             pending_tool_calls=pending_calls,
             deferred_tool_calls=list(deferred_tool_calls or []),
@@ -527,6 +531,7 @@ class SessionStore:
         cursor_system_prompt: str | None = None,
         cursor_tools: list[dict[str, Any]] | None = None,
         cursor_tool_choice: Any | None = None,
+        workspace_root: str | None = None,
         execution_messages: list[dict[str, Any]] | None = None,
         pending_tool_calls: list[dict[str, Any]] | None = None,
         deferred_tool_calls: list[dict[str, Any]] | None = None,
@@ -631,6 +636,8 @@ class SessionStore:
             session.cursor_tools = cursor_tools
         if cursor_tool_choice is not None:
             session.cursor_tool_choice = cursor_tool_choice
+        if workspace_root is not None:
+            session.workspace_root = str(workspace_root or "")
         if execution_messages is not None:
             session.execution_messages = execution_messages
         if pending_tool_calls is not None:

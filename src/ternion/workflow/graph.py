@@ -262,6 +262,7 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
             )
         ],
         "has_images": context.has_images,
+        "workspace_root": getattr(context, "workspace_root", ""),
         "current_phase": WorkflowPhase.EVIDENCE.value,
         # Session management (Human-in-the-Loop)
         "session_id": getattr(context, "session_id", ""),
@@ -373,6 +374,7 @@ async def resume_report_evidence(
             )
         ],
         "has_images": context.has_images,
+        "workspace_root": getattr(context, "workspace_root", ""),
         "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
         # Session management (Human-in-the-Loop)
         "session_id": getattr(context, "session_id", ""),

@@ -38,6 +38,7 @@ class DeliverableReason(str, Enum):
     """Reason codes for deliverable policy classification."""
 
     EMPTY_INPUT = "empty_input"
+    EXPLICIT_BOUNDARY = "explicit_boundary"
     EXPLICIT_ANALYSIS_ONLY = "explicit_analysis_only"
     DOC_ONLY_WITH_CODE_SIGNALS = "doc_only_with_code_signals"
     EXPLICIT_DOC_ONLY = "explicit_doc_only"
@@ -53,6 +54,30 @@ def _has_any_pattern(text: str, patterns: list[str]) -> bool:
     if not text:
         return False
     return any(re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE) for pattern in patterns)
+
+
+def extract_explicit_deliverable_boundary(text: str) -> DeliverableType | None:
+    """Extract an explicit deliverable boundary marker from free-form text."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return None
+
+    for raw_line in normalized.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lower = line.lower()
+        if "deliverable boundary" not in lower and "交付物边界" not in line:
+            continue
+        match = re.search(
+            r"[:：]\s*`?(doc-only|code-change|mixed|analysis-only)`?",
+            line,
+            flags=re.IGNORECASE | re.UNICODE,
+        )
+        if not match:
+            continue
+        return DeliverableType(match.group(1).strip().lower())
+    return None
 
 
 @dataclass(frozen=True)
@@ -148,6 +173,28 @@ def resolve_deliverable_policy(user_message: str, ternion_report: str) -> Delive
     4) Implicit report signals
     5) Default to code-change
     """
+    explicit_user_boundary = extract_explicit_deliverable_boundary(user_message)
+    if explicit_user_boundary is not None:
+        return _build_policy(
+            _DeliverableSignal(
+                explicit_user_boundary,
+                True,
+                DeliverableReason.EXPLICIT_BOUNDARY.value,
+                "user_explicit_boundary",
+            )
+        )
+
+    explicit_report_boundary = extract_explicit_deliverable_boundary(ternion_report)
+    if explicit_report_boundary is not None:
+        return _build_policy(
+            _DeliverableSignal(
+                explicit_report_boundary,
+                True,
+                DeliverableReason.EXPLICIT_BOUNDARY.value,
+                "report_explicit_boundary",
+            )
+        )
+
     user_signal = _classify_signals(user_message, source="user_message")
     if user_signal.explicit and user_signal.deliverable_type is not None:
         return _build_policy(user_signal)
@@ -177,7 +224,7 @@ def _build_policy(signal: _DeliverableSignal) -> DeliverablePolicy:
     if deliverable_type == DeliverableType.ANALYSIS_ONLY:
         allowed_scope = "none"
     elif deliverable_type == DeliverableType.DOC_ONLY:
-        allowed_scope = "docs/**"
+        allowed_scope = "workspace-document-files"
     else:
         allowed_scope = "repo/**"
 
@@ -201,6 +248,7 @@ def format_deliverable_policy_for_prompt(policy: DeliverablePolicy) -> str:
         "RULES:",
         "- Classify the deliverable type before acting, then follow this policy strictly.",
         "- If DELIVERABLE_TYPE=analysis-only, do NOT call mutation tools or write files.",
-        "- If DELIVERABLE_TYPE=doc-only, only write under docs/**.",
+        "- If DELIVERABLE_TYPE=doc-only, only write document-like files inside the current workspace.",
+        "- If DELIVERABLE_TYPE=doc-only, do NOT modify src/**, web/**, tests/**, config files, or code files.",
     ]
     return "\n".join(lines).strip()

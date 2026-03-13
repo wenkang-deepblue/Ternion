@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from ternion.core.config_store import RoleConfig
 from ternion.core.exceptions import RuntimeModelUnavailableError
+from ternion.core.models import ChatMessage, MessageRole
 from ternion.server.app import app
 
 
@@ -492,7 +493,7 @@ class TestChatCompletions:
             message = data["choices"][0]["message"]
             content = message.get("content") or ""
             assert "doc-only" in content
-            assert "docs/**" in content
+            assert "workspace-document-files" in content
             assert "src/app.py" in content
             assert not message.get("tool_calls")
 
@@ -1111,7 +1112,24 @@ class TestChatCompletions:
         )
         deliverable_type, allowed_scope = _resolve_deliverable_policy_from_context([], report)
         assert deliverable_type == DeliverableType.DOC_ONLY
-        assert allowed_scope == "docs/**"
+        assert allowed_scope == "workspace-document-files"
+
+    def test_explicit_report_boundary_locks_doc_only_from_context(self) -> None:
+        """Explicit deliverable boundary should win over code-heavy report language."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _resolve_deliverable_policy_from_context
+
+        report = (
+            "## Scope & Non-Goals\n"
+            "- **Deliverable Boundary (MANDATORY)**: `doc-only`\n"
+            "- Cover API changes, implementation details, and database design.\n"
+            "## Fix Plan / Recommendation\n"
+            "- Discuss src/app.py and web/src/App.tsx in the document.\n"
+        )
+
+        deliverable_type, allowed_scope = _resolve_deliverable_policy_from_context([], report)
+        assert deliverable_type == DeliverableType.DOC_ONLY
+        assert allowed_scope == "workspace-document-files"
 
     def test_doc_only_enforces_write_scope_on_src_mutation(self) -> None:
         """Doc-only policy should block src mutations in execution guardrail."""
@@ -1136,23 +1154,89 @@ class TestChatCompletions:
 
         assert filtered == []
         assert deliverable_type == DeliverableType.DOC_ONLY
-        assert allowed_scope == "docs/**"
+        assert allowed_scope == "workspace-document-files"
         assert message is not None
         assert "doc-only" in message
-        assert "docs/**" in message
+        assert "workspace-document-files" in message
         assert "src/app.py" in message
 
-    def test_code_change_blocks_outside_repo_mutation(self) -> None:
-        """Code-change policy should block mutations outside project root."""
+    def test_doc_only_allows_workspace_root_markdown(self, tmp_path: Path) -> None:
+        """Doc-only policy should allow document files in the workspace root."""
         from ternion.core.deliverable_policy import DeliverableType
         from ternion.server.routes import _enforce_deliverable_policy
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": '{"file_path":"README.md","content":"# spec"}',
+                },
+            }
+        ]
+
+        filtered, message, deliverable_type, allowed_scope = _enforce_deliverable_policy(
+            workflow_phase="execution",
+            tool_calls=tool_calls,
+            conversation_history=[{"role": "user", "content": "doc-only request"}],
+            ternion_report="Scope: documentation only. Non-goals: no code changes.",
+            workspace_root=str(workspace),
+        )
+
+        assert filtered == tool_calls
+        assert message is None
+        assert deliverable_type == DeliverableType.DOC_ONLY
+        assert allowed_scope == "workspace-document-files"
+
+    def test_doc_only_blocks_config_file_in_workspace(self, tmp_path: Path) -> None:
+        """Doc-only policy should reject config-like files even inside the workspace."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _enforce_deliverable_policy
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": '{"file_path":"pyproject.toml","content":"[tool]"}',
+                },
+            }
+        ]
+
+        filtered, message, deliverable_type, allowed_scope = _enforce_deliverable_policy(
+            workflow_phase="execution",
+            tool_calls=tool_calls,
+            conversation_history=[{"role": "user", "content": "doc-only request"}],
+            ternion_report="Scope: documentation only. Non-goals: no code changes.",
+            workspace_root=str(workspace),
+        )
+
+        assert filtered == []
+        assert message is not None
+        assert deliverable_type == DeliverableType.DOC_ONLY
+        assert allowed_scope == "workspace-document-files"
+        assert "pyproject.toml" in message
+
+    def test_code_change_blocks_outside_workspace_mutation(self, tmp_path: Path) -> None:
+        """Code-change policy should block mutations outside the request workspace."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _enforce_deliverable_policy
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        outside = tmp_path / "other" / "outside.py"
+        outside.parent.mkdir()
 
         tool_calls = [
             {
                 "type": "function",
                 "function": {
                     "name": "Write",
-                    "arguments": '{"file_path":"/tmp/outside.py","content":"x"}',
+                    "arguments": f'{{"file_path":"{outside}","content":"x"}}',
                 },
             }
         ]
@@ -1161,6 +1245,7 @@ class TestChatCompletions:
             tool_calls=tool_calls,
             conversation_history=[{"role": "user", "content": "please update code"}],
             ternion_report="REPORT",
+            workspace_root=str(workspace),
         )
 
         assert filtered == []
@@ -1168,21 +1253,136 @@ class TestChatCompletions:
         assert allowed_scope == "repo/**"
         assert message is not None
         assert "repo/**" in message
-        assert "/tmp/outside.py" in message
+        assert str(outside) in message
 
-    def test_workspace_relative_path_uses_project_root(self, tmp_path: Path) -> None:
-        """Relative path resolution should anchor to project root, not cwd."""
-        from ternion.server.routes import _resolve_project_root, _workspace_relative_path
+    def test_code_change_allows_workspace_src_mutation(self, tmp_path: Path) -> None:
+        """Code-change policy should allow code mutations inside the workspace."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _enforce_deliverable_policy
 
-        root = _resolve_project_root()
-        docs_path = (root / "docs" / "development_log.md").resolve()
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": '{"file_path":"src/app.py","content":"x"}',
+                },
+            }
+        ]
+
+        filtered, message, deliverable_type, allowed_scope = _enforce_deliverable_policy(
+            workflow_phase="execution",
+            tool_calls=tool_calls,
+            conversation_history=[{"role": "user", "content": "please update code"}],
+            ternion_report="Fix Plan: update code.",
+            workspace_root=str(workspace),
+        )
+
+        assert filtered == tool_calls
+        assert message is None
+        assert deliverable_type == DeliverableType.CODE_CHANGE
+        assert allowed_scope == "repo/**"
+
+    def test_mixed_allows_workspace_doc_and_code_mutation(self, tmp_path: Path) -> None:
+        """Mixed policy should allow code or document writes inside the workspace."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _enforce_deliverable_policy
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": '{"file_path":"web/src/App.tsx","content":"x"}',
+                },
+            }
+        ]
+
+        filtered, message, deliverable_type, allowed_scope = _enforce_deliverable_policy(
+            workflow_phase="execution",
+            tool_calls=tool_calls,
+            conversation_history=[{"role": "user", "content": "请更新文档并修复代码。"}],
+            ternion_report="Deliver both document updates and code changes.",
+            workspace_root=str(workspace),
+        )
+
+        assert filtered == tool_calls
+        assert message is None
+        assert deliverable_type == DeliverableType.MIXED
+        assert allowed_scope == "repo/**"
+
+    def test_workspace_relative_path_uses_workspace_root(self, tmp_path: Path) -> None:
+        """Relative path resolution should anchor to the request workspace."""
+        from ternion.server.routes import _workspace_relative_path
+
+        workspace = tmp_path / "workspace"
+        docs_path = workspace / "docs" / "development_log.md"
+        docs_path.parent.mkdir(parents=True)
+        docs_path.write_text("x", encoding="utf-8")
         original_cwd = Path.cwd()
         try:
             os.chdir(tmp_path)
-            relative = _workspace_relative_path(str(docs_path))
+            relative = _workspace_relative_path(str(docs_path), workspace_root=str(workspace))
         finally:
             os.chdir(original_cwd)
         assert relative == "docs/development_log.md"
+
+    def test_extract_workspace_root_prefers_explicit_workspace_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Explicit workspace metadata should win over other path hints."""
+        from ternion.server.routes import _extract_workspace_root_from_request_messages
+
+        workspace = tmp_path / "explicit-workspace"
+        workspace.mkdir()
+        other = tmp_path / "other"
+        other.mkdir()
+        messages = [
+            ChatMessage(
+                role=MessageRole.USER,
+                content=(
+                    "<user_info>\n"
+                    f"Workspace Path: {workspace}\n"
+                    "</user_info>\n"
+                    "<open_and_recently_viewed_files>\n"
+                    f"- {other / 'src' / 'app.py'} (total lines: 1)\n"
+                    "</open_and_recently_viewed_files>"
+                ),
+            )
+        ]
+
+        assert _extract_workspace_root_from_request_messages(messages) == str(workspace.resolve())
+
+    def test_extract_workspace_root_from_open_files_common_ancestor(
+        self, tmp_path: Path
+    ) -> None:
+        """Open file paths should infer the current workspace when explicit metadata is absent."""
+        from ternion.server.routes import _extract_workspace_root_from_request_messages
+
+        workspace = tmp_path / "inferred-workspace"
+        src_file = workspace / "src" / "app.py"
+        doc_file = workspace / "docs" / "spec.md"
+        src_file.parent.mkdir(parents=True)
+        doc_file.parent.mkdir(parents=True)
+        src_file.write_text("print('x')\n", encoding="utf-8")
+        doc_file.write_text("# spec\n", encoding="utf-8")
+        messages = [
+            ChatMessage(
+                role=MessageRole.USER,
+                content=(
+                    "<open_and_recently_viewed_files>\n"
+                    f"- {src_file} (total lines: 1)\n"
+                    f"- {doc_file} (total lines: 1)\n"
+                    "</open_and_recently_viewed_files>"
+                ),
+            )
+        ]
+
+        assert _extract_workspace_root_from_request_messages(messages) == str(workspace.resolve())
 
     def test_responses_alias_accepts_input_payload(self, client: TestClient) -> None:
         """

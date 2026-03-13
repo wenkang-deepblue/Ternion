@@ -3101,7 +3101,9 @@ async def convergence_node(state: TernionState) -> TernionState:
                 original_context={
                     "conversation_history": state.get("conversation_history", []),
                     "cursor_system_prompt": state.get("cursor_system_prompt"),
+                    "workspace_root": state.get("workspace_root", ""),
                 },
+                workspace_root=str(state.get("workspace_root", "") or ""),
                 evidence_bundle=str(state.get("evidence_bundle") or ""),
                 evidence_gaps=str(state.get("evidence_gaps") or ""),
                 evidence_requests=str(state.get("evidence_requests") or ""),
@@ -3388,7 +3390,9 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     original_context={
                         "conversation_history": state.get("conversation_history", []),
                         "cursor_system_prompt": state.get("cursor_system_prompt"),
+                        "workspace_root": state.get("workspace_root", ""),
                     },
+                    workspace_root=str(state.get("workspace_root", "") or ""),
                     evidence_bundle=str(state.get("evidence_bundle") or ""),
                     evidence_gaps=str(state.get("evidence_gaps") or ""),
                     evidence_requests=str(state.get("evidence_requests") or ""),
@@ -3496,7 +3500,9 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 original_context={
                     "conversation_history": state.get("conversation_history", []),
                     "cursor_system_prompt": state.get("cursor_system_prompt"),
+                    "workspace_root": state.get("workspace_root", ""),
                 },
+                workspace_root=str(state.get("workspace_root", "") or ""),
                 evidence_bundle=str(state.get("evidence_bundle") or ""),
                 evidence_gaps=str(state.get("evidence_gaps") or ""),
                 evidence_requests=str(state.get("evidence_requests") or ""),

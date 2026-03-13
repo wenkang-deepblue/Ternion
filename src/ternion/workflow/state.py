@@ -57,6 +57,7 @@ class TernionState(TypedDict, total=False):
     has_images: bool
     cursor_tools: list[dict[str, Any]] | None
     cursor_tool_choice: Any | None
+    workspace_root: str
 
     # Current phase
     current_phase: str
