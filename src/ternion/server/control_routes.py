@@ -176,6 +176,31 @@ def _get_provider_display_name(provider: str) -> str:
     return PROVIDER_DISPLAY_NAMES.get(provider, provider.title())
 
 
+def _canonicalize_config_roles(config: object) -> bool:
+    """Canonicalize role model IDs in an in-memory config object when possible."""
+    roles = getattr(config, "roles", None)
+    if not isinstance(roles, dict):
+        return False
+
+    changed = False
+    for role in roles.values():
+        provider = getattr(role, "provider", "")
+        model = getattr(role, "model", "")
+        if not provider or not model:
+            continue
+
+        catalog_model = model_catalog_service.get_model_cached(model)
+        if catalog_model is None or catalog_model.provider != provider:
+            continue
+        if catalog_model.id == model:
+            continue
+
+        role.model = catalog_model.id
+        changed = True
+
+    return changed
+
+
 async def _get_model_display_name(provider: str, model_id: str) -> str:
     """Get human-readable display name for a model."""
     model = model_catalog_service.get_model_cached(model_id)
@@ -225,6 +250,8 @@ async def get_config() -> dict:
 
     Returns safe version with masked API keys.
     """
+    config = config_store.load()
+    _canonicalize_config_roles(config)
     return config_store.to_safe_dict()
 
 
@@ -372,6 +399,7 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
     Accepts partial updates - only specified fields are updated.
     """
     config = config_store.load()
+    _canonicalize_config_roles(config)
 
     # Update roles
     if request.roles:
@@ -386,7 +414,7 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
             required_roles += ["writer", "reviewer"]
 
         # Validate only provided role updates (partial update supported)
-        validated_roles: dict[str, RoleUpdateRequest] = {}
+        validated_roles: dict[str, tuple[RoleUpdateRequest, CatalogModel]] = {}
         next_roles = dict(config.roles)
 
         for role_name in all_roles:
@@ -399,11 +427,14 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
             if role_update.provider not in enabled_providers:
                 log_manager.emit("ERROR", "USER_ACTION", f"Role update failed: Provider '{role_update.provider}' is not enabled")
                 raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
-            await _get_catalog_model_for_provider(role_update.provider, role_update.model)
-            validated_roles[role_name] = role_update
+            catalog_model = await _get_catalog_model_for_provider(
+                role_update.provider,
+                role_update.model,
+            )
+            validated_roles[role_name] = (role_update, catalog_model)
             next_roles[role_name] = RoleConfig(
                 provider=role_update.provider,
-                model=role_update.model,
+                model=catalog_model.id,
             )
 
         # Enforce that all required roles are fully configured after applying updates
@@ -448,9 +479,9 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
         # Commit updates only after validation succeeds
         config.roles = next_roles
 
-        for role_name, role_update in validated_roles.items():
+        for role_name, (role_update, catalog_model) in validated_roles.items():
             provider_display = _get_provider_display_name(role_update.provider)
-            model_display = await _get_model_display_name(role_update.provider, role_update.model)
+            model_display = await _get_model_display_name(role_update.provider, catalog_model.id)
             if role_name.startswith("ternion_"):
                 role_display = f"Ternion {role_name[-1].upper()}"
             else:

@@ -13,6 +13,28 @@ import ternion.core.model_catalog as model_catalog_module
 from ternion.core.model_catalog import CatalogSnapshot, LiteLLMModelCatalogService
 
 
+@pytest.fixture(autouse=True)
+def disable_provider_truth_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep catalog tests hermetic unless a test opts into provider truth."""
+
+    async def fake_fetch_provider_truth_index(
+        self: LiteLLMModelCatalogService,
+    ) -> dict[str, set[str] | None]:
+        return {
+            "openai": None,
+            "google": None,
+            "anthropic": None,
+        }
+
+    monkeypatch.setattr(
+        LiteLLMModelCatalogService,
+        "_fetch_provider_truth_index",
+        fake_fetch_provider_truth_index,
+    )
+
+
 @pytest.fixture
 def sample_catalog_payload() -> dict[str, dict[str, object]]:
     """Return a representative LiteLLM catalog payload fixture."""
@@ -149,6 +171,10 @@ async def test_get_snapshot_filters_models_and_formats_names(
     assert await service.is_model_available("google", "gemini-3-pro") is True
     assert await service.is_model_available("google", "gemini-3.1-pro-preview") is True
     assert await service.is_model_available("google", "gemini-2.5-pro-preview") is False
+
+    assert model.api_model_id == "claude-sonnet-4-5-20250929"
+    assert model.source_keys == ["claude-sonnet-4-5-20250929"]
+    assert model.verified_by_provider_metadata is False
 
 
 @pytest.mark.asyncio
@@ -1152,6 +1178,159 @@ async def test_legacy_anthropic_model_ids_are_supported(
         "claude-4-1-opus-latest"
     ]
     assert snapshot.models_by_provider["anthropic"][0].name == "Claude Opus 4.1"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_truth_deduplicates_snapshot_and_short_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anthropic truth should collapse raw duplicates onto one canonical API ID."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+    payload = {
+        "gpt-5.2-2025-12-11": {
+            "litellm_provider": "openai",
+            "mode": "chat",
+        },
+        "gemini-3-pro": {
+            "litellm_provider": "vertex_ai-language-models",
+            "mode": "chat",
+        },
+        "claude-opus-4-6": {
+            "litellm_provider": "anthropic",
+            "mode": "chat",
+            "input_cost_per_token": 0.005,
+        },
+        "claude-opus-4-6-20260205": {
+            "litellm_provider": "anthropic",
+            "mode": "chat",
+            "output_cost_per_token": 0.025,
+        },
+    }
+
+    async def fake_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return payload, "etag-anthropic-dedupe", False
+
+    async def fake_truth_index() -> dict[str, set[str] | None]:
+        return {
+            "openai": None,
+            "google": None,
+            "anthropic": {"claude-opus-4-6"},
+        }
+
+    monkeypatch.setattr(service, "_download_catalog_json", fake_download)
+    monkeypatch.setattr(service, "_fetch_provider_truth_index", fake_truth_index)
+
+    snapshot = await service.get_snapshot()
+
+    anthropic_models = snapshot.models_by_provider["anthropic"]
+    assert [model.id for model in anthropic_models] == ["claude-opus-4-6"]
+    assert anthropic_models[0].api_model_id == "claude-opus-4-6"
+    assert anthropic_models[0].source_keys == [
+        "claude-opus-4-6",
+        "claude-opus-4-6-20260205",
+    ]
+    assert anthropic_models[0].verified_by_provider_metadata is True
+    assert anthropic_models[0].input_cost_per_token == pytest.approx(0.005)
+    assert anthropic_models[0].output_cost_per_token == pytest.approx(0.025)
+    assert snapshot.index_by_source_key["claude-opus-4-6-20260205"].id == "claude-opus-4-6"
+    assert await service.is_model_available("anthropic", "claude-opus-4-6-20260205") is True
+
+
+@pytest.mark.asyncio
+async def test_anthropic_truth_keeps_dated_id_when_provider_only_exposes_dated_variant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anthropic truth should not blindly strip dates when only the dated ID exists."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+    payload = {
+        "gpt-5.2-2025-12-11": {
+            "litellm_provider": "openai",
+            "mode": "chat",
+        },
+        "gemini-3-pro": {
+            "litellm_provider": "vertex_ai-language-models",
+            "mode": "chat",
+        },
+        "claude-opus-4-8-20260405": {
+            "litellm_provider": "anthropic",
+            "mode": "chat",
+        },
+    }
+
+    async def fake_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return payload, "etag-anthropic-dated", False
+
+    async def fake_truth_index() -> dict[str, set[str] | None]:
+        return {
+            "openai": None,
+            "google": None,
+            "anthropic": {"claude-opus-4-8-20260405"},
+        }
+
+    monkeypatch.setattr(service, "_download_catalog_json", fake_download)
+    monkeypatch.setattr(service, "_fetch_provider_truth_index", fake_truth_index)
+
+    snapshot = await service.get_snapshot()
+
+    assert [model.id for model in snapshot.models_by_provider["anthropic"]] == [
+        "claude-opus-4-8-20260405"
+    ]
+    assert snapshot.models_by_provider["anthropic"][0].api_model_id == "claude-opus-4-8-20260405"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_truth_filters_candidate_when_neither_raw_nor_canonical_exist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anthropic candidates absent from provider truth should be excluded."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+    payload = {
+        "gpt-5.2-2025-12-11": {
+            "litellm_provider": "openai",
+            "mode": "chat",
+        },
+        "gemini-3-pro": {
+            "litellm_provider": "vertex_ai-language-models",
+            "mode": "chat",
+        },
+        "claude-opus-4-8-20260405": {
+            "litellm_provider": "anthropic",
+            "mode": "chat",
+        },
+    }
+
+    async def fake_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        assert etag is None
+        return payload, "etag-anthropic-filter", False
+
+    async def fake_truth_index() -> dict[str, set[str] | None]:
+        return {
+            "openai": None,
+            "google": None,
+            "anthropic": {"claude-opus-4-6"},
+        }
+
+    monkeypatch.setattr(service, "_download_catalog_json", fake_download)
+    monkeypatch.setattr(service, "_fetch_provider_truth_index", fake_truth_index)
+
+    snapshot = await service.get_snapshot()
+
+    assert snapshot.models_by_provider["anthropic"] == []
+    assert (
+        "claude-opus-4-8-20260405"
+        not in snapshot.index_by_source_key
+    )
 
 
 @pytest.mark.asyncio

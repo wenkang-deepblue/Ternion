@@ -37,6 +37,9 @@ def _build_catalog_model(
     model_id: str = "gpt-5.2-2025-12-11",
     provider: str = "openai",
     name: str = "GPT 5.2",
+    raw_key: str | None = None,
+    source_keys: list[str] | None = None,
+    api_model_id: str | None = None,
 ) -> CatalogModel:
     """Create a normalized catalog model for tests."""
     return CatalogModel(
@@ -44,7 +47,9 @@ def _build_catalog_model(
         name=name,
         provider=provider,
         mode="chat",
-        raw_key=model_id,
+        raw_key=raw_key or model_id,
+        source_keys=source_keys or [raw_key or model_id],
+        api_model_id=api_model_id or model_id,
     )
 
 
@@ -70,6 +75,51 @@ def _build_probe_result(
 
 class TestControlRoutesModelCatalog:
     """Tests for model catalog integration in control routes."""
+
+    def test_get_config_canonicalizes_legacy_role_model_ids(self) -> None:
+        """`GET /api/config` should expose canonical role model IDs to the UI."""
+        config = UserConfig()
+        config.execution_mode = "cursor_handoff"
+        config.roles["ternion_a"] = RoleConfig(
+            provider="anthropic",
+            model="claude-opus-4-6-20260205",
+        )
+        canonical_model = _build_catalog_model(
+            model_id="claude-opus-4-6",
+            provider="anthropic",
+            name="Claude Opus 4.6",
+            raw_key="claude-opus-4-6-20260205",
+            source_keys=["claude-opus-4-6", "claude-opus-4-6-20260205"],
+            api_model_id="claude-opus-4-6",
+        )
+
+        with (
+            patch(CONTROL_ROUTES_CONFIG_STORE) as mock_config_store,
+            patch(CONTROL_ROUTES_MODEL_CATALOG) as mock_catalog_service,
+        ):
+            mock_config_store.load.return_value = config
+            mock_catalog_service.get_model_cached.side_effect = (
+                lambda model_id: canonical_model
+                if model_id in {"claude-opus-4-6-20260205", "claude-opus-4-6"}
+                else None
+            )
+            mock_config_store.to_safe_dict.side_effect = lambda: {
+                "roles": {
+                    name: {"provider": role.provider, "model": role.model}
+                    for name, role in config.roles.items()
+                },
+                "execution_mode": config.execution_mode,
+            }
+
+            client = TestClient(app)
+            response = client.get("/api/config")
+
+            assert response.status_code == 200
+            assert (
+                response.json()["roles"]["ternion_a"]["model"]
+                == "claude-opus-4-6"
+            )
+            mock_config_store.save.assert_not_called()
 
     def test_get_models_uses_catalog_service(self) -> None:
         """`GET /api/models` should return the catalog payload."""
@@ -469,6 +519,118 @@ class TestControlRoutesModelCatalog:
                 provider="openai",
                 model="gpt-5.2-2025-12-11",
             )
+
+    def test_update_config_saves_canonical_model_id_for_legacy_source_key(self) -> None:
+        """`POST /api/config` should persist the canonical ID when a legacy source key is selected."""
+        config = UserConfig()
+        config.execution_mode = "cursor_handoff"
+        config.providers["anthropic"] = ProviderConfig(
+            api_keys=[ApiKeyEntry(id="anthropic-1", name="Anthropic", api_key="sk-ant")],
+            selected_key_id="anthropic-1",
+        )
+        canonical_model = _build_catalog_model(
+            model_id="claude-opus-4-6",
+            provider="anthropic",
+            name="Claude Opus 4.6",
+            raw_key="claude-opus-4-6-20260205",
+            source_keys=["claude-opus-4-6", "claude-opus-4-6-20260205"],
+            api_model_id="claude-opus-4-6",
+        )
+
+        with (
+            patch(CONTROL_ROUTES_CONFIG_STORE) as mock_config_store,
+            patch(CONTROL_ROUTES_MODEL_CATALOG) as mock_catalog_service,
+            patch(CONTROL_ROUTES_LOG_MANAGER) as mock_log_manager,
+            patch(CONTROL_ROUTES_PROBE_SERVICE) as mock_probe_service,
+        ):
+            mock_config_store.load.return_value = config
+            mock_config_store.get_enabled_providers.return_value = ["anthropic"]
+            mock_config_store.get_provider_api_key.return_value = "sk-ant"
+            mock_config_store.to_safe_dict.return_value = {"roles": "safe"}
+            mock_catalog_service.get_model_cached.side_effect = (
+                lambda model_id: canonical_model
+                if model_id in {"claude-opus-4-6-20260205", "claude-opus-4-6"}
+                else None
+            )
+            mock_probe_service.probe_model = AsyncMock(
+                return_value=_build_probe_result(
+                    provider="anthropic",
+                    model="claude-opus-4-6",
+                )
+            )
+            mock_log_manager.emit = MagicMock()
+
+            client = TestClient(app)
+            response = client.post(
+                "/api/config",
+                json={
+                    "execution_mode": "cursor_handoff",
+                    "roles": {
+                        "ternion_a": {"provider": "anthropic", "model": "claude-opus-4-6-20260205"},
+                        "ternion_b": {"provider": "anthropic", "model": "claude-opus-4-6-20260205"},
+                        "ternion_c": {"provider": "anthropic", "model": "claude-opus-4-6-20260205"},
+                        "arbiter": {"provider": "anthropic", "model": "claude-opus-4-6-20260205"},
+                    },
+                },
+            )
+
+            assert response.status_code == 200
+            mock_probe_service.probe_model.assert_awaited_once_with(
+                provider="anthropic",
+                model="claude-opus-4-6",
+                api_key="sk-ant",
+            )
+            saved_config = mock_config_store.save.call_args.args[0]
+            assert saved_config.roles["ternion_a"].model == "claude-opus-4-6"
+
+    def test_update_config_migrates_existing_legacy_role_ids_on_unrelated_save(self) -> None:
+        """Saving unrelated config fields should still migrate legacy role model IDs."""
+        config = UserConfig()
+        config.execution_mode = "cursor_handoff"
+        config.providers["anthropic"] = ProviderConfig(
+            api_keys=[ApiKeyEntry(id="anthropic-1", name="Anthropic", api_key="sk-ant")],
+            selected_key_id="anthropic-1",
+        )
+        config.roles["ternion_a"] = RoleConfig(
+            provider="anthropic",
+            model="claude-opus-4-6-20260205",
+        )
+        canonical_model = _build_catalog_model(
+            model_id="claude-opus-4-6",
+            provider="anthropic",
+            name="Claude Opus 4.6",
+            raw_key="claude-opus-4-6-20260205",
+            source_keys=["claude-opus-4-6", "claude-opus-4-6-20260205"],
+            api_model_id="claude-opus-4-6",
+        )
+
+        with (
+            patch(CONTROL_ROUTES_CONFIG_STORE) as mock_config_store,
+            patch(CONTROL_ROUTES_MODEL_CATALOG) as mock_catalog_service,
+            patch(CONTROL_ROUTES_LOG_MANAGER) as mock_log_manager,
+        ):
+            mock_config_store.load.return_value = config
+            mock_config_store.to_safe_dict.return_value = {"budget": "safe"}
+            mock_catalog_service.get_model_cached.side_effect = (
+                lambda model_id: canonical_model
+                if model_id == "claude-opus-4-6-20260205"
+                else None
+            )
+            mock_log_manager.emit = MagicMock()
+
+            client = TestClient(app)
+            response = client.post(
+                "/api/config",
+                json={
+                    "budget": {
+                        "monthly_limit_usd": 88,
+                    }
+                },
+            )
+
+            assert response.status_code == 200
+            saved_config = mock_config_store.save.call_args.args[0]
+            assert saved_config.roles["ternion_a"].model == "claude-opus-4-6"
 
     def test_update_config_does_not_save_when_probe_reports_model_unavailable(self) -> None:
         """`POST /api/config` should reject the save when provider probe fails."""

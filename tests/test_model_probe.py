@@ -13,6 +13,7 @@ from ternion.core.model_probe import (
     classify_runtime_model_unavailable,
     is_model_unavailable_error,
 )
+from ternion.utils.model_ids import normalize_anthropic_model_id_for_api
 
 ASYNC_OPENAI_PATCH = "ternion.core.model_probe.AsyncOpenAI"
 GENAI_CLIENT_PATCH = "ternion.core.model_probe.genai.Client"
@@ -44,6 +45,21 @@ def _build_http_status_error(status_code: int, message: str) -> httpx.HTTPStatus
 
 class TestModelAvailabilityProbeService:
     """Tests for provider-side model availability probing."""
+
+    def test_normalize_anthropic_model_id_for_api_latest_snapshot(self) -> None:
+        """Claude 4.6+ snapshot IDs should normalize to Anthropic's canonical API IDs."""
+        assert (
+            normalize_anthropic_model_id_for_api("claude-opus-4-6-20260205")
+            == "claude-opus-4-6"
+        )
+        assert (
+            normalize_anthropic_model_id_for_api("claude-sonnet-4-6-20260217")
+            == "claude-sonnet-4-6"
+        )
+        assert (
+            normalize_anthropic_model_id_for_api("claude-sonnet-4-5-20250929")
+            == "claude-sonnet-4-5-20250929"
+        )
 
     async def test_probe_openai_model_success(self) -> None:
         """OpenAI probe should succeed when ``models.retrieve`` returns normally."""
@@ -188,6 +204,59 @@ class TestModelAvailabilityProbeService:
         mock_client.get.assert_awaited_once()
         _, kwargs = mock_client.get.await_args
         assert kwargs["headers"]["x-api-key"] == "anthropic-key"
+
+    async def test_probe_anthropic_model_normalizes_latest_snapshot_id(self) -> None:
+        """Anthropic probe should call the API with the canonical 4.6+ model ID."""
+        service = ModelAvailabilityProbeService()
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_context = AsyncMock()
+        mock_context.__aenter__.return_value = mock_client
+        mock_context.__aexit__.return_value = None
+
+        with patch(HTTPX_ASYNC_CLIENT_PATCH, return_value=mock_context):
+            result = await service.probe_model(
+                provider="anthropic",
+                model="claude-opus-4-6-20260205",
+                api_key="anthropic-key",
+            )
+
+        assert result.ok is True
+        args, _ = mock_client.get.await_args
+        assert args[0] == "https://api.anthropic.com/v1/models/claude-opus-4-6"
+
+    async def test_probe_anthropic_model_prefers_catalog_api_model_id(self) -> None:
+        """Anthropic probe should prefer catalog-derived API IDs over raw source keys."""
+        service = ModelAvailabilityProbeService()
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_context = AsyncMock()
+        mock_context.__aenter__.return_value = mock_client
+        mock_context.__aexit__.return_value = None
+        catalog_model = MagicMock(
+            provider="anthropic",
+            id="claude-opus-4-8",
+            api_model_id="claude-opus-4-8",
+        )
+
+        with (
+            patch(HTTPX_ASYNC_CLIENT_PATCH, return_value=mock_context),
+            patch("ternion.core.model_probe.model_catalog_service") as mock_catalog_service,
+        ):
+            mock_catalog_service.get_model_cached.return_value = catalog_model
+            result = await service.probe_model(
+                provider="anthropic",
+                model="claude-opus-4-8-source",
+                api_key="anthropic-key",
+            )
+
+        assert result.ok is True
+        args, _ = mock_client.get.await_args
+        assert args[0] == "https://api.anthropic.com/v1/models/claude-opus-4-8"
 
     async def test_probe_anthropic_model_maps_404_to_model_unavailable(self) -> None:
         """Anthropic probe should map 404 responses to ``MODEL_UNAVAILABLE``."""

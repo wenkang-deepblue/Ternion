@@ -470,3 +470,227 @@ class TestOpenAIResponsesCompatibility:
 
         assert "temperature" not in mock_create.await_args.kwargs
 
+
+class TestAnthropicProviderModelNormalization:
+    """Tests for Anthropic API model ID normalization."""
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_normalizes_latest_snapshot_id(self) -> None:
+        """Anthropic chat completions should use the canonical 4.6+ API model ID."""
+        from ternion.providers.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+        response = type(
+            "MockAnthropicResponse",
+            (),
+            {
+                "content": [type("TextBlock", (), {"type": "text", "text": "ok"})()],
+                "usage": type(
+                    "MockUsage",
+                    (),
+                    {"input_tokens": 1, "output_tokens": 1},
+                )(),
+                "stop_reason": "end_turn",
+            },
+        )()
+
+        with (
+            patch.object(
+                provider._client.messages,
+                "create",
+                AsyncMock(return_value=response),
+            ) as mock_create,
+            patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
+            patch("ternion.providers.anthropic.budget_manager.record_usage"),
+        ):
+            await provider.chat_completion(
+                messages=messages,
+                model="claude-opus-4-6-20260205",
+            )
+
+        assert mock_create.await_args.kwargs["model"] == "claude-opus-4-6"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_prefers_catalog_api_model_id(self) -> None:
+        """Anthropic chat completions should prefer the catalog API model ID."""
+        from ternion.providers.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+        response = type(
+            "MockAnthropicResponse",
+            (),
+            {
+                "content": [type("TextBlock", (), {"type": "text", "text": "ok"})()],
+                "usage": type(
+                    "MockUsage",
+                    (),
+                    {"input_tokens": 1, "output_tokens": 1},
+                )(),
+                "stop_reason": "end_turn",
+            },
+        )()
+        catalog_model = type(
+            "MockCatalogModel",
+            (),
+            {
+                "provider": "anthropic",
+                "id": "claude-opus-4-8",
+                "api_model_id": "claude-opus-4-8",
+            },
+        )()
+
+        with (
+            patch.object(
+                provider._client.messages,
+                "create",
+                AsyncMock(return_value=response),
+            ) as mock_create,
+            patch("ternion.providers.anthropic.model_catalog_service") as mock_catalog_service,
+            patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
+            patch("ternion.providers.anthropic.budget_manager.record_usage"),
+        ):
+            mock_catalog_service.get_model_cached.return_value = catalog_model
+            await provider.chat_completion(
+                messages=messages,
+                model="claude-opus-4-8-source",
+            )
+
+        assert mock_create.await_args.kwargs["model"] == "claude-opus-4-8"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_stream_normalizes_latest_snapshot_id(self) -> None:
+        """Anthropic streaming calls should use the canonical 4.6+ API model ID."""
+        from ternion.providers.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+
+        class MockStreamContext:
+            """Minimal async stream context used by the Anthropic provider tests."""
+
+            def __init__(self) -> None:
+                self.text_stream = self._text_stream()
+
+            async def __aenter__(self) -> "MockStreamContext":
+                return self
+
+            async def __aexit__(
+                self,
+                exc_type: type[BaseException] | None,
+                exc: BaseException | None,
+                tb: object | None,
+            ) -> None:
+                return None
+
+            async def get_final_message(self) -> object:
+                return type(
+                    "MockFinalMessage",
+                    (),
+                    {
+                        "usage": type(
+                            "MockUsage",
+                            (),
+                            {"input_tokens": 1, "output_tokens": 1},
+                        )(),
+                        "content": [],
+                    },
+                )()
+
+            async def _text_stream(self) -> AsyncGenerator[str, None]:
+                yield "ok"
+
+        with (
+            patch.object(
+                provider._client.messages,
+                "stream",
+                return_value=MockStreamContext(),
+            ) as mock_stream,
+            patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
+            patch("ternion.providers.anthropic.budget_manager.record_usage"),
+        ):
+            chunks = [
+                chunk
+                async for chunk in provider.chat_completion_stream(
+                    messages=messages,
+                    model="claude-sonnet-4-6-20260217",
+                )
+            ]
+
+        assert chunks == ["ok"]
+        assert mock_stream.call_args.kwargs["model"] == "claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_stream_prefers_catalog_api_model_id(self) -> None:
+        """Anthropic streaming calls should prefer the catalog API model ID."""
+        from ternion.providers.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+        catalog_model = type(
+            "MockCatalogModel",
+            (),
+            {
+                "provider": "anthropic",
+                "id": "claude-sonnet-4-8",
+                "api_model_id": "claude-sonnet-4-8",
+            },
+        )()
+
+        class MockStreamContext:
+            """Minimal async stream context used by the Anthropic provider tests."""
+
+            def __init__(self) -> None:
+                self.text_stream = self._text_stream()
+
+            async def __aenter__(self) -> "MockStreamContext":
+                return self
+
+            async def __aexit__(
+                self,
+                exc_type: type[BaseException] | None,
+                exc: BaseException | None,
+                tb: object | None,
+            ) -> None:
+                return None
+
+            async def get_final_message(self) -> object:
+                return type(
+                    "MockFinalMessage",
+                    (),
+                    {
+                        "usage": type(
+                            "MockUsage",
+                            (),
+                            {"input_tokens": 1, "output_tokens": 1},
+                        )(),
+                        "content": [],
+                    },
+                )()
+
+            async def _text_stream(self) -> AsyncGenerator[str, None]:
+                yield "ok"
+
+        with (
+            patch.object(
+                provider._client.messages,
+                "stream",
+                return_value=MockStreamContext(),
+            ) as mock_stream,
+            patch("ternion.providers.anthropic.model_catalog_service") as mock_catalog_service,
+            patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
+            patch("ternion.providers.anthropic.budget_manager.record_usage"),
+        ):
+            mock_catalog_service.get_model_cached.return_value = catalog_model
+            chunks = [
+                chunk
+                async for chunk in provider.chat_completion_stream(
+                    messages=messages,
+                    model="claude-sonnet-4-8-source",
+                )
+            ]
+
+        assert chunks == ["ok"]
+        assert mock_stream.call_args.kwargs["model"] == "claude-sonnet-4-8"
+

@@ -19,6 +19,8 @@ import httpx
 import structlog
 from pydantic import BaseModel, Field
 
+from ternion.utils.model_ids import normalize_anthropic_model_id_for_api
+
 if TYPE_CHECKING:
     from ternion.core.config_store import UserConfig
 
@@ -66,6 +68,9 @@ class CatalogModel(BaseModel):
     provider: Literal["openai", "google", "anthropic"]
     mode: str = ""
     raw_key: str
+    source_keys: list[str] = Field(default_factory=list)
+    api_model_id: str = ""
+    verified_by_provider_metadata: bool = False
     input_cost_per_token: float | None = None
     output_cost_per_token: float | None = None
     output_cost_per_reasoning_token: float | None = None
@@ -108,6 +113,7 @@ class CatalogSnapshot(BaseModel):
     etag: str | None = None
     models_by_provider: dict[str, list[CatalogModel]] = Field(default_factory=dict)
     index_by_id: dict[str, CatalogModel] = Field(default_factory=dict)
+    index_by_source_key: dict[str, CatalogModel] = Field(default_factory=dict)
     provider_stats: dict[str, CatalogProviderStats] = Field(default_factory=dict)
 
 
@@ -287,17 +293,21 @@ class LiteLLMModelCatalogService:
     ) -> CatalogModel | None:
         """Get a normalized model entry by model ID."""
         snapshot = await self.get_snapshot(force_refresh=force_refresh)
-        return snapshot.index_by_id.get(model_id)
+        return snapshot.index_by_id.get(model_id) or snapshot.index_by_source_key.get(model_id)
 
     def get_model_cached(self, model_id: str) -> CatalogModel | None:
         """Get a model from memory or disk cache without network access."""
         if self._memory_snapshot is not None:
-            return self._memory_snapshot.index_by_id.get(model_id)
+            return self._memory_snapshot.index_by_id.get(
+                model_id
+            ) or self._memory_snapshot.index_by_source_key.get(model_id)
 
         disk_snapshot = self._load_disk_cache()
         if disk_snapshot is not None:
             self._set_memory_snapshot(disk_snapshot)
-            return disk_snapshot.index_by_id.get(model_id)
+            return disk_snapshot.index_by_id.get(model_id) or disk_snapshot.index_by_source_key.get(
+                model_id
+            )
 
         return None
 
@@ -402,10 +412,12 @@ class LiteLLMModelCatalogService:
         if payload is None:
             raise RuntimeError("Catalog payload is missing")
 
+        provider_truth_index = await self._fetch_provider_truth_index()
         return self._build_snapshot_from_payload(
             payload=payload,
             etag=response_etag,
             fetched_at=self._now_isoformat(),
+            provider_truth_index=provider_truth_index,
         )
 
     async def _download_catalog_json(
@@ -438,11 +450,15 @@ class LiteLLMModelCatalogService:
         payload: dict[str, Any],
         etag: str | None,
         fetched_at: str,
+        provider_truth_index: dict[str, set[str] | None] | None = None,
     ) -> CatalogSnapshot:
         """Normalize upstream JSON into a provider-grouped snapshot."""
         models_by_provider = {provider: [] for provider in CATALOG_PROVIDERS}
         index_by_id: dict[str, CatalogModel] = {}
+        index_by_source_key: dict[str, CatalogModel] = {}
         provider_stats = self._build_empty_provider_stats()
+        provider_truth_index = provider_truth_index or dict.fromkeys(CATALOG_PROVIDERS, None)
+        merged_models: dict[tuple[str, str], CatalogModel] = {}
 
         for raw_key, raw_meta in payload.items():
             if not isinstance(raw_meta, dict):
@@ -453,7 +469,11 @@ class LiteLLMModelCatalogService:
                 provider_stats[provider].raw_candidate_ids.append(str(raw_key))
 
             try:
-                model = self._normalize_model_entry(str(raw_key), raw_meta)
+                model = self._normalize_model_entry(
+                    str(raw_key),
+                    raw_meta,
+                    provider_truth_ids=provider_truth_index.get(provider) if provider else None,
+                )
             except Exception as exc:
                 logger.warning(
                     "model_catalog_entry_parse_failed",
@@ -465,13 +485,28 @@ class LiteLLMModelCatalogService:
             if model is None:
                 continue
 
+            dedupe_key = (model.provider, model.api_model_id)
+            existing_model = merged_models.get(dedupe_key)
+            if existing_model is None:
+                merged_models[dedupe_key] = model
+            else:
+                merged_models[dedupe_key] = self._merge_catalog_models(existing_model, model)
+
+        for model in merged_models.values():
             models_by_provider[model.provider].append(model)
             index_by_id[model.id] = model
+            for source_key in model.source_keys:
+                index_by_source_key[source_key] = model
             provider_stats[model.provider].filtered_ids.append(model.id)
 
         for models in models_by_provider.values():
             models.sort(key=self._model_sort_key)
         for provider in CATALOG_PROVIDERS:
+            accepted_source_keys = {
+                source_key
+                for model in models_by_provider[provider]
+                for source_key in model.source_keys
+            }
             provider_stats[provider].raw_candidate_count = len(
                 provider_stats[provider].raw_candidate_ids
             )
@@ -479,7 +514,7 @@ class LiteLLMModelCatalogService:
             provider_stats[provider].suspected_filtered_ids = [
                 model_id
                 for model_id in provider_stats[provider].raw_candidate_ids
-                if model_id not in set(provider_stats[provider].filtered_ids)
+                if model_id not in accepted_source_keys
             ]
 
         return CatalogSnapshot(
@@ -488,12 +523,21 @@ class LiteLLMModelCatalogService:
             etag=etag,
             models_by_provider=models_by_provider,
             index_by_id=index_by_id,
+            index_by_source_key=index_by_source_key,
             provider_stats=provider_stats,
         )
 
-    def _normalize_model_entry(self, model_id: str, meta: dict[str, Any]) -> CatalogModel | None:
+    def _normalize_model_entry(
+        self,
+        model_id: str,
+        meta: dict[str, Any],
+        provider_truth_ids: set[str] | None = None,
+    ) -> CatalogModel | None:
         """Normalize a single upstream model entry when it matches project rules."""
         provider = self._map_provider(meta.get("litellm_provider"))
+        normalized_id = model_id
+        api_model_id = model_id
+        verified_by_provider_metadata = False
         if provider == "openai":
             if not self._is_openai_model_allowed(model_id, meta):
                 return None
@@ -506,15 +550,23 @@ class LiteLLMModelCatalogService:
             if not self._is_anthropic_model_allowed(model_id, meta):
                 return None
             display_name = self._format_anthropic_name(model_id)
+            resolved = self._resolve_anthropic_catalog_identity(model_id, provider_truth_ids)
+            if resolved is None:
+                return None
+            api_model_id, verified_by_provider_metadata = resolved
+            normalized_id = api_model_id
         else:
             return None
 
         return CatalogModel(
-            id=model_id,
+            id=normalized_id,
             name=display_name,
             provider=provider,
             mode=str(meta.get("mode", "") or ""),
             raw_key=model_id,
+            source_keys=[model_id],
+            api_model_id=api_model_id,
+            verified_by_provider_metadata=verified_by_provider_metadata,
             input_cost_per_token=self._coerce_float(meta.get("input_cost_per_token")),
             output_cost_per_token=self._coerce_float(meta.get("output_cost_per_token")),
             output_cost_per_reasoning_token=self._coerce_float(
@@ -586,9 +638,14 @@ class LiteLLMModelCatalogService:
     def _ensure_provider_buckets(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
         """Ensure all supported providers exist in the grouped model mapping."""
         models_by_provider = {
-            provider: list(snapshot.models_by_provider.get(provider, []))
+            provider: [
+                self._ensure_catalog_model_resolution(model)
+                for model in snapshot.models_by_provider.get(provider, [])
+            ]
             for provider in CATALOG_PROVIDERS
         }
+        index_by_id: dict[str, CatalogModel] = {}
+        index_by_source_key: dict[str, CatalogModel] = {}
         provider_stats = {
             provider: snapshot.provider_stats.get(provider, CatalogProviderStats()).model_copy(
                 deep=True
@@ -596,22 +653,33 @@ class LiteLLMModelCatalogService:
             for provider in CATALOG_PROVIDERS
         }
         for provider in CATALOG_PROVIDERS:
+            for model in models_by_provider[provider]:
+                index_by_id[model.id] = model
+                for source_key in model.source_keys:
+                    index_by_source_key[source_key] = model
             provider_stats[provider].filtered_count = len(models_by_provider[provider])
             if not provider_stats[provider].filtered_ids:
                 provider_stats[provider].filtered_ids = [
                     model.id for model in models_by_provider[provider]
                 ]
+            accepted_source_keys = {
+                source_key
+                for model in models_by_provider[provider]
+                for source_key in model.source_keys
+            }
             provider_stats[provider].raw_candidate_count = len(
                 provider_stats[provider].raw_candidate_ids
             )
             provider_stats[provider].suspected_filtered_ids = [
                 model_id
                 for model_id in provider_stats[provider].raw_candidate_ids
-                if model_id not in set(provider_stats[provider].filtered_ids)
+                if model_id not in accepted_source_keys
             ]
         return snapshot.model_copy(
             update={
                 "models_by_provider": models_by_provider,
+                "index_by_id": index_by_id,
+                "index_by_source_key": index_by_source_key,
                 "provider_stats": provider_stats,
             }
         )
@@ -624,6 +692,7 @@ class LiteLLMModelCatalogService:
             etag=None,
             models_by_provider={provider: [] for provider in CATALOG_PROVIDERS},
             index_by_id={},
+            index_by_source_key={},
             provider_stats=self._build_empty_provider_stats(),
         )
 
@@ -749,6 +818,28 @@ class LiteLLMModelCatalogService:
         """Return True if a token looks like a YYYYMMDD date prefix."""
         return len(token) >= 8 and token[:8].isdigit()
 
+    def _resolve_anthropic_catalog_identity(
+        self,
+        model_id: str,
+        provider_truth_ids: set[str] | None,
+    ) -> tuple[str, bool] | None:
+        """Resolve an Anthropic catalog candidate to the provider-facing model ID."""
+        if provider_truth_ids is None:
+            return model_id, False
+
+        if model_id in provider_truth_ids:
+            return model_id, True
+
+        candidate_id = normalize_anthropic_model_id_for_api(model_id)
+        if candidate_id in provider_truth_ids:
+            return candidate_id, True
+
+        logger.info(
+            "anthropic_catalog_candidate_not_in_provider_truth",
+            raw_key=model_id,
+        )
+        return None
+
     def _is_raw_candidate(self, provider: str, model_id: str, meta: dict[str, Any]) -> bool:
         """Return whether an entry should appear in anomaly raw-candidate diagnostics."""
         lowered = model_id.lower()
@@ -779,6 +870,182 @@ class LiteLLMModelCatalogService:
             major = self._parse_first_major_version_near_keyword(lowered, "claude")
             return major is not None and major >= 4
         return False
+
+    async def _fetch_provider_truth_index(self) -> dict[str, set[str] | None]:
+        """Fetch provider metadata truth sets used for canonical ID resolution."""
+        return {
+            "openai": None,
+            "google": None,
+            "anthropic": await self._fetch_anthropic_provider_truth_ids(),
+        }
+
+    async def _fetch_anthropic_provider_truth_ids(self) -> set[str] | None:
+        """Fetch the current official Anthropic model IDs when an API key is available."""
+        api_key = self._get_provider_api_key("anthropic")
+        if not api_key:
+            return None
+
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.request_timeout) as client:
+                response = await client.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers=headers,
+                )
+                response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            logger.warning(
+                "model_catalog_provider_truth_fetch_failed",
+                provider="anthropic",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return None
+
+        data = payload.get("data")
+        if not isinstance(data, list):
+            logger.warning(
+                "model_catalog_provider_truth_invalid_payload",
+                provider="anthropic",
+            )
+            return None
+
+        truth_ids = {
+            model_id
+            for item in data
+            if isinstance(item, dict)
+            for model_id in [item.get("id")]
+            if isinstance(model_id, str) and model_id.strip()
+        }
+        return truth_ids or set()
+
+    def _get_provider_api_key(self, provider: str) -> str | None:
+        """Get the active API key for provider truth fetching."""
+        try:
+            from ternion.core.config_store import config_store
+        except Exception as exc:
+            logger.warning(
+                "model_catalog_provider_truth_config_unavailable",
+                provider=provider,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return None
+
+        try:
+            return config_store.get_provider_api_key(provider)
+        except Exception as exc:
+            logger.warning(
+                "model_catalog_provider_truth_api_key_lookup_failed",
+                provider=provider,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return None
+
+    def _merge_catalog_models(
+        self,
+        existing: CatalogModel,
+        incoming: CatalogModel,
+    ) -> CatalogModel:
+        """Merge two raw catalog entries that resolve to the same API model ID."""
+        preferred, secondary = self._select_preferred_catalog_model(existing, incoming)
+        merged_source_keys = sorted(set(existing.source_keys + incoming.source_keys))
+        merged_fields = {
+            "source_keys": merged_source_keys,
+            "verified_by_provider_metadata": (
+                existing.verified_by_provider_metadata or incoming.verified_by_provider_metadata
+            ),
+            "input_cost_per_token": self._coalesce_field(
+                preferred.input_cost_per_token,
+                secondary.input_cost_per_token,
+            ),
+            "output_cost_per_token": self._coalesce_field(
+                preferred.output_cost_per_token,
+                secondary.output_cost_per_token,
+            ),
+            "output_cost_per_reasoning_token": self._coalesce_field(
+                preferred.output_cost_per_reasoning_token,
+                secondary.output_cost_per_reasoning_token,
+            ),
+            "input_cost_per_audio_token": self._coalesce_field(
+                preferred.input_cost_per_audio_token,
+                secondary.input_cost_per_audio_token,
+            ),
+            "input_cost_per_token_above_200k_tokens": self._coalesce_field(
+                preferred.input_cost_per_token_above_200k_tokens,
+                secondary.input_cost_per_token_above_200k_tokens,
+            ),
+            "output_cost_per_token_above_200k_tokens": self._coalesce_field(
+                preferred.output_cost_per_token_above_200k_tokens,
+                secondary.output_cost_per_token_above_200k_tokens,
+            ),
+            "max_input_tokens": self._coalesce_field(
+                preferred.max_input_tokens,
+                secondary.max_input_tokens,
+            ),
+            "max_output_tokens": self._coalesce_field(
+                preferred.max_output_tokens,
+                secondary.max_output_tokens,
+            ),
+        }
+        return preferred.model_copy(update=merged_fields)
+
+    def _select_preferred_catalog_model(
+        self,
+        existing: CatalogModel,
+        incoming: CatalogModel,
+    ) -> tuple[CatalogModel, CatalogModel]:
+        """Choose the preferred pricing source when duplicate API IDs are merged."""
+        existing_is_exact = existing.raw_key == existing.api_model_id
+        incoming_is_exact = incoming.raw_key == incoming.api_model_id
+        if existing_is_exact and not incoming_is_exact:
+            return existing, incoming
+        if incoming_is_exact and not existing_is_exact:
+            return incoming, existing
+
+        existing_pricing_fields = self._count_pricing_fields(existing)
+        incoming_pricing_fields = self._count_pricing_fields(incoming)
+        if incoming_pricing_fields > existing_pricing_fields:
+            return incoming, existing
+        return existing, incoming
+
+    def _count_pricing_fields(self, model: CatalogModel) -> int:
+        """Count non-empty pricing fields for source preference decisions."""
+        return sum(
+            value is not None
+            for value in (
+                model.input_cost_per_token,
+                model.output_cost_per_token,
+                model.output_cost_per_reasoning_token,
+                model.input_cost_per_audio_token,
+                model.input_cost_per_token_above_200k_tokens,
+                model.output_cost_per_token_above_200k_tokens,
+                model.max_input_tokens,
+                model.max_output_tokens,
+            )
+        )
+
+    def _ensure_catalog_model_resolution(self, model: CatalogModel) -> CatalogModel:
+        """Backfill Phase A resolution fields for older cached snapshots."""
+        source_keys = list(model.source_keys) if model.source_keys else [model.raw_key]
+        api_model_id = model.api_model_id or model.id or model.raw_key
+        return model.model_copy(
+            update={
+                "source_keys": source_keys,
+                "api_model_id": api_model_id,
+                "verified_by_provider_metadata": model.verified_by_provider_metadata,
+            }
+        )
+
+    @staticmethod
+    def _coalesce_field(primary: Any, fallback: Any) -> Any:
+        """Return the primary value when set, otherwise the fallback value."""
+        return primary if primary is not None else fallback
 
     def _parse_major_version_after_prefix(self, model_id: str, prefix: str) -> int | None:
         """Parse the first integer version component after a prefix."""

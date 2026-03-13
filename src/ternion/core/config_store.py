@@ -320,10 +320,48 @@ class ConfigStore:
             return provider_config.active_key
         return None
 
+    def _canonicalize_role_model(self, role_config: RoleConfig) -> RoleConfig:
+        """Canonicalize a role model ID in memory when the catalog provides a stable ID."""
+        if not role_config.provider or not role_config.model:
+            return role_config
+
+        try:
+            from ternion.core.model_catalog import model_catalog_service
+        except Exception as exc:
+            logger.warning(
+                "role_model_canonicalization_unavailable",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return role_config
+
+        try:
+            catalog_model = model_catalog_service.get_model_cached(role_config.model)
+        except Exception as exc:
+            logger.warning(
+                "role_model_canonicalization_failed",
+                provider=role_config.provider,
+                model=role_config.model,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return role_config
+
+        if catalog_model is None or catalog_model.provider != role_config.provider:
+            return role_config
+
+        if catalog_model.id != role_config.model:
+            role_config.model = catalog_model.id
+
+        return role_config
+
     def get_role_config(self, role: str) -> RoleConfig | None:
         """Get configuration for a role."""
         config = self.load()
-        return config.roles.get(role)
+        role_config = config.roles.get(role)
+        if role_config is None:
+            return None
+        return self._canonicalize_role_model(role_config)
 
     def to_safe_dict(self) -> dict[str, Any]:
         """

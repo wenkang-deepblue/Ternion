@@ -12,9 +12,11 @@ import structlog
 from anthropic import AsyncAnthropic
 
 from ternion.core.budget import budget_manager
+from ternion.core.model_catalog import model_catalog_service
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
 from ternion.providers.base import BaseProvider, ProviderResponse
 from ternion.utils.log_manager import log_manager
+from ternion.utils.model_ids import normalize_anthropic_model_id_for_api
 
 logger = structlog.get_logger(__name__)
 
@@ -74,16 +76,18 @@ class AnthropicProvider(BaseProvider):
             ProviderResponse with the generated content
         """
         model = model or self._default_model
+        api_model = self._resolve_api_model_id(model)
         system_prompt, converted = self._convert_messages(messages)
 
         logger.debug(
             "anthropic_chat_completion",
             model=model,
+            api_model=api_model,
             message_count=len(messages),
         )
 
         response = await self._client.messages.create(
-            model=model,
+            model=api_model,
             messages=converted,
             system=system_prompt,
             temperature=temperature,
@@ -171,16 +175,18 @@ class AnthropicProvider(BaseProvider):
             Content chunks as they are generated
         """
         model = model or self._default_model
+        api_model = self._resolve_api_model_id(model)
         system_prompt, converted = self._convert_messages(messages)
 
         logger.debug(
             "anthropic_chat_completion_stream",
             model=model,
+            api_model=api_model,
             message_count=len(messages),
         )
 
         async with self._client.messages.stream(
-            model=model,
+            model=api_model,
             messages=converted,
             system=system_prompt,
             temperature=temperature,
@@ -285,6 +291,16 @@ class AnthropicProvider(BaseProvider):
         except Exception as e:
             logger.warning("anthropic_unavailable", error=str(e))
             return False
+
+    @staticmethod
+    def _resolve_api_model_id(model: str) -> str:
+        """Resolve the Anthropic API model ID from the catalog when available."""
+        catalog_model = model_catalog_service.get_model_cached(model)
+        if catalog_model is not None and catalog_model.provider == "anthropic":
+            if catalog_model.api_model_id:
+                return catalog_model.api_model_id
+            return catalog_model.id
+        return normalize_anthropic_model_id_for_api(model)
 
     def _convert_messages(self, messages: list[ChatMessage]) -> tuple[str, list[dict[str, Any]]]:
         """

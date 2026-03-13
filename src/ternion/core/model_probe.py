@@ -12,6 +12,8 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from ternion.core.exceptions import RuntimeModelUnavailableError
+from ternion.core.model_catalog import model_catalog_service
+from ternion.utils.model_ids import normalize_anthropic_model_id_for_api
 
 try:
     from google import genai
@@ -117,22 +119,37 @@ class ModelAvailabilityProbeService:
         api_key: str,
     ) -> ModelAvailabilityProbeResult:
         """Probe a specific provider/model pair with a low-cost metadata request."""
+        probe_model = self._resolve_probe_model_id(provider=provider, model=model)
+        if probe_model != model:
+            logger.info(
+                "model_probe_target_canonicalized",
+                provider=provider,
+                configured_model=model,
+                probe_model=probe_model,
+            )
+
         if provider == "openai":
-            result = await self._probe_openai_model(api_key=api_key, model=model)
+            result = await self._probe_openai_model(api_key=api_key, model=probe_model)
         elif provider == "google":
-            result = await self._probe_google_model(api_key=api_key, model=model)
+            result = await self._probe_google_model(api_key=api_key, model=probe_model)
         elif provider == "anthropic":
-            result = await self._probe_anthropic_model(api_key=api_key, model=model)
+            result = await self._probe_anthropic_model(api_key=api_key, model=probe_model)
         else:
             raise ValueError(f"Unsupported provider for model probe: {provider}")
 
         if result.ok:
-            logger.info("model_probe_succeeded", provider=provider, model=model)
+            logger.info(
+                "model_probe_succeeded",
+                provider=provider,
+                model=model,
+                probe_model=result.model,
+            )
         else:
             logger.warning(
                 "model_probe_failed",
                 provider=provider,
                 model=model,
+                probe_model=result.model,
                 code=result.code,
                 refresh_suggested=result.refresh_suggested,
                 message=result.message,
@@ -215,6 +232,13 @@ class ModelAvailabilityProbeService:
         for newly released models), falls back to a minimal 1-token chat
         completion to verify actual availability.
         """
+        api_model = normalize_anthropic_model_id_for_api(model)
+        if api_model != model:
+            logger.info(
+                "anthropic_probe_model_id_normalized",
+                configured_model=model,
+                api_model=api_model,
+            )
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
@@ -222,7 +246,7 @@ class ModelAvailabilityProbeService:
         try:
             async with httpx.AsyncClient(timeout=self.request_timeout) as client:
                 response = await client.get(
-                    f"https://api.anthropic.com/v1/models/{model}",
+                    f"https://api.anthropic.com/v1/models/{api_model}",
                     headers=headers,
                 )
                 response.raise_for_status()
@@ -234,7 +258,7 @@ class ModelAvailabilityProbeService:
                     model=model,
                 )
                 return await self._probe_anthropic_chat_fallback(
-                    api_key=api_key, model=model
+                    api_key=api_key, model=model, api_model=api_model
                 )
             return self._classify_probe_exception(provider="anthropic", model=model, exc=exc)
         except Exception as exc:
@@ -245,15 +269,17 @@ class ModelAvailabilityProbeService:
         *,
         api_key: str,
         model: str,
+        api_model: str | None = None,
     ) -> ModelAvailabilityProbeResult:
         """Verify an Anthropic model via a minimal Messages API call."""
+        request_model = api_model or normalize_anthropic_model_id_for_api(model)
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
         payload = {
-            "model": model,
+            "model": request_model,
             "max_tokens": 1,
             "messages": [{"role": "user", "content": "hi"}],
         }
@@ -371,6 +397,19 @@ class ModelAvailabilityProbeService:
         if model.startswith("models/"):
             return model
         return f"models/{model}"
+
+    @staticmethod
+    def _resolve_probe_model_id(*, provider: str, model: str) -> str:
+        """Resolve the executable model ID for a provider-side probe."""
+        catalog_model = model_catalog_service.get_model_cached(model)
+        if catalog_model is not None and catalog_model.provider == provider:
+            if catalog_model.api_model_id:
+                return catalog_model.api_model_id
+            return catalog_model.id
+
+        if provider == "anthropic":
+            return normalize_anthropic_model_id_for_api(model)
+        return model
 
     @staticmethod
     def _extract_error_message(exc: Exception) -> str:
