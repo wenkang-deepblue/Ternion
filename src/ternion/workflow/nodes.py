@@ -81,10 +81,6 @@ from ternion.utils.tool_calls_parser import (
     extract_tool_calls_from_text,
 )
 from ternion.utils.tool_policy import EXECUTION_ALLOWED_TOOL_CANONICAL, SHELL_TOOL_CANONICAL
-from ternion.utils.workflow_prompt_capture import (
-    build_workflow_prompt_payload,
-    schedule_workflow_prompt_capture,
-)
 from ternion.workflow.state import TernionState, WorkflowPhase
 from ternion.workflow.streaming_events import StreamEventQueue
 
@@ -1765,18 +1761,6 @@ async def evidence_node(state: TernionState) -> TernionState:
                     ),
                 )
             )
-
-        schedule_workflow_prompt_capture(
-            build_workflow_prompt_payload(
-                phase="evidence",
-                role="arbiter_evidence",
-                provider=provider.name,
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                session_id=session_id,
-            )
-        )
         extra_kwargs: dict[str, Any] = {}
         if should_use_tool_calls and supports_native_tools:
             extra_kwargs["tools"] = cursor_tools
@@ -2146,18 +2130,6 @@ async def divergence_node(state: TernionState) -> TernionState:
                         provider=provider_name,
                     ),
                 }
-
-            schedule_workflow_prompt_capture(
-                build_workflow_prompt_payload(
-                    phase="divergence",
-                    role=ternion_id,
-                    provider=provider_name,
-                    model=model,
-                    messages=ternion_messages,
-                    temperature=0.7,
-                    session_id=state.get("session_id", ""),
-                )
-            )
             response = None
             max_attempts = 3 if provider.name == "google" else 1
             for attempt in range(1, max_attempts + 1):
@@ -2977,18 +2949,6 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                     ),
                 )
             )
-
-        schedule_workflow_prompt_capture(
-            build_workflow_prompt_payload(
-                phase="report_evidence",
-                role="arbiter_report_evidence",
-                provider=provider.name,
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                session_id=session_id,
-            )
-        )
         extra_kwargs: dict[str, Any] = {}
         if should_use_tool_calls and supports_native_tools:
             extra_kwargs["tools"] = cursor_tools
@@ -3253,18 +3213,6 @@ async def convergence_node(state: TernionState) -> TernionState:
 
         stream_queue: StreamEventQueue | None = state.get("_stream_queue")
         session_id = state.get("session_id", "")
-
-        schedule_workflow_prompt_capture(
-            build_workflow_prompt_payload(
-                phase="convergence",
-                role="arbiter",
-                provider=provider.name,
-                model=model,
-                messages=messages,
-                temperature=0.5,
-                session_id=session_id,
-            )
-        )
         response = await _call_with_stream(
             provider=provider,
             messages=messages,
@@ -3490,18 +3438,6 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     level="INFO",
                     category="WORKFLOW",
                     message=f"Trying fallback Arbiter: {fallback_cfg['ternion_id']} ({fallback_cfg['provider']}/{fallback_cfg['model']})",
-                )
-
-                schedule_workflow_prompt_capture(
-                    build_workflow_prompt_payload(
-                        phase="convergence_fallback",
-                        role=fallback_cfg["ternion_id"],
-                        provider=fallback_cfg["provider"],
-                        model=fallback_cfg["model"],
-                        messages=messages,
-                        temperature=0.5,
-                        session_id=state.get("session_id", ""),
-                    )
                 )
                 fallback_response = await _call_with_timeout(
                     provider=fallback_provider,
@@ -4769,7 +4705,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
 
     The Optimizer validates the implementation against acceptance criteria,
     applies only necessary improvements via tool calls, and finally outputs:
-    - an internal optimizer report (captured to disk; user-invisible)
+    - an internal optimizer report retained in the execution session (user-invisible)
     - a user-visible work summary report
     """
     logger.info("workflow_optimizer_start")
@@ -5317,31 +5253,6 @@ async def optimizer_node(state: TernionState) -> TernionState:
                                 message_id=session_id,
                             )
 
-                    try:
-                        from ternion.utils.reviewer_output_capture import (
-                            build_reviewer_capture_payload,
-                            schedule_reviewer_output_capture,
-                        )
-
-                        schedule_reviewer_output_capture(
-                            build_reviewer_capture_payload(
-                                session_id=str(state.get("session_id") or ""),
-                                stage=WorkflowPhase.OPTIMIZER.value,
-                                provider=provider.name,
-                                model=model,
-                                review_status="OPTIMIZER_ACTION_PROTOCOL_FAIL_CLOSE",
-                                review_feedback=internal_report or (response.content or ""),
-                                revision_count=int(state.get("revision_count", 0) or 0),
-                                generated_code=generated_code,
-                            )
-                        )
-                    except Exception as capture_exc:
-                        logger.debug(
-                            "optimizer_capture_scheduling_failed",
-                            exc_type=type(capture_exc).__name__,
-                            error=str(capture_exc),
-                        )
-
                     return {
                         **state,
                         "current_phase": WorkflowPhase.COMPLETE.value,
@@ -5418,31 +5329,6 @@ async def optimizer_node(state: TernionState) -> TernionState:
                         phase="optimizer",
                         message_id=session_id,
                     )
-
-            try:
-                from ternion.utils.reviewer_output_capture import (
-                    build_reviewer_capture_payload,
-                    schedule_reviewer_output_capture,
-                )
-
-                schedule_reviewer_output_capture(
-                    build_reviewer_capture_payload(
-                        session_id=str(state.get("session_id") or ""),
-                        stage=WorkflowPhase.OPTIMIZER.value,
-                        provider=provider.name,
-                        model=model,
-                        review_status="OPTIMIZER_REPORT",
-                        review_feedback=internal_report or (response.content or ""),
-                        revision_count=int(state.get("revision_count", 0) or 0),
-                        generated_code=generated_code,
-                    )
-                )
-            except Exception as capture_exc:
-                logger.debug(
-                    "optimizer_capture_scheduling_failed",
-                    exc_type=type(capture_exc).__name__,
-                    error=str(capture_exc),
-                )
 
             return {
                 **state,

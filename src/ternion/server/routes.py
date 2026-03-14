@@ -58,7 +58,6 @@ from ternion.core.session_store import (
 from ternion.providers.manager import provider_manager
 from ternion.router.context import TernionContext
 from ternion.router.message_router import MessageRouter
-from ternion.utils.cursor_request_capture import schedule_cursor_request_capture
 from ternion.utils.cursor_safety import sanitize_for_cursor_display, sanitize_for_preview
 from ternion.utils.i18n import MessageKey, get_web_base_url, t
 from ternion.utils.language_resources import (
@@ -3545,10 +3544,6 @@ async def chat_completions(
         message_count=len(request.messages),
         stream=request.stream,
     )
-
-    # Development-only: capture incoming Cursor requests (including system prompt) for debugging.
-    # This is disabled by default and runs in the background when enabled.
-    schedule_cursor_request_capture(request)
 
     model = request.model.lower()
 
