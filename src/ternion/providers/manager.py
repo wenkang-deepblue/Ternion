@@ -165,7 +165,7 @@ class ProviderManager:
 
         Raises:
             ProviderError: If provider fails
-            TimeoutError: If request times out (CR-030)
+            TernionTimeoutError: If request times out
             ValueError: If provider not found
         """
         provider = self.get_provider(provider_name)
@@ -225,6 +225,7 @@ class ProviderManager:
         Raises:
             ProviderError: If provider fails
             ValueError: If provider not found
+            TernionTimeoutError: If request times out
         """
         provider = self.get_provider(provider_name)
         if not provider:

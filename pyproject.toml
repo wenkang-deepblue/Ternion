@@ -101,10 +101,9 @@ warn_return_any = false  # Many SDKs return Any
 warn_unused_ignores = false  # Avoid noise from conditional type: ignore comments
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
-# Phased governance: disable specific error codes for gradual adoption
-# These will be fixed incrementally in future cleanup passes
+# Temporarily disabled to allow gradual adoption of strict typing
 disable_error_code = [
-    "type-arg",      # Missing generic type parameters (e.g., dict, Queue) - batch fix later
+    "type-arg",      # TODO: Add missing generic type parameters (e.g., dict, Queue)
     "dict-item",     # Dict value type mismatches for multimodal content - SDK-specific
     "arg-type",      # Argument type mismatches with external SDK type stubs
     "no-any-return", # Returning Any from typed functions - common with SDKs
@@ -131,7 +130,7 @@ disable_error_code = ["attr-defined", "arg-type"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-v --tb=short"
-# Note: google.generativeai FutureWarning is NOT filtered - see CR-005 for SDK migration
+# google.generativeai FutureWarning intentionally unfiltered
 filterwarnings = [
     "ignore::DeprecationWarning:httplib2.*:",
 ]

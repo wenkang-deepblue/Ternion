@@ -20,6 +20,12 @@ def encode_stream_tool_calls(tool_calls: list[dict[str, Any]]) -> str:
     This is a server-internal protocol used to transport tool-calls metadata through
     provider streaming generators without changing the public provider interface.
     The marker must NEVER be forwarded to users.
+
+    Args:
+        tool_calls: A list of tool call objects.
+
+    Returns:
+        The encoded streaming marker string.
     """
     try:
         payload = json.dumps(tool_calls or [], ensure_ascii=False)
@@ -33,6 +39,12 @@ def decode_stream_tool_calls(text: str | None) -> list[dict[str, Any]] | None:
     Decode tool calls from an internal streaming marker string.
 
     Returns None if the text is not a tool-calls marker.
+
+    Args:
+        text: The text to decode.
+
+    Returns:
+        A list of decoded tool calls, or None if the text is not a valid marker.
     """
     if not text or not isinstance(text, str):
         return None
@@ -55,6 +67,12 @@ def decode_stream_tool_calls(text: str | None) -> list[dict[str, Any]] | None:
 def build_text_tool_calls_instruction(cursor_tools: list[dict[str, Any]]) -> str:
     """
     Build a tool-calls protocol instruction for providers without native tool calls.
+
+    Args:
+        cursor_tools: A list of available Cursor tool schemas.
+
+    Returns:
+        The instruction string detailing the non-OpenAI tool call protocol.
     """
     tool_lines = _format_tool_list(cursor_tools)
     protocol = [
@@ -82,6 +100,12 @@ def build_text_tool_calls_instruction(cursor_tools: list[dict[str, Any]]) -> str
 def extract_tool_calls_from_text(text: str | None) -> list[dict[str, Any]] | None:
     """
     Extract tool calls from a text response using the Ternion tool-call protocol.
+
+    Args:
+        text: The response text containing the tool calls payload.
+
+    Returns:
+        A list of normalized tool calls, or None if extraction fails.
     """
     if not text or not isinstance(text, str):
         return None

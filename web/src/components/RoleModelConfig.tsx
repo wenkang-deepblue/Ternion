@@ -267,8 +267,7 @@ export function RoleModelConfig({
   useEffect(() => {
     if (!config) return;
 
-    // If backend config is empty but we *previously* had non-empty persisted config,
-    // this indicates a fresh start (e.g., ~/.ternion/config.json deleted/empty) -> clear stale drafts.
+    // Clears stale drafts when the backend configuration is empty but was previously populated, indicating a reset.
     if (typeof window !== 'undefined') {
       const persistedEmpty = isPersistedConfigEmpty(config);
       window.localStorage.setItem(CONFIG_NONEMPTY_MARKER_KEY, persistedEmpty ? '0' : '1');
@@ -280,7 +279,7 @@ export function RoleModelConfig({
       }
     }
 
-    // Normal behavior: restore draft within the current browser tab/session.
+    // Restores draft state from the current session storage.
     if (hasChanges) return;
     const draftRaw = typeof window !== 'undefined' ? window.sessionStorage.getItem(DRAFT_STORAGE_KEY) : null;
     if (draftRaw) {
@@ -654,7 +653,6 @@ export function RoleModelConfig({
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                {/* Provider Selection */}
                 <div>
                   <label className="label">{t.modelSeries}</label>
                   <select
@@ -682,7 +680,6 @@ export function RoleModelConfig({
                   </select>
                 </div>
 
-                {/* Model Selection */}
                 <div>
                   <label className="label">{t.modelName}</label>
                   <select
@@ -703,7 +700,6 @@ export function RoleModelConfig({
                 </div>
               </div>
 
-              {/* Current Config Display */}
               <div className="mt-3 text-sm text-slate-500">
                 {t.currentConfig}:{' '}
                 {disabled ? (

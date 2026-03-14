@@ -1,7 +1,7 @@
 /**
  * Internationalization (i18n) module for Ternion Control Panel.
  *
- * Provides translations for English and Chinese languages.
+ * Provides multi-language translations.
  * Automatically detects browser language, with manual override for development.
  */
 

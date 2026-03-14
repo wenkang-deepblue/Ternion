@@ -134,7 +134,6 @@ export function PortsSettings({ t, isDarkMode, language }: PortsSettingsProps) {
       </div>
 
       <div className="card-body">
-        {/* Current Port Display */}
         <div className="mt-6 mb-12 text-center">
           <span className="text-lg font-medium text-slate-700 dark:text-slate-300">
             {t.portsCurrentBackend}: <span className="font-bold" style={{ color: '#4083f2' }}>{originalPorts.backend}</span>
@@ -145,7 +144,6 @@ export function PortsSettings({ t, isDarkMode, language }: PortsSettingsProps) {
           </span>
         </div>
 
-        {/* Warning Banner */}
         <div className="mb-10 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
           <p className="text-amber-800 dark:text-amber-200 text-sm font-medium flex items-center justify-center gap-2">
             <img src={isDarkMode ? warningIconDark : warningIconLight} alt="" className="w-6 h-6" />
@@ -154,7 +152,6 @@ export function PortsSettings({ t, isDarkMode, language }: PortsSettingsProps) {
         </div>
 
         <div className="grid grid-cols-2 gap-6">
-          {/* Backend Port */}
           <div>
             <label className="label">{t.portsBackend}</label>
             <div className="input-rainbow-glow">
@@ -173,7 +170,6 @@ export function PortsSettings({ t, isDarkMode, language }: PortsSettingsProps) {
             </p>
           </div>
 
-          {/* Web Port */}
           <div>
             <label className="label">{t.portsWeb}</label>
             <div className="input-rainbow-glow">

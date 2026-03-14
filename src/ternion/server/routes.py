@@ -1202,6 +1202,15 @@ def _resolve_workspace_root(workspace_root: str | None = None) -> Path:
 
 
 def _normalize_file_path(path_str: str, workspace_root: str | None = None) -> str | None:
+    """Normalize a file path relative to the workspace root.
+
+    Args:
+        path_str: The path to normalize.
+        workspace_root: Optional workspace root directory.
+
+    Returns:
+        The normalized path, or None if the path is invalid or unsafe.
+    """
     if not isinstance(path_str, str) or not path_str.strip():
         return None
     p = Path(path_str).expanduser()
@@ -3407,7 +3416,11 @@ async def _run_implementation_streaming(
 
 @router.get("/health")
 async def health_check() -> dict[str, str]:
-    """Health check endpoint."""
+    """Health check endpoint.
+
+    Returns:
+        A simple status dictionary indicating the server is healthy.
+    """
     return {"status": "healthy"}
 
 
@@ -3418,6 +3431,12 @@ async def root_probe(request: Request) -> dict[str, str]:
 
     Some clients validate connectivity by probing the base origin before calling
     API paths. Returning 200 helps distinguish "no request sent" vs "wrong path".
+
+    Args:
+        request: The incoming FastAPI request.
+
+    Returns:
+        A basic status dictionary.
     """
     logger.info(
         "api_probe",
@@ -3430,7 +3449,14 @@ async def root_probe(request: Request) -> dict[str, str]:
 
 @router.head("/", include_in_schema=False)
 async def root_probe_head(request: Request) -> Response:
-    """HEAD variant of `/` for strict clients."""
+    """HEAD variant of `/` for strict clients.
+
+    Args:
+        request: The incoming FastAPI request.
+
+    Returns:
+        An empty 200 OK Response.
+    """
     logger.info(
         "api_probe",
         path=str(request.url.path),
@@ -3447,6 +3473,12 @@ async def v1_root(request: Request) -> dict[str, str]:
 
     Cursor (certain versions) may issue a GET/HEAD to the configured base URL
     (often ending with `/v1`) before calling `/v1/models` or `/v1/chat/completions`.
+
+    Args:
+        request: The incoming FastAPI request.
+
+    Returns:
+        A basic status dictionary.
     """
     logger.info(
         "api_probe",
@@ -3459,7 +3491,14 @@ async def v1_root(request: Request) -> dict[str, str]:
 
 @router.head("/v1", include_in_schema=False)
 async def v1_root_head(request: Request) -> Response:
-    """HEAD variant of `/v1` for strict clients."""
+    """HEAD variant of `/v1` for strict clients.
+
+    Args:
+        request: The incoming FastAPI request.
+
+    Returns:
+        An empty 200 OK Response.
+    """
     logger.info(
         "api_probe",
         path=str(request.url.path),
@@ -3471,7 +3510,14 @@ async def v1_root_head(request: Request) -> Response:
 
 @router.get("/v1/", include_in_schema=False)
 async def v1_root_slash(request: Request) -> dict[str, str]:
-    """Same as `/v1` but avoids redirect_slashes for strict clients."""
+    """Same as `/v1` but avoids redirect_slashes for strict clients.
+
+    Args:
+        request: The incoming FastAPI request.
+
+    Returns:
+        A basic status dictionary.
+    """
     logger.info(
         "api_probe",
         path=str(request.url.path),
@@ -3483,7 +3529,14 @@ async def v1_root_slash(request: Request) -> dict[str, str]:
 
 @router.head("/v1/", include_in_schema=False)
 async def v1_root_slash_head(request: Request) -> Response:
-    """HEAD variant of `/v1/` for strict clients."""
+    """HEAD variant of `/v1/` for strict clients.
+
+    Args:
+        request: The incoming FastAPI request.
+
+    Returns:
+        An empty 200 OK Response.
+    """
     logger.info(
         "api_probe",
         path=str(request.url.path),
@@ -3496,7 +3549,14 @@ async def v1_root_slash_head(request: Request) -> Response:
 @router.get("/models")
 @router.get("/v1/models")
 async def list_models(request: Request) -> ModelsListResponse:
-    """List available models (OpenAI-compatible)."""
+    """List available models (OpenAI-compatible).
+
+    Args:
+        request: The incoming FastAPI request.
+
+    Returns:
+        A list of models supported by this proxy.
+    """
     logger.info(
         "models_list_request",
         path=str(request.url.path),
@@ -3514,7 +3574,14 @@ async def list_models(request: Request) -> ModelsListResponse:
 @router.head("/models", include_in_schema=False)
 @router.head("/v1/models", include_in_schema=False)
 async def list_models_head(request: Request) -> Response:
-    """HEAD variant of `/v1/models` for strict clients."""
+    """HEAD variant of `/v1/models` for strict clients.
+
+    Args:
+        request: The incoming FastAPI request.
+
+    Returns:
+        An empty 200 OK Response.
+    """
     logger.info(
         "models_list_request",
         path=str(request.url.path),
@@ -3537,6 +3604,12 @@ async def chat_completions(
     Routes requests based on the model name:
     - ternion-team: Full Ternion multi-phase workflow (evidence → divergence → convergence → execution → review → optimizer)
     - (All other models are rejected to avoid accidental passthrough/BYOK costs)
+
+    Args:
+        request: The incoming ChatCompletionRequest.
+
+    Returns:
+        A standard Response, or a StreamingResponse if streaming is requested.
     """
     logger.info(
         "chat_completion_request",

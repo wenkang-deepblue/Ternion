@@ -31,8 +31,7 @@ def create_sse_stream(
     This is a utility for creating placeholder responses. In production,
     the actual LLM provider streams will be used.
 
-    Uses fixed-size chunks (128 characters) to amortize SSE framing overhead
-    (previously used word-splitting, which caused excessive SSE events).
+    Uses fixed-size chunks (128 characters) to amortize SSE framing overhead.
 
     Args:
         model: Model name to include in the response
@@ -87,6 +86,14 @@ def create_sse_tool_calls_stream(
 
     This is used to drive Cursor Agent tool execution even when the server-side
     implementation is non-streaming.
+
+    Args:
+        model: Model name to include in the response
+        tool_calls: List of tool call objects to stream
+        content: Optional content string to prepend before tool calls
+
+    Yields:
+        SSE-formatted data strings containing tool calls
     """
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())

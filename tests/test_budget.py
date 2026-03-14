@@ -359,7 +359,7 @@ class TestBudgetCheck:
         self, budget_manager: BudgetManager, temp_usage_file: Path
     ) -> None:
         """Test budget check when over limit."""
-        # Pre-populate usage file with high usage in new format
+        # Simulate high usage with separate cost fields
         today = datetime.now().strftime("%Y-%m-%d")
         usage_data = {
             "today": today,
@@ -665,7 +665,7 @@ class TestProviderCostAggregation:
         today = datetime.now().strftime("%Y-%m-%d")
         current_month = today[:7]
 
-        # Old data format with only 'cost' field (no separate input/output/thoughts costs)
+        # Data format without separate input/output/thoughts costs
         usage_data = {
             "today": today,
             "today_records": [],

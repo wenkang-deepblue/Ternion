@@ -93,7 +93,7 @@ class TestProviderManager:
         from ternion.providers.manager import ProviderManager
 
         # Create manager with mocked config_store (no API keys)
-        # settings fallback has been removed - only config_store is used
+        # Use only config_store (settings fallback is not supported)
         with patch("ternion.providers.manager.config_store") as mock_config_store:
             # Mock config_store: no API keys
             mock_config_store.get_provider_api_key.return_value = None

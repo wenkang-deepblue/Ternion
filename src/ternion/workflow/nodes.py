@@ -131,7 +131,7 @@ def _extract_report_scope_for_policy(report: str) -> str:
     return report or ""
 
 
-# Default timeout for provider calls (CR-030)
+# Default timeout for provider calls
 DEFAULT_TIMEOUT_SECONDS = settings.discussion.timeout_seconds
 WRITER_TIMEOUT_SECONDS = max(DEFAULT_TIMEOUT_SECONDS, settings.discussion.writer_timeout_seconds)
 
@@ -695,7 +695,7 @@ async def _call_with_timeout(
     **kwargs: Any,
 ) -> Any:
     """
-    Call provider.chat_completion with timeout protection (CR-030).
+    Call provider.chat_completion with timeout protection.
 
     Automatically resolves and injects ``api_mode`` for OpenAI models
     that require the Responses API, based on the model catalog.
@@ -803,10 +803,8 @@ async def _call_with_stream(
     full_content = ""
 
     try:
-        # Signal phase start
         await stream_queue.put_phase_start(phase, provider=provider.name, model=model)
 
-        # Create stream generator
         stream_gen = provider.chat_completion_stream(
             messages=messages,
             model=model,
@@ -814,7 +812,6 @@ async def _call_with_stream(
             **kwargs,
         )
 
-        # Consume stream with an idle timeout between chunks.
         async def consume_stream() -> ProviderResponse:
             nonlocal full_content
 
@@ -1050,7 +1047,6 @@ async def _call_with_stream(
         response = await consume_stream()
         full_content = response.content or ""
 
-        # Signal completion with final content
         await stream_queue.put_final(
             content=full_content,
             phase=phase,
@@ -1692,6 +1688,12 @@ async def evidence_node(state: TernionState) -> TernionState:
     Phase 0: Evidence Gathering - Arbiter collects minimal code evidence.
 
     Uses tool calls only. Outputs evidence_bundle and evidence_gaps.
+
+    Args:
+        state: Current LangGraph state dict containing session variables.
+
+    Returns:
+        Updated state dict transitioning to phase 1 (divergence) or handling errors.
     """
     logger.info("workflow_evidence_start")
     log_manager.emit(
@@ -2927,7 +2929,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             )
             return {
                 **state,
-                # Keep phase at REPORT_EVIDENCE since error occurred here (phase consistency fix)
+                # Maintain current phase on error to preserve consistency.
                 "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
                 "errors": state.get("errors", []) + [error_msg],
                 "thinking_logs": thinking_logs,
@@ -3020,7 +3022,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         existing_bundle = state.get("evidence_bundle") or ""
         existing_gaps = state.get("evidence_gaps") or ""
 
-        # Append new evidence to existing bundle (P1-1 fix: avoid duplicate headers)
+        # Strip headers when appending to prevent duplication.
         if new_bundle and "- None" not in new_bundle:
             # Strip EVIDENCE_BUNDLE: header from new_bundle to avoid duplicate headers
             new_bundle_content = new_bundle
@@ -3034,8 +3036,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         else:
             updated_bundle = existing_bundle
 
-        # Merge gaps: preserve existing gaps and append new ones (P1-2 fix)
-        # This prevents losing Phase 0 gaps that council didn't re-raise
+        # Preserve previous phase gaps when merging new ones.
         if new_gaps and "- None" not in new_gaps:
             if existing_gaps and "- None" not in existing_gaps:
                 # Strip EVIDENCE_GAPS: header from new_gaps before merging
@@ -3096,7 +3097,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         # On failure, stop at this phase (not convergence) for consistency
         return {
             **state,
-            # Keep phase at REPORT_EVIDENCE since error occurred here (phase consistency fix)
+            # Maintain current phase on error to preserve consistency.
             "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
             "errors": state.get("errors", [])
             + [t(MessageKey.REPORT_EVIDENCE_COLLECTION_FAILED, error=str(e))],
@@ -3404,7 +3405,7 @@ TERNION_REPORT_HASH={session.report_hash}"""
             message=f"Arbiter failed: {str(e)[:80]}... Attempting ternion fallback",
         )
 
-        # Try to use successful ternions as fallback Arbiter (Issue 2 fix)
+        # Prioritize successful council members for fallback Arbiter.
         # Priority: ternion_a → ternion_b → ternion_c
         fallback_providers = []
         for analysis in successful_analyses:
@@ -4707,6 +4708,12 @@ async def optimizer_node(state: TernionState) -> TernionState:
     applies only necessary improvements via tool calls, and finally outputs:
     - an internal optimizer report retained in the execution session (user-invisible)
     - a user-visible work summary report
+
+    Args:
+        state: Current LangGraph state dict containing session variables.
+
+    Returns:
+        Updated state dict transitioning to complete or handling errors.
     """
     logger.info("workflow_optimizer_start")
     log_manager.emit(

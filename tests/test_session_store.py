@@ -116,7 +116,7 @@ class TestSession:
 
     def test_session_from_dict_legacy_format(self) -> None:
         """Session should migrate legacy single-field format on load."""
-        # Simulate old session file format (before dual-field migration)
+        # Simulate legacy session format without separate raw/safe fields
         legacy_data = {
             "session_id": "legacy789",
             "stage": "awaiting_confirmation",

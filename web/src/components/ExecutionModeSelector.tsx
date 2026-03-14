@@ -118,7 +118,6 @@ function ModeCard({
 
   return (
     <div className={outer} onClick={onClick}>
-      {/* Recommended badge for cursor_handoff */}
       {subtitle && (
         <div className="absolute -top-2 left-4 z-20 px-2 py-0.5 bg-emerald-500 text-white text-xs font-medium rounded">
           {subtitle}
@@ -126,10 +125,8 @@ function ModeCard({
       )}
 
       <div className={inner}>
-        {/* Title */}
         <h3 className="text-lg font-semibold mb-3 mt-1">{title}</h3>
 
-        {/* Pros */}
         <div className="mb-3">
           <div className="text-sm font-medium text-emerald-600 dark:text-emerald-400 mb-1">
             {prosLabel}
@@ -144,7 +141,6 @@ function ModeCard({
           </ul>
         </div>
 
-        {/* Cons */}
         <div>
           <div className="text-sm font-medium text-amber-600 dark:text-amber-400 mb-1">
             {consLabel}
@@ -192,9 +188,7 @@ export function ExecutionModeSelector({
   const handleCardClick = useCallback(async (mode: ExecutionMode) => {
     if (!mode) return;
 
-    // Clicking saved card:
-    // - If pending another selection: treat as cancel (matches "click elsewhere including saved card")
-    // - Otherwise: do nothing
+    // Discards pending selection if the currently saved mode is clicked.
     if (mode === savedMode) {
       if (isPendingSave) {
         setSelectedMode('');
@@ -271,7 +265,6 @@ export function ExecutionModeSelector({
       className="card"
       ref={containerRef}
     >
-      {/* Section Header */}
       <div className="card-header flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -294,11 +287,8 @@ export function ExecutionModeSelector({
         )}
       </div>
 
-      {/* Card Body */}
       <div className="card-body">
-        {/* Mode Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          {/* Cursor Handoff Card (Recommended) */}
           <ModeCard
             title={t.execModeCursorTitle}
             subtitle={t.execModeRecommended}
@@ -313,7 +303,6 @@ export function ExecutionModeSelector({
             isDarkMode={isDarkMode}
           />
 
-          {/* Ternion Full Card */}
           <ModeCard
             title={t.execModeTernionTitle}
             pros={ternionPros}

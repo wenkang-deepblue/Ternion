@@ -30,8 +30,9 @@ def get_allowed_origins() -> list[str]:
     """
     Build CORS allowed origins based on user configuration.
 
-    Returns origins for localhost and 127.0.0.1 on the configured web port,
-    plus any user-defined extra origins (for LAN access scenarios).
+    Returns:
+        Origins for localhost and 127.0.0.1 on the configured web port,
+        plus any user-defined extra origins (for LAN access scenarios).
     """
     config = config_store.load()
     web_port = config.ports.web
@@ -42,7 +43,7 @@ def get_allowed_origins() -> list[str]:
         f"http://127.0.0.1:{web_port}",
     ]
 
-    # Add user-configured extra origins (v1/v1.5 advanced feature)
+    # Add user-configured extra origins for advanced LAN access scenarios.
     # Format: user provides IP like "192.168.1.100", we build full origin
     for extra in config.cors_extra_origins:
         if extra and not extra.startswith("http"):
@@ -61,9 +62,15 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     Application lifespan: logs startup banner with version/CORS info, emits
     lifecycle events for the Observability panel, and logs shutdown.
 
-    Uses the modern FastAPI lifespan pattern (replaces on_event).
+    Uses the modern FastAPI lifespan pattern.
+
+    Args:
+        _app: The FastAPI application instance.
+
+    Yields:
+        None, yielding control to the application until shutdown.
     """
-    # Startup — CORS origins were already fixed at import time; this is informational only.
+    # Startup - CORS origins were already fixed at import time; this is informational only.
     allowed_origins = get_allowed_origins()
     logger.info(
         "ternion_starting",
@@ -125,7 +132,15 @@ app.include_router(control_router)  # Control Panel API
 
 @app.exception_handler(TernionError)
 async def ternion_error_handler(request: Request, exc: TernionError) -> JSONResponse:
-    """Handle Ternion-specific exceptions."""
+    """Handle Ternion-specific exceptions.
+
+    Args:
+        request: The FastAPI request object.
+        exc: The TernionError exception instance.
+
+    Returns:
+        A JSON response containing the error details.
+    """
     logger.error(
         "ternion_error",
         error=exc.message,
@@ -152,6 +167,13 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     Returns a simplified OpenAI-compatible JSON error instead of Pydantic's
     default 422 with a detail array, because Cursor does not display the
     raw Pydantic format to users.
+
+    Args:
+        request: The FastAPI request object.
+        exc: The RequestValidationError exception instance.
+
+    Returns:
+        A JSON response formatted for OpenAI compatibility.
     """
     # Build user-friendly error message from validation errors
     errors = exc.errors()
@@ -184,7 +206,15 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 @app.exception_handler(Exception)
 async def general_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Handle unexpected exceptions."""
+    """Handle unexpected exceptions.
+
+    Args:
+        request: The FastAPI request object.
+        exc: The Exception instance.
+
+    Returns:
+        A generic internal error JSON response.
+    """
     logger.exception(
         "unexpected_error",
         error=str(exc),

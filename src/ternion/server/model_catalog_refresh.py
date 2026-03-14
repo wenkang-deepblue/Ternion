@@ -25,13 +25,24 @@ VALID_REFRESH_MODES = set(get_args(ModelCatalogRefreshMode))
 
 
 def utc_now() -> datetime:
-    """Return the current UTC time."""
+    """Return the current UTC time.
+
+    Returns:
+        A datetime object representing current time in UTC.
+    """
 
     return datetime.now(UTC)
 
 
 def format_utc_timestamp(value: datetime) -> str:
-    """Serialize a UTC datetime to ISO-8601 with Z suffix."""
+    """Serialize a UTC datetime to ISO-8601 with Z suffix.
+
+    Args:
+        value: The datetime object to format.
+
+    Returns:
+        The formatted ISO-8601 string.
+    """
 
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
@@ -39,7 +50,11 @@ def format_utc_timestamp(value: datetime) -> str:
 def parse_utc_timestamp(value: str) -> datetime | None:
     """Parse an ISO-8601 timestamp with optional Z suffix.
 
-    Returns ``None`` for empty input or when parsing fails.
+    Args:
+        value: The ISO-8601 timestamp string.
+
+    Returns:
+        A UTC datetime object, or ``None`` for empty input or when parsing fails.
     """
 
     if not value:
@@ -52,6 +67,12 @@ def parse_utc_timestamp(value: str) -> datetime | None:
 
 def parse_time_of_day(value: str) -> tuple[int, int]:
     """Parse an ``HH:MM`` time-of-day string into ``(hour, minute)``.
+
+    Args:
+        value: The time string formatted as ``HH:MM``.
+
+    Returns:
+        A tuple of (hour, minute) integers.
 
     Raises:
         ValueError: If the value is not in ``HH:MM`` format or falls outside
@@ -74,7 +95,12 @@ def parse_time_of_day(value: str) -> tuple[int, int]:
 def normalize_time_of_day(value: str | None) -> str:
     """Validate and return a zero-padded ``HH:MM`` time string.
 
-    Defaults to ``DEFAULT_REFRESH_TIME`` when ``value`` is ``None``.
+    Args:
+        value: The time string to normalize, or None to use default.
+
+    Returns:
+        A valid ``HH:MM`` format time string. Defaults to ``DEFAULT_REFRESH_TIME``
+        when ``value`` is ``None``.
     """
 
     hour, minute = parse_time_of_day(value or DEFAULT_REFRESH_TIME)
@@ -87,7 +113,13 @@ def compute_next_refresh_at(
 ) -> str:
     """Compute the next scheduled refresh timestamp in UTC.
 
-    Returns an empty string when automatic refresh is disabled.
+    Args:
+        settings: The model catalog refresh settings.
+        now: Optional current datetime to base calculations upon.
+
+    Returns:
+        The scheduled UTC refresh timestamp string, or an empty string when
+        automatic refresh is disabled.
     """
 
     if not settings.enabled:
@@ -116,7 +148,14 @@ def compute_next_refresh_at(
 
 
 def compute_retry_refresh_at(now: datetime | None = None) -> str:
-    """Return the next retry time used after refresh failures."""
+    """Return the next retry time used after refresh failures.
+
+    Args:
+        now: Optional current datetime to base calculations upon.
+
+    Returns:
+        The UTC retry timestamp string.
+    """
 
     return format_utc_timestamp((now or utc_now()) + RETRY_DELAY)
 
@@ -129,6 +168,13 @@ def is_refresh_due(
 
     Invalid timestamps are treated as immediately due so the scheduler can
     recover from corrupted persisted state.
+
+    Args:
+        settings: The model catalog refresh settings.
+        now: Optional current datetime to check against.
+
+    Returns:
+        True if refresh is due, False otherwise.
     """
 
     if not settings.enabled or not settings.next_refresh_at:
@@ -148,7 +194,12 @@ def schedule_next_refresh(
     *,
     now: datetime | None = None,
 ) -> None:
-    """Update next_refresh_at according to the configured schedule."""
+    """Update next_refresh_at according to the configured schedule.
+
+    Args:
+        settings: The model catalog refresh configuration to mutate.
+        now: Optional current datetime to base calculations upon.
+    """
 
     settings.next_refresh_at = compute_next_refresh_at(settings, now)
 
@@ -158,13 +209,27 @@ def schedule_retry_refresh(
     *,
     now: datetime | None = None,
 ) -> None:
-    """Update next_refresh_at to the retry time after a failed refresh."""
+    """Update next_refresh_at to the retry time after a failed refresh.
+
+    Args:
+        settings: The model catalog refresh configuration to mutate.
+        now: Optional current datetime to base calculations upon.
+    """
 
     settings.next_refresh_at = compute_retry_refresh_at(now)
 
 
 def save_refresh_state(config: UserConfig, *, trigger: str, outcome: str) -> None:
-    """Persist refresh metadata and add context if saving fails."""
+    """Persist refresh metadata and add context if saving fails.
+
+    Args:
+        config: The UserConfig to save.
+        trigger: The source of the refresh (e.g., 'manual', 'automatic').
+        outcome: The status outcome of the refresh attempt.
+
+    Raises:
+        Exception: If the configuration save operation fails.
+    """
 
     try:
         config_store.save(config)
@@ -183,6 +248,12 @@ async def refresh_catalog_and_update_schedule(trigger: str) -> dict:
 
     Args:
         trigger: Refresh source, such as ``"manual"`` or ``"automatic"``.
+
+    Returns:
+        A dictionary payload containing the latest catalog refresh data.
+
+    Raises:
+        Exception: If the refresh operation fundamentally fails.
     """
 
     refresh_started_at = utc_now()
@@ -245,7 +316,11 @@ async def refresh_catalog_and_update_schedule(trigger: str) -> dict:
 
 
 async def run_model_catalog_refresh_scheduler(stop_event: asyncio.Event) -> None:
-    """Run the in-process automatic refresh loop until ``stop_event`` is set."""
+    """Run the in-process automatic refresh loop until ``stop_event`` is set.
+
+    Args:
+        stop_event: An event used to signal when to terminate the scheduler loop.
+    """
 
     logger.info("model_catalog_refresh_scheduler_started")
     try:

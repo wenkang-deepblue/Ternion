@@ -172,12 +172,26 @@ PROVIDER_DISPLAY_NAMES = {
 
 
 def _get_provider_display_name(provider: str) -> str:
-    """Get human-readable display name for a provider."""
+    """Get human-readable display name for a provider.
+
+    Args:
+        provider: The provider ID.
+
+    Returns:
+        The display name of the provider.
+    """
     return PROVIDER_DISPLAY_NAMES.get(provider, provider.title())
 
 
 def _canonicalize_config_roles(config: object) -> bool:
-    """Canonicalize role model IDs in an in-memory config object when possible."""
+    """Canonicalize role model IDs in an in-memory config object when possible.
+
+    Args:
+        config: The config object to canonicalize.
+
+    Returns:
+        True if the configuration was modified, False otherwise.
+    """
     roles = getattr(config, "roles", None)
     if not isinstance(roles, dict):
         return False
@@ -202,7 +216,15 @@ def _canonicalize_config_roles(config: object) -> bool:
 
 
 async def _get_model_display_name(provider: str, model_id: str) -> str:
-    """Get human-readable display name for a model."""
+    """Get human-readable display name for a model.
+
+    Args:
+        provider: The provider ID.
+        model_id: The model ID.
+
+    Returns:
+        The display name of the model.
+    """
     model = model_catalog_service.get_model_cached(model_id)
     if model is not None and model.provider == provider:
         return model.name
@@ -211,6 +233,13 @@ async def _get_model_display_name(provider: str, model_id: str) -> str:
 
 async def _get_catalog_model_for_provider(provider: str, model_id: str) -> CatalogModel:
     """Get a catalog model and enforce provider/model consistency.
+
+    Args:
+        provider: The provider ID.
+        model_id: The model ID.
+
+    Returns:
+        The matching catalog model.
 
     Raises:
         HTTPException: If the model is missing from the catalog or belongs to a
@@ -224,7 +253,14 @@ async def _get_catalog_model_for_provider(provider: str, model_id: str) -> Catal
 
 
 def _build_model_probe_failure_response(result: ModelAvailabilityProbeResult) -> JSONResponse:
-    """Build a structured HTTP response for a failed model probe."""
+    """Build a structured HTTP response for a failed model probe.
+
+    Args:
+        result: The result from a failed model probe.
+
+    Returns:
+        A formatted JSONResponse representing the failure.
+    """
     log_manager.emit(
         "ERROR",
         "ERROR",
@@ -249,6 +285,9 @@ async def get_config() -> dict:
     Get current configuration.
 
     Returns safe version with masked API keys.
+
+    Returns:
+        A dictionary containing the safe configuration.
     """
     config = config_store.load()
     _canonicalize_config_roles(config)
@@ -257,7 +296,14 @@ async def get_config() -> dict:
 
 @router.post("/api-keys/add")
 async def add_api_key(request: AddApiKeyRequest) -> dict:
-    """Add a new API key to a provider."""
+    """Add a new API key to a provider.
+
+    Args:
+        request: The add API key request containing provider and key details.
+
+    Returns:
+        A dictionary with success status and updated safe config.
+    """
     provider_display = _get_provider_display_name(request.provider)
 
     if request.provider not in ["google", "anthropic", "openai"]:
@@ -301,7 +347,14 @@ async def add_api_key(request: AddApiKeyRequest) -> dict:
 
 @router.post("/api-keys/delete")
 async def delete_api_key(request: DeleteApiKeyRequest) -> dict:
-    """Delete an API key from a provider."""
+    """Delete an API key from a provider.
+
+    Args:
+        request: The delete request containing provider and key ID.
+
+    Returns:
+        A dictionary with success status and updated safe config.
+    """
     provider_display = _get_provider_display_name(request.provider)
 
     if request.provider not in ["google", "anthropic", "openai"]:
@@ -349,7 +402,14 @@ async def delete_api_key(request: DeleteApiKeyRequest) -> dict:
 
 @router.post("/api-keys/select")
 async def select_api_key(request: SelectApiKeyRequest) -> dict:
-    """Select an API key as the active one for a provider."""
+    """Select an API key as the active one for a provider.
+
+    Args:
+        request: The select request containing provider and key ID.
+
+    Returns:
+        A dictionary with success status, key name, and updated safe config.
+    """
     provider_display = _get_provider_display_name(request.provider)
 
     if request.provider not in ["google", "anthropic", "openai"]:
@@ -397,6 +457,12 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
     Update configuration.
 
     Accepts partial updates - only specified fields are updated.
+
+    Args:
+        request: The configuration update request containing partial fields.
+
+    Returns:
+        A dictionary with success status and updated safe config, or JSONResponse on failure.
     """
     config = config_store.load()
     _canonicalize_config_roles(config)
@@ -598,6 +664,12 @@ async def log_role_selection(request: RoleSelectionLogRequest) -> dict:
 
     This is used by the Web UI to record user choices while indicating
     the configuration has not been saved yet.
+
+    Args:
+        request: The selection request containing role and model info.
+
+    Returns:
+        A dictionary indicating the selection was successfully logged.
     """
     enabled = set(config_store.get_enabled_providers())
     if request.provider not in enabled:
@@ -633,6 +705,12 @@ async def log_execution_mode_selection(request: ExecutionModeSelectionLogRequest
 
     This is used by the Web UI to record user choice while indicating
     the configuration has not been saved yet.
+
+    Args:
+        request: The execution mode selection request.
+
+    Returns:
+        A dictionary indicating the selection was successfully logged.
     """
     if request.execution_mode not in ("cursor_handoff", "ternion_full"):
         raise HTTPException(status_code=400, detail="INVALID_EXECUTION_MODE")
@@ -655,7 +733,14 @@ async def log_execution_mode_selection(request: ExecutionModeSelectionLogRequest
 
 @router.get("/usage")
 async def get_usage(month: str | None = None) -> dict:
-    """Get detailed usage statistics for charts and dashboard."""
+    """Get detailed usage statistics for charts and dashboard.
+
+    Args:
+        month: The optional month filter in "YYYY-MM" format.
+
+    Returns:
+        A dictionary of usage statistics.
+    """
     return budget_manager.get_detailed_usage(month=month)
 
 
@@ -668,6 +753,12 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
     - Gemini: gemini-2.0-flash-lite (list models API - no LLM call)
     - Claude: claude-haiku-4-5-20251001 (1 token max)
     - GPT: gpt-4.1-nano (list models API - no LLM call)
+
+    Args:
+        request: The test request with provider and API key.
+
+    Returns:
+        A response indicating success or failure of the provider test.
     """
     provider_display = _get_provider_display_name(request.provider)
 
@@ -721,7 +812,7 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
 
     except Exception as e:
         error_msg = str(e)
-        # Redact any secrets that might be in error messages (CR-027)
+        # Redact any secrets that might be in error messages
         safe_error_msg = redact_secrets(error_msg)
         error_lower = error_msg.lower()
         auth_keywords = [
@@ -755,7 +846,11 @@ async def test_provider(request: TestProviderRequest) -> TestProviderResponse:
 
 @router.get("/status")
 async def get_status() -> dict:
-    """Get server status."""
+    """Get server status.
+
+    Returns:
+        A dictionary representing server operational status.
+    """
     enabled = config_store.get_enabled_providers()
     return {
         "server_status": "running",
@@ -776,7 +871,14 @@ class PreferencesUpdateRequest(BaseModel):
 
 @router.put("/preferences")
 async def update_preferences(request: PreferencesUpdateRequest) -> dict:
-    """Update user preferences (theme, language, hide_usage_disclaimer)."""
+    """Update user preferences (theme, language, hide_usage_disclaimer).
+
+    Args:
+        request: The update request containing updated preferences.
+
+    Returns:
+        A dictionary containing the success status and the updated preferences.
+    """
     config = config_store.load()
 
     if request.theme is not None:
@@ -839,7 +941,11 @@ async def update_preferences(request: PreferencesUpdateRequest) -> dict:
 
 @router.get("/models")
 async def get_available_models() -> dict:
-    """Get available models for each provider."""
+    """Get available models for each provider.
+
+    Returns:
+        A dictionary payload containing available models and enabled providers.
+    """
     enabled = config_store.get_enabled_providers()
     payload = await model_catalog_service.get_models_payload(allow_remote_fetch=False)
     payload["enabled_providers"] = enabled
@@ -849,6 +955,9 @@ async def get_available_models() -> dict:
 @router.post("/models/refresh")
 async def refresh_models() -> dict:
     """Force-refresh the model catalog for initialization or manual updates.
+
+    Returns:
+        A dictionary payload containing the latest catalog refresh data.
 
     Raises:
         HTTPException: If the refresh fails or the resulting catalog is empty.
@@ -877,7 +986,11 @@ async def refresh_models() -> dict:
 
 @router.get("/models/anomaly-report", response_class=PlainTextResponse)
 async def get_model_anomaly_report() -> PlainTextResponse:
-    """Return the latest model catalog anomaly report as Markdown."""
+    """Return the latest model catalog anomaly report as Markdown.
+
+    Returns:
+        A plain text response containing the report in Markdown.
+    """
     report_markdown = model_catalog_service.get_anomaly_report_markdown()
     if report_markdown is None:
         log_manager.emit("WARN", "ERROR", "Model catalog anomaly report requested but not found")
@@ -887,7 +1000,11 @@ async def get_model_anomaly_report() -> PlainTextResponse:
 
 @router.get("/ports")
 async def get_ports() -> dict:
-    """Get current port configuration."""
+    """Get current port configuration.
+
+    Returns:
+        A dictionary with the backend and web port configuration.
+    """
     config = config_store.load()
     return {
         "backend": config.ports.backend,
@@ -901,6 +1018,12 @@ async def update_ports(request: PortsUpdateRequest) -> dict:
     Update port configuration.
 
     Port changes are saved to config but require manual server restart to take effect.
+
+    Args:
+        request: The port update request containing backend and/or web ports.
+
+    Returns:
+        A dictionary indicating the updated configuration and that a restart is required.
     """
     config = config_store.load()
 
@@ -950,6 +1073,9 @@ async def download_logs() -> DownloadLogsResponse:
     Download current session logs to ~/.ternion/log.json.
 
     Exports all logs from the current session to a JSON file for offline analysis.
+
+    Returns:
+        A response indicating success, the path to the saved file, and the number of logs.
     """
     import json as json_lib
     from datetime import datetime
@@ -1001,8 +1127,14 @@ async def reveal_file(request: RevealFileRequest) -> dict:
     """
     Reveal a file in the system file manager (Finder on macOS, Explorer on Windows).
 
-    Security: Path traversal prevention — only paths within ~/.ternion/ are
+    Security: Path traversal prevention - only paths within ~/.ternion/ are
     allowed to avoid arbitrary file system access via the web panel.
+
+    Args:
+        request: The request containing the file path to reveal.
+
+    Returns:
+        A dictionary indicating success.
     """
     import os
     import platform
@@ -1049,7 +1181,14 @@ async def reveal_file(request: RevealFileRequest) -> dict:
 
 
 async def _log_event_generator(queue: asyncio.Queue) -> AsyncGenerator[str, None]:
-    """Generate SSE events from log queue."""
+    """Generate SSE events from log queue.
+
+    Args:
+        queue: The asyncio queue from which to read logs.
+
+    Yields:
+        Server-Sent Event formatted string containing log entries.
+    """
     import json
 
     try:
@@ -1071,7 +1210,11 @@ async def _log_event_generator(queue: asyncio.Queue) -> AsyncGenerator[str, None
 
 @router.get("/logs/stream")
 async def stream_logs() -> StreamingResponse:
-    """SSE endpoint for real-time log streaming."""
+    """SSE endpoint for real-time log streaming.
+
+    Returns:
+        A streaming response that continuously sends log data as Server-Sent Events.
+    """
     queue = log_manager.subscribe()
 
     async def cleanup_generator() -> AsyncGenerator[str, None]:

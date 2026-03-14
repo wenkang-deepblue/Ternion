@@ -15,21 +15,17 @@ import type { Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
 import type { Language } from '../i18n';
 
-// API Key section icons
 import apiKeyIconLight from '../assets/icons/api_key_light_mode_50dp.svg';
 import apiKeyIconDark from '../assets/icons/api_key_dark_mode_50dp.svg';
 
-// Provider logos
 import geminiLogo from '../assets/icons/gemini_logo.png';
 import claudeLogo from '../assets/icons/claude_logo.png';
 import openaiLogo from '../assets/icons/openai_logo.png';
 import openaiLogoDark from '../assets/icons/openai_logo_dark_mode.png';
 
-// Visibility toggle icon
 import visibilityIconLight from '../assets/icons/visibility_light_mode_50dp.svg';
 import visibilityIconDark from '../assets/icons/visibility_dark_mode_50dp.svg';
 
-// Delete icon
 import deleteIconLight from '../assets/icons/delete_light_mode_50dp.svg';
 import deleteIconDark from '../assets/icons/delete_dark_mode_50dp.svg';
 
@@ -70,7 +66,6 @@ const PROVIDER_INFO = {
   },
 };
 
-// Provider names and descriptions from i18n
 const getProviderInfo = (provider: string, t: Translations) => {
   const providerData = {
     google: { name: t.providerGoogle, desc: t.providerGoogleDesc },
@@ -100,7 +95,6 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode, language 
   const [saving, setSaving] = useState(false);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
 
-  // Calculate key name input width based on placeholder text
   const keyNameInputWidth = useMemo(() => {
     const textWidth = measureTextWidth(t.apiKeyPlaceholder);
     return `${Math.max(textWidth + 35, 150)}px`;
@@ -129,7 +123,6 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode, language 
       const testResult = await api.testProvider(provider, key);
 
       if (!testResult.success) {
-        // Use global getErrorMessage helper
         let errorMessage = getErrorMessage(t, testResult.code, language);
         
         // If translation is missing (returns code) or it is a connection error, append detail
@@ -165,7 +158,6 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode, language 
         [provider]: { name: '', key: '' },
       }));
 
-      // Success message with localized provider name
       const { name: providerName } = getProviderInfo(provider, t);
       showToast(`${providerName} ${t.code_SUCCESS}`, 'success');
 
@@ -250,7 +242,6 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode, language 
                 </div>
               </div>
 
-              {/* Existing Keys */}
               {keys.length > 0 && (
                 <div className="mb-4 space-y-2">
                   {keys.map((keyInfo) => (
@@ -286,7 +277,6 @@ export function ApiKeyManager({ config, onConfigUpdate, t, isDarkMode, language 
                 </div>
               )}
 
-              {/* Add New Key */}
               <div className="flex flex-col gap-1">
                 <div className="flex gap-2" style={{ marginLeft: '2px' }}>
                   <span className="text-xs text-slate-500 dark:text-slate-400" style={{ width: keyNameInputWidth, minWidth: '150px' }}>{t.apiKeyNameLabel}</span>

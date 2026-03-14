@@ -607,7 +607,7 @@ class TestRoleConfigValidation:
         config.show_thinking_logs = True
         # Role with empty model
         config.roles = {
-            "ternion_a": RoleConfig(provider="openai", model=""),  # Empty model!
+            "ternion_a": RoleConfig(provider="openai", model=""),  # Role with empty model
             "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
             "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
             "arbiter": RoleConfig(provider="openai", model="gpt-4"),
@@ -648,7 +648,7 @@ class TestRoleConfigValidation:
         config.show_thinking_logs = True
         # Role with empty provider
         config.roles = {
-            "ternion_a": RoleConfig(provider="", model="gpt-4"),  # Empty provider!
+            "ternion_a": RoleConfig(provider="", model="gpt-4"),  # Role with empty provider
             "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
             "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
             "arbiter": RoleConfig(provider="openai", model="gpt-4"),

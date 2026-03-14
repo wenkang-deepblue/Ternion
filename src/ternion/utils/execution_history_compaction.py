@@ -35,8 +35,12 @@ def compact_execution_history_for_writer(
     """
     Compact execution history for the Writer.
 
+    Args:
+        history: The full execution history list of messages.
+        config: Optional ExecutionHistoryCompactionConfig configuration.
+
     Returns:
-        (trimmed_history, tool_context_digest)
+        A tuple of (trimmed_history_messages, tool_context_digest_string).
     """
     cfg = config or ExecutionHistoryCompactionConfig()
     total_chars = _estimate_history_chars(history)

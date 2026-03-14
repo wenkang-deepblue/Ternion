@@ -48,7 +48,6 @@ class MessageRouter:
             logger.warning("extract_context_empty", message_count=0)
             return TernionContext()
 
-        # Check if first message is a system prompt
         cursor_system_prompt: ChatMessage | None = None
         conversation_history: list[ChatMessage] = []
         has_images = False
@@ -65,7 +64,6 @@ class MessageRouter:
             else:
                 conversation_history.append(msg)
 
-                # Check for images in content
                 if self._contains_images(msg.content):
                     has_images = True
 

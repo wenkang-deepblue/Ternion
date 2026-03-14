@@ -237,6 +237,12 @@ def _hash_excerpt(excerpt: str) -> str:
 def parse_evidence_bundle(bundle: str) -> list[EvidenceItem]:
     """
     Parse evidence bundle into structured evidence items.
+
+    Args:
+        bundle: The raw evidence bundle string.
+
+    Returns:
+        A list of structured EvidenceItem objects.
     """
     lines = (bundle or "").splitlines()
     items: list[EvidenceItem] = []
@@ -386,6 +392,12 @@ def merge_adjacent_or_overlapping_ranges(
 ) -> list[tuple[int, int]]:
     """
     Merge ranges using the rule: merge only when overlapping or adjacent.
+
+    Args:
+        ranges: A list of (start, end) line range tuples.
+
+    Returns:
+        A new list of merged (start, end) ranges.
     """
     normalized: list[tuple[int, int]] = []
     for start, end in ranges or []:
@@ -419,6 +431,13 @@ def compute_missing_ranges(
 ) -> list[tuple[int, int]]:
     """
     Compute missing subranges within request_range that are not covered.
+
+    Args:
+        request_range: The total (start, end) requested range.
+        covered_ranges: A list of already-covered (start, end) ranges.
+
+    Returns:
+        A list of missing (start, end) subranges.
     """
     start, end = request_range
     if start <= 0 or end <= 0 or end < start:
@@ -456,6 +475,12 @@ def is_deterministic_range_request(
 ) -> tuple[str, tuple[int, int]] | None:
     """
     Return (path, line_range) when the request is a deterministic single-file range request.
+
+    Args:
+        request: The evidence request to analyze.
+
+    Returns:
+        A tuple of (normalized_path, line_range) if deterministic, else None.
     """
     target_path, request_range = _resolve_request_target(request)
     if not target_path or request_range is None:
@@ -487,6 +512,12 @@ def is_deterministic_range_request(
 def parse_evidence_requests(requests: str) -> list[EvidenceRequest]:
     """
     Parse evidence requests and associated PURPOSE lines into structured entries.
+
+    Args:
+        requests: The raw evidence requests string.
+
+    Returns:
+        A list of parsed EvidenceRequest objects.
     """
     lines = [line for line in (requests or "").splitlines() if line.strip()]
     entries: list[EvidenceRequest] = []
@@ -524,6 +555,12 @@ def canonicalize_evidence_requests_text(requests: str) -> str:
 
     Unstructured noise is dropped. If no structured requests remain, the
     canonical empty marker is returned.
+
+    Args:
+        requests: The raw evidence requests string.
+
+    Returns:
+        The canonicalized requests string.
     """
     entries = parse_evidence_requests(requests or "")
     if not entries:
@@ -840,8 +877,13 @@ def reconcile_evidence_chain(
     """
     Reconcile evidence requests/gaps against evidence bundle.
 
+    Args:
+        evidence_bundle: The raw evidence bundle string.
+        evidence_gaps: The raw evidence gaps string.
+        evidence_requests: The raw evidence requests string.
+
     Returns:
-        (reconciled_gaps, evidence_chain_index)
+        A tuple of (reconciled_gaps_string, evidence_chain_index).
     """
     evidence_items = parse_evidence_bundle(evidence_bundle)
     total_lines_index = _parse_total_lines_index(evidence_bundle)
@@ -966,6 +1008,13 @@ def merge_missing_purpose_gaps(
 ) -> str:
     """
     Ensure missing PURPOSE metadata is surfaced as evidence gaps.
+
+    Args:
+        evidence_bundle: The raw evidence bundle string.
+        evidence_gaps: The current evidence gaps string.
+
+    Returns:
+        The updated evidence gaps string containing missing PURPOSE entries.
     """
     evidence_items = parse_evidence_bundle(evidence_bundle)
     missing_lines = _collect_missing_purpose_gaps(evidence_items)

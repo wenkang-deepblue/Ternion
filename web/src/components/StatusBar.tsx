@@ -102,9 +102,7 @@ export function StatusBar({ config, modelsData, t }: StatusBarProps) {
 
   return (
     <div className="bg-slate-100 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 py-2 px-4">
-      {/* First row - API keys and Ternion status */}
       <div className="mx-auto flex flex-wrap items-center justify-center gap-3 text-sm">
-        {/* API Key Status */}
         <StatusItem
           isComplete={hasApiKey}
           pendingText={t.statusAddApiKey}
@@ -113,7 +111,6 @@ export function StatusBar({ config, modelsData, t }: StatusBarProps) {
 
         <span className="text-slate-300 dark:text-slate-600">|</span>
 
-        {/* Ternion A Status */}
         <StatusItem
           isComplete={ternionAConfigured}
           pendingText={t.statusConfigTernionA}
@@ -122,7 +119,6 @@ export function StatusBar({ config, modelsData, t }: StatusBarProps) {
 
         <span className="text-slate-300 dark:text-slate-600">|</span>
 
-        {/* Ternion B Status */}
         <StatusItem
           isComplete={ternionBConfigured}
           pendingText={t.statusConfigTernionB}
@@ -131,7 +127,6 @@ export function StatusBar({ config, modelsData, t }: StatusBarProps) {
 
         <span className="text-slate-300 dark:text-slate-600">|</span>
 
-        {/* Ternion C Status */}
         <StatusItem
           isComplete={ternionCConfigured}
           pendingText={t.statusConfigTernionC}
@@ -139,9 +134,7 @@ export function StatusBar({ config, modelsData, t }: StatusBarProps) {
         />
       </div>
 
-      {/* Second row - Core roles status */}
       <div className="mx-auto flex flex-wrap items-center justify-center gap-3 text-sm mt-1">
-        {/* Execution Mode Status */}
         <StatusItem
           isComplete={hasExecutionMode}
           pendingText={t.statusExecModeNotSelected}
@@ -150,7 +143,6 @@ export function StatusBar({ config, modelsData, t }: StatusBarProps) {
 
         <span className="text-slate-300 dark:text-slate-600">|</span>
 
-        {/* Arbiter Status */}
         <StatusItem
           isComplete={arbiterConfigured}
           pendingText={t.statusConfigArbiter}
@@ -159,7 +151,6 @@ export function StatusBar({ config, modelsData, t }: StatusBarProps) {
 
         <span className="text-slate-300 dark:text-slate-600">|</span>
 
-        {/* Writer Status */}
         <StatusItem
           isComplete={writerEffectiveComplete}
           pendingText={t.statusConfigWriter}
@@ -172,7 +163,6 @@ export function StatusBar({ config, modelsData, t }: StatusBarProps) {
 
         <span className="text-slate-300 dark:text-slate-600">|</span>
 
-        {/* Reviewer Status */}
         <StatusItem
           isComplete={reviewerEffectiveComplete}
           pendingText={t.statusConfigReviewer}

@@ -56,7 +56,6 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
         Final state dict with generated_code, final_output, and other results.
         If required fields are missing, returns an error state with explanation.
     """
-    # Input validation: Check for required fields
     missing_fields = []
 
     if not state.get("ternion_report"):
@@ -93,7 +92,6 @@ async def run_implementation_stage(state: TernionState) -> dict[str, Any]:
         phase = WorkflowPhase.EXECUTION.value
     state["current_phase"] = phase
 
-    # Run execution + optimizer loop
     max_iterations = 50
     iterations = 0
     while True:

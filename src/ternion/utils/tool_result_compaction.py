@@ -55,8 +55,14 @@ def compact_tool_result(
     """
     Compact a tool result deterministically.
 
+    Args:
+        tool_name: The name of the tool called.
+        content: The raw result content to compact.
+        tool_arguments: The JSON arguments string passed to the tool.
+        config: Compaction configuration overrides.
+
     Returns:
-        (compacted_content, meta)
+        A tuple of (compacted_content_string, compaction_metadata_dict).
     """
     cfg = config or ToolResultCompactionConfig()
     raw = content or ""

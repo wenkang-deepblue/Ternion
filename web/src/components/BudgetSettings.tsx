@@ -119,7 +119,6 @@ export function BudgetSettings({ config, onConfigUpdate, t, isDarkMode, language
       </div>
       <div className="card-body">
         <div className="grid grid-cols-2 gap-6">
-          {/* Monthly Limit */}
           <div>
             <label className="label">{t.monthlyLimit}</label>
             <div className="flex items-center gap-2">
@@ -141,7 +140,6 @@ export function BudgetSettings({ config, onConfigUpdate, t, isDarkMode, language
             </p>
           </div>
 
-          {/* Alert Threshold */}
           <div>
             <label className="label">{t.alertThreshold}</label>
             <select
@@ -161,7 +159,6 @@ export function BudgetSettings({ config, onConfigUpdate, t, isDarkMode, language
           </div>
         </div>
 
-        {/* Preview */}
         <div className="mt-6 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
           <h4 className="text-sm font-medium mb-3">{t.preview}</h4>
           <div className="grid grid-cols-2 gap-4 text-sm">

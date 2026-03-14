@@ -101,7 +101,14 @@ class Settings(BaseSettings):
 
     @classmethod
     def from_yaml(cls, path: Path) -> "Settings":
-        """Load settings from a YAML file."""
+        """Load settings from a YAML file.
+        
+        Args:
+            path: Path to the YAML configuration file.
+            
+        Returns:
+            A populated Settings instance.
+        """
         if not path.exists():
             return cls()
 
@@ -134,6 +141,9 @@ def get_settings() -> Settings:
 
     Loads from YAML config file if TERNION_CONFIG_PATH is set,
     otherwise uses defaults with environment variable overrides.
+    
+    Returns:
+        The active Settings instance.
     """
     config_path = os.environ.get("TERNION_CONFIG_PATH")
 

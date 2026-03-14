@@ -249,12 +249,23 @@ def _append_capped(
 
 
 def generate_session_id() -> str:
-    """Generate a short, unique session ID."""
+    """Generate a short, unique session ID.
+    
+    Returns:
+        A 12-character hex string representing the session ID.
+    """
     return uuid.uuid4().hex[:12]
 
 
 def compute_report_hash(report: str) -> str:
-    """Compute hash of report content for verification."""
+    """Compute hash of report content for verification.
+    
+    Args:
+        report: The textual content of the report to hash.
+        
+    Returns:
+        A 16-character hex string representing the SHA-256 hash.
+    """
     return hashlib.sha256(report.encode()).hexdigest()[:16]
 
 
@@ -833,7 +844,11 @@ _session_store: SessionStore | None = None
 
 
 def get_session_store() -> SessionStore:
-    """Get or create the global session store."""
+    """Get or create the global session store.
+    
+    Returns:
+        The globally shared SessionStore instance.
+    """
     global _session_store
     if _session_store is None:
         _session_store = SessionStore()

@@ -39,12 +39,10 @@ interface UsageDashboardProps {
 type TokenType = 'all' | 'input' | 'output' | 'thoughts';
 type ProviderFilter = 'all' | 'google' | 'anthropic' | 'openai';
 
-// Provider logo imports
 import geminiLogo from '../assets/icons/gemini_logo.png';
 import claudeLogo from '../assets/icons/claude_logo.png';
 import openaiLogo from '../assets/icons/openai_logo.png';
 
-// Format large numbers with K/M suffix
 function formatTokenCount(value: number): string {
   if (value >= 1000000) {
     return `${(value / 1000000).toFixed(1)}M`;
@@ -67,7 +65,6 @@ function CustomTooltip({
 }) {
   if (!active || !payload || payload.length === 0) return null;
 
-  // Helper to check if a dataKey represents cost (not tokens)
   const isCostField = (dataKey?: string): boolean => {
     if (!dataKey) return false;
     return dataKey.includes('cost');
@@ -99,7 +96,6 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
   const [showDisclaimer, setShowDisclaimer] = useState(true);
   const [alertThreshold, setAlertThreshold] = useState(0.9);
   
-  // Budget edit popup state
   const [showBudgetEdit, setShowBudgetEdit] = useState(false);
   const [newBudgetLimit, setNewBudgetLimit] = useState<string>('');
   const [budgetSaving, setBudgetSaving] = useState(false);
@@ -117,7 +113,6 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
     thoughts: t.usageThoughtsTokens,
   };
 
-  // Load disclaimer preference from config
   useEffect(() => {
     const loadConfig = async () => {
       try {
@@ -135,7 +130,6 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
     loadConfig();
   }, []);
 
-  // Handle dismiss disclaimer
   const handleDismissDisclaimer = async () => {
     setShowDisclaimer(false);
     try {
@@ -145,7 +139,6 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
     }
   };
 
-  // Close budget edit popup on click outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (budgetEditRef.current && !budgetEditRef.current.contains(event.target as Node)) {
@@ -159,13 +152,11 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showBudgetEdit]);
 
-  // Handle budget edit button click
   const handleBudgetEditClick = () => {
     setNewBudgetLimit(usage?.monthly_limit_usd?.toString() || '50');
     setShowBudgetEdit(true);
   };
 
-  // Handle budget save
   const handleBudgetSave = async () => {
     const newLimit = parseFloat(newBudgetLimit);
     if (isNaN(newLimit) || newLimit <= 0) {
@@ -175,7 +166,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
     try {
       const updatedConfig = await api.updateConfig({ budget: { monthly_limit_usd: newLimit } });
       
-      // Update local usage state immediately for better UX
+      // Applies new budget limit locally to prevent UI lag while awaiting server response.
       if (usage) {
         setUsage({
           ...usage,
@@ -369,7 +360,6 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
         </div>
       )}
 
-      {/* Statistics Cards */}
       <div className="grid grid-cols-4 gap-4">
         <div className="card p-4">
           <div className="text-sm text-slate-500 dark:text-slate-400">{usage.month} {t.usageTotal}</div>
@@ -397,7 +387,6 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
         </div>
       </div>
 
-      {/* Provider Statistics Cards */}
       <div className="grid grid-cols-3 gap-4">
         <div className="card p-4">
           <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
@@ -440,14 +429,12 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
         </div>
       </div>
 
-      {/* Progress Bar */}
       <div className="card p-4">
         <div className="flex justify-between text-sm mb-2">
           <div className="flex items-center gap-2">
             <span className="text-slate-500 dark:text-slate-400">
               {usage.month} {t.usagePercentage}: ${usage.total_cost_usd.toFixed(2)} / ${usage.monthly_limit_usd.toFixed(2)}
             </span>
-            {/* Budget Edit Button */}
             <div className="relative" ref={budgetEditRef}>
               <button
                 onClick={handleBudgetEditClick}
@@ -455,7 +442,6 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
               >
                 {t.usageModifyBudget}
               </button>
-              {/* Budget Edit Popup */}
               <div
                 className={`absolute left-0 top-full mt-2 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 p-3 z-50 origin-top-left transition-all duration-300 ease-in-out ${
                   showBudgetEdit
@@ -502,7 +488,6 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
         </div>
       </div>
 
-      {/* Daily Usage Chart */}
       <div className="card">
         <div className="card-header">
           <div className="flex items-center justify-between">
@@ -614,7 +599,6 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
         </div>
       </div>
 
-      {/* Monthly Usage Chart */}
       <div className="card">
         <div className="card-header">
           <div className="flex items-center justify-between">

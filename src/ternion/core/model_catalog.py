@@ -282,7 +282,14 @@ class LiteLLMModelCatalogService:
             return snapshot
 
     async def list_models(self, force_refresh: bool = False) -> dict[str, list[CatalogModel]]:
-        """List normalized models grouped by provider."""
+        """List normalized models grouped by provider.
+        
+        Args:
+            force_refresh: Whether to bypass freshness checks and revalidate.
+            
+        Returns:
+            A dictionary mapping provider names to lists of normalized CatalogModels.
+        """
         snapshot = await self.get_snapshot(force_refresh=force_refresh)
         return snapshot.models_by_provider
 
@@ -291,12 +298,27 @@ class LiteLLMModelCatalogService:
         model_id: str,
         force_refresh: bool = False,
     ) -> CatalogModel | None:
-        """Get a normalized model entry by model ID."""
+        """Get a normalized model entry by model ID.
+        
+        Args:
+            model_id: The ID of the model to retrieve.
+            force_refresh: Whether to bypass cache freshness checks.
+            
+        Returns:
+            The normalized CatalogModel if found, otherwise None.
+        """
         snapshot = await self.get_snapshot(force_refresh=force_refresh)
         return snapshot.index_by_id.get(model_id) or snapshot.index_by_source_key.get(model_id)
 
     def get_model_cached(self, model_id: str) -> CatalogModel | None:
-        """Get a model from memory or disk cache without network access."""
+        """Get a model from memory or disk cache without network access.
+        
+        Args:
+            model_id: The ID of the model to retrieve.
+            
+        Returns:
+            The normalized CatalogModel if found in cache, otherwise None.
+        """
         if self._memory_snapshot is not None:
             return self._memory_snapshot.index_by_id.get(
                 model_id
@@ -312,7 +334,11 @@ class LiteLLMModelCatalogService:
         return None
 
     def get_anomaly_report(self) -> CatalogAnomalyReport | None:
-        """Return the latest anomaly report from memory or disk, if any."""
+        """Return the latest anomaly report from memory or disk, if any.
+        
+        Returns:
+            The latest CatalogAnomalyReport, or None if no report exists.
+        """
         if self._anomaly_report_checked:
             return self._latest_anomaly_report
 
@@ -322,7 +348,11 @@ class LiteLLMModelCatalogService:
         return report
 
     def get_anomaly_report_markdown(self) -> str | None:
-        """Render the latest anomaly report as Markdown."""
+        """Render the latest anomaly report as Markdown.
+        
+        Returns:
+            A Markdown string representing the latest anomaly report, or None if no report exists.
+        """
         report = self.get_anomaly_report()
         if report is None:
             return None
@@ -377,7 +407,15 @@ class LiteLLMModelCatalogService:
         }
 
     async def is_model_available(self, provider: str, model_id: str) -> bool:
-        """Check whether a model exists in the current catalog for a provider."""
+        """Check whether a model exists in the current catalog for a provider.
+        
+        Args:
+            provider: The name of the LLM provider.
+            model_id: The ID of the model to check.
+            
+        Returns:
+            True if the model is found and belongs to the specified provider, otherwise False.
+        """
         model = await self.get_model(model_id)
         return model is not None and model.provider == provider
 
@@ -387,7 +425,16 @@ class LiteLLMModelCatalogService:
         model_id: str,
         current_models: list[CatalogModel],
     ) -> list[CatalogModel]:
-        """Return the current models unchanged."""
+        """Return the current models unchanged.
+        
+        Args:
+            provider: The name of the LLM provider.
+            model_id: The ID of the model to ensure visibility for.
+            current_models: The current list of visible models.
+            
+        Returns:
+            The original list of models.
+        """
         _ = provider, model_id
         return current_models
 

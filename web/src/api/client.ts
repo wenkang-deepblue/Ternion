@@ -254,6 +254,10 @@ class ApiClient {
   /**
    * Internal generic method to perform fetch requests and handle JSON responses.
    * Throws an error with a unified message format upon non-2xx responses.
+   *
+   * @param endpoint - The API path to append to the base URL.
+   * @param options - Optional native fetch RequestInit options.
+   * @returns The parsed JSON response body cast to the generic type T.
    */
   private async request<T>(endpoint: string, options?: RequestInit): Promise<T> {
     const response = await fetch(`${this.baseUrl}${endpoint}`, {
@@ -273,6 +277,10 @@ class ApiClient {
 
   /**
    * Internal helper for endpoints that return plain text instead of JSON.
+   *
+   * @param endpoint - The API path to append to the base URL.
+   * @param options - Optional native fetch RequestInit options.
+   * @returns The plain text response body.
    */
   private async requestText(endpoint: string, options?: RequestInit): Promise<string> {
     const response = await fetch(`${this.baseUrl}${endpoint}`, {
@@ -293,6 +301,9 @@ class ApiClient {
   /**
    * Builds a normalized error instance from a failed HTTP response.
    * Handles JSON objects, non-object JSON (arrays/numbers), plain text, and unreadable bodies.
+   *
+   * @param response - The native fetch Response object that failed.
+   * @returns A constructed ApiError containing parsed or fallback message details.
    */
   private async buildApiError(response: Response): Promise<ApiError> {
     let payload: ApiErrorPayload;
@@ -318,6 +329,8 @@ class ApiClient {
 
   /**
    * Fetches the current application configuration.
+   *
+   * @returns The complete application configuration object.
    */
   async getConfig(): Promise<Config> {
     return this.request<Config>('/config');
@@ -325,6 +338,11 @@ class ApiClient {
 
   /**
    * Adds and validates a new API key for the specified provider.
+   *
+   * @param provider - The ID of the provider (e.g., 'openai', 'anthropic').
+   * @param name - A user-friendly alias for this key.
+   * @param apiKey - The actual secret key string to be stored securely.
+   * @returns An object containing the success status, generated key ID, and the updated global config.
    */
   async addApiKey(
     provider: string,
@@ -339,6 +357,10 @@ class ApiClient {
 
   /**
    * Removes an existing API key from the given provider's configuration.
+   *
+   * @param provider - The ID of the provider.
+   * @param keyId - The unique identifier of the API key to remove.
+   * @returns An object containing the success status and the updated global config.
    */
   async deleteApiKey(provider: string, keyId: string): Promise<{ success: boolean; config: Config }> {
     return this.request('/api-keys/delete', {
@@ -349,6 +371,10 @@ class ApiClient {
 
   /**
    * Sets the active working API key for a specified provider.
+   *
+   * @param provider - The ID of the provider.
+   * @param keyId - The unique identifier of the API key to activate.
+   * @returns An object containing the success status, the name of the newly selected key, and the updated global config.
    */
   async selectApiKey(
     provider: string,
@@ -362,6 +388,10 @@ class ApiClient {
 
   /**
    * Partially updates backend configuration settings (roles, budget, mode, preferences).
+   *
+   * @param config - A partial configuration object containing the specific fields to update.
+   *                 Unspecified fields remain unchanged.
+   * @returns The newly updated, full configuration object.
    */
   async updateConfig(config: Partial<{
     roles?: Record<string, RoleConfig>;
@@ -383,6 +413,11 @@ class ApiClient {
 
   /**
    * Logs or updates the selected provider and model for a specific AI agent role.
+   *
+   * @param role - The name of the role (e.g., 'arbiter', 'writer').
+   * @param provider - The ID of the chosen provider.
+   * @param model - The ID of the chosen model.
+   * @returns An object containing the success status and a flag indicating if the config is in a pending state.
    */
   async logRoleSelection(
     role: string,
@@ -397,6 +432,9 @@ class ApiClient {
 
   /**
    * Updates the global execution mode (e.g., cursor_handoff, ternion_full).
+   *
+   * @param execution_mode - The ID of the target execution mode to enforce.
+   * @returns An object containing the success status and a pending flag.
    */
   async logExecutionModeSelection(
     execution_mode: string
@@ -409,6 +447,9 @@ class ApiClient {
 
   /**
    * Retrieves aggregated usage statistics, optionally filtered by a specific month (YYYY-MM).
+   *
+   * @param month - Optional month string in 'YYYY-MM' format to filter the usage data.
+   * @returns A comprehensive usage report including costs, token counts, and budget limits.
    */
   async getUsage(month?: string): Promise<UsageData> {
     const params = month ? `?month=${month}` : '';
@@ -417,6 +458,10 @@ class ApiClient {
 
   /**
    * Conducts an immediate test API call to verify the validity of an API key.
+   *
+   * @param provider - The ID of the provider to test.
+   * @param apiKey - The secret key string to validate against the provider's API.
+   * @returns An object containing the success boolean and a descriptive message or error code.
    */
   async testProvider(provider: string, apiKey: string): Promise<TestResult> {
     return this.request<TestResult>('/test-provider', {
@@ -427,6 +472,8 @@ class ApiClient {
 
   /**
    * Checks the backend server's health and the number of active/ready providers.
+   *
+   * @returns An object containing the server's current status and active provider counts.
    */
   async getStatus(): Promise<ServerStatus> {
     return this.request<ServerStatus>('/status');
@@ -434,6 +481,8 @@ class ApiClient {
 
   /**
    * Fetches the catalog of available models grouped by their enabled providers.
+   *
+   * @returns An object mapping provider IDs to arrays of available models.
    */
   async getModels(): Promise<ModelsData> {
     return this.request<ModelsData>('/models');
@@ -441,6 +490,8 @@ class ApiClient {
 
   /**
    * Forces the backend to initialize or refresh the LiteLLM model catalog.
+   *
+   * @returns An object combining the success status and the newly refreshed model catalog data.
    */
   async refreshModels(): Promise<ModelsData & { success: boolean }> {
     return this.request<ModelsData & { success: boolean }>('/models/refresh', {
@@ -450,6 +501,8 @@ class ApiClient {
 
   /**
    * Retrieves the latest catalog anomaly report as Markdown.
+   *
+   * @returns A string containing the raw Markdown content of the anomaly report.
    */
   async getModelsAnomalyReport(): Promise<string> {
     return this.requestText('/models/anomaly-report');
@@ -457,6 +510,9 @@ class ApiClient {
 
   /**
    * Updates UI-specific settings like theme, language, and disclaimers.
+   *
+   * @param prefs - An object specifying the UI preference fields to alter.
+   * @returns An object containing the success status and the updated preferences slice.
    */
   async updatePreferences(prefs: {
     theme?: string;
@@ -472,6 +528,9 @@ class ApiClient {
 
   /**
    * Requests the native OS to reveal a file or directory in its file manager.
+   *
+   * @param path - The absolute or relative system path to reveal.
+   * @returns An object indicating whether the native file system reveal was successful.
    */
   async revealFile(path: string): Promise<{ success: boolean }> {
     return this.request('/reveal-file', {
@@ -482,6 +541,8 @@ class ApiClient {
 
   /**
    * Retrieves the configured application network ports.
+   *
+   * @returns An object containing the current backend and web port mappings.
    */
   async getPorts(): Promise<PortsConfig> {
     return this.request<PortsConfig>('/ports');
@@ -489,6 +550,9 @@ class ApiClient {
 
   /**
    * Updates network port allocations for backend/web services. Requires restart to apply.
+   *
+   * @param ports - A partial object mapping 'backend' and/or 'web' to new numeric port values.
+   * @returns An object detailing success, new port values, and a restart_required boolean.
    */
   async updatePorts(ports: Partial<PortsConfig>): Promise<{
     success: boolean;
@@ -504,8 +568,11 @@ class ApiClient {
 
   /**
    * Exports current session logs to ~/.ternion/log.json on the server.
+   * This provides a file path that can be used for subsequent local inspection or download.
+   *
+   * @returns An object containing the success status, the server-side file path, and the number of logs exported.
    */
-  async downloadLogs(): Promise<{
+  async exportLogs(): Promise<{
     success: boolean;
     file_path: string;
     log_count: number;

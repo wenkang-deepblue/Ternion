@@ -46,7 +46,7 @@ class TernionContext:
     conversation_history: list[ChatMessage] = field(default_factory=list)
 
     # Reserved for request-level metadata (e.g., client_version, request_id).
-    # Currently unpopulated; to be filled by the API handler layer in a future iteration.
+    # Populated by the API handler layer.
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # Flag indicating if multimodal content is present

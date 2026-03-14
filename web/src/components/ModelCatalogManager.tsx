@@ -14,6 +14,7 @@ interface ModelCatalogManagerProps {
   config: Config | null;
   onConfigUpdate: (config: Config) => void;
   onModelsReload: () => void;
+  /** Incremented when the model catalog was refreshed elsewhere, triggering a local reload. */
   reloadSignal?: number;
   t: Translations;
   language: Language;

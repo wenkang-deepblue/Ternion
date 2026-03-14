@@ -57,7 +57,14 @@ def _has_any_pattern(text: str, patterns: list[str]) -> bool:
 
 
 def extract_explicit_deliverable_boundary(text: str) -> DeliverableType | None:
-    """Extract an explicit deliverable boundary marker from free-form text."""
+    """Extract an explicit deliverable boundary marker from free-form text.
+    
+    Args:
+        text: The text to parse for deliverable boundaries.
+        
+    Returns:
+        The extracted DeliverableType if found, otherwise None.
+    """
     normalized = (text or "").strip()
     if not normalized:
         return None
@@ -172,6 +179,13 @@ def resolve_deliverable_policy(user_message: str, ternion_report: str) -> Delive
     3) Implicit user signals
     4) Implicit report signals
     5) Default to code-change
+    
+    Args:
+        user_message: The original user instruction.
+        ternion_report: The generated Ternion analysis report.
+        
+    Returns:
+        A fully resolved DeliverablePolicy.
     """
     explicit_user_boundary = extract_explicit_deliverable_boundary(user_message)
     if explicit_user_boundary is not None:
@@ -239,6 +253,12 @@ def _build_policy(signal: _DeliverableSignal) -> DeliverablePolicy:
 def format_deliverable_policy_for_prompt(policy: DeliverablePolicy) -> str:
     """
     Format deliverable policy for injection into Writer/Optimizer prompts.
+    
+    Args:
+        policy: The deliverable policy to format.
+        
+    Returns:
+        A formatted string containing policy rules and variables.
     """
     lines = [
         f"DELIVERABLE_TYPE: {policy.deliverable_type.value}",

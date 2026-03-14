@@ -42,6 +42,12 @@ class ShellPolicyResult:
 def evaluate_shell_command(command: str) -> ShellPolicyResult:
     """
     Determine whether a shell command is allowed for verification.
+
+    Args:
+        command: The shell command string to evaluate.
+
+    Returns:
+        A ShellPolicyResult indicating if the command is allowed and the reason.
     """
     if not isinstance(command, str) or not command.strip():
         return ShellPolicyResult(False, "empty command")

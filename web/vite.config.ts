@@ -14,7 +14,6 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 
-// Default port values
 const DEFAULT_WEB_PORT = 9120
 const DEFAULT_BACKEND_PORT = 9110
 
@@ -44,12 +43,10 @@ function loadPortConfig(): { webPort: number; backendPort: number } {
   }
 }
 
-// Load ports at startup
 const { webPort, backendPort } = loadPortConfig()
 
 console.log(`[vite] Web port: ${webPort}, Backend port: ${backendPort}`)
 
-// https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
   test: {

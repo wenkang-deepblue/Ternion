@@ -33,6 +33,12 @@ def should_continue_or_await_confirmation(state: TernionState) -> str:
 
     If await_confirmation is True, stop workflow and return report to user.
     Otherwise, proceed to execution unless the workflow has errors.
+
+    Args:
+        state: The current LangGraph state containing session data.
+
+    Returns:
+        The name of the next node or END.
     """
     # Human-in-the-loop: stop for user confirmation
     if state.get("await_confirmation"):
@@ -50,6 +56,12 @@ def should_continue_after_evidence(state: TernionState) -> str:
 
     If tool calls are pending or errors occurred, stop and await tool results.
     Otherwise, proceed to divergence.
+
+    Args:
+        state: The current LangGraph state containing session data.
+
+    Returns:
+        The name of the next node or END.
     """
     if state.get("pending_tool_calls"):
         return END
@@ -64,6 +76,12 @@ def should_continue_after_report_evidence(state: TernionState) -> str:
 
     If tool calls are pending or errors occurred, stop and await tool results.
     Otherwise, route by the phase selected by report_evidence_node.
+
+    Args:
+        state: The current LangGraph state containing session data.
+
+    Returns:
+        The name of the next node or END.
     """
     if state.get("pending_tool_calls"):
         return END
@@ -83,6 +101,12 @@ def should_continue_after_execution(state: TernionState) -> str:
     Determine next step after execution.
 
     Execution may continue to optimizer or request Phase 1.5 evidence top-up.
+
+    Args:
+        state: The current LangGraph state containing session data.
+
+    Returns:
+        The name of the next node or END.
     """
     phase = str(state.get("current_phase", "") or "").strip().lower()
     if phase == WorkflowPhase.REPORT_EVIDENCE.value:
@@ -97,6 +121,12 @@ def should_continue_after_optimizer(state: TernionState) -> str:
     Determine next step after optimizer.
 
     Optimizer may request Phase 1.5 evidence top-up before finalizing.
+
+    Args:
+        state: The current LangGraph state containing session data.
+
+    Returns:
+        The name of the next node or END.
     """
     phase = str(state.get("current_phase", "") or "").strip().lower()
     if phase == WorkflowPhase.REPORT_EVIDENCE.value:
@@ -115,6 +145,9 @@ def create_workflow(*, entry_point: str = "evidence") -> CompiledStateGraph:
     - Phase 2: Convergence (arbiter synthesis)
     - Phase 3: Execution (Writer generates deliverables)
     - Phase 4: Optimizer (evidence-based improvement and delivery)
+
+    Args:
+        entry_point: Starting node name (default: "evidence").
 
     Returns:
         Compiled LangGraph workflow
@@ -237,7 +270,6 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         history_length=len(context.conversation_history),
     )
 
-    # Build initial state
     initial_state: TernionState = {
         "cursor_system_prompt": (
             context.cursor_system_prompt.content
@@ -298,7 +330,6 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         "final_output_suffix": "",
     }
 
-    # Run the workflow
     workflow = get_workflow()
     final_state = await workflow.ainvoke(initial_state)
 
@@ -350,7 +381,6 @@ async def resume_report_evidence(
         has_evidence_requests=bool(evidence_requests),
     )
 
-    # Build state for resuming from report_evidence phase
     resume_state: TernionState = {
         "cursor_system_prompt": (
             context.cursor_system_prompt.content
@@ -412,7 +442,6 @@ async def resume_report_evidence(
         "final_output_suffix": "",
     }
 
-    # Run workflow starting from report_evidence node
     workflow = get_report_evidence_workflow()
     final_state = await workflow.ainvoke(
         resume_state,

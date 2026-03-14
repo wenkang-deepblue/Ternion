@@ -161,6 +161,12 @@ def _strip_markdown_for_display(text: str) -> str:
 def format_report_for_display(report: str) -> str:
     """
     Format an Arbiter Markdown report into a plain-text view for display.
+
+    Args:
+        report: Raw markdown report text.
+
+    Returns:
+        The formatted plain-text representation of the report.
     """
     text = (report or "").strip()
     if not text:

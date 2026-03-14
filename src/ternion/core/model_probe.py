@@ -65,6 +65,9 @@ def is_model_unavailable_error(provider: str, error_message: str) -> bool:
     Args:
         provider: Reserved for future provider-specific keyword matching.
         error_message: Error text returned by a provider SDK or HTTP client.
+        
+    Returns:
+        True if the error indicates a missing or retired model, otherwise False.
     """
     _ = provider
     lowered = error_message.lower()
@@ -77,6 +80,11 @@ def classify_runtime_model_unavailable(
     exc: Exception,
 ) -> RuntimeModelUnavailableError | None:
     """Classify a runtime provider exception as a stale-model error when possible.
+
+    Args:
+        provider: The name of the LLM provider.
+        model: The ID of the model that failed.
+        exc: The exception raised during runtime.
 
     Returns:
         A ``RuntimeModelUnavailableError`` when the failure indicates that the
@@ -118,7 +126,16 @@ class ModelAvailabilityProbeService:
         model: str,
         api_key: str,
     ) -> ModelAvailabilityProbeResult:
-        """Probe a specific provider/model pair with a low-cost metadata request."""
+        """Probe a specific provider/model pair with a low-cost metadata request.
+        
+        Args:
+            provider: The name of the LLM provider to probe.
+            model: The ID of the model to probe.
+            api_key: The API key to use for authentication.
+            
+        Returns:
+            The result of the model availability probe.
+        """
         probe_model = self._resolve_probe_model_id(provider=provider, model=model)
         if probe_model != model:
             logger.info(

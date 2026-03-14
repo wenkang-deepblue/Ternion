@@ -75,7 +75,6 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Clear any pending reconnect timer
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -83,7 +82,6 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
     }
   }, []);
 
-  // Disconnect SSE stream
   const disconnectStream = useCallback(() => {
     clearReconnectTimer();
     if (eventSourceRef.current) {
@@ -93,9 +91,7 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
     setStatus('disconnected');
   }, [clearReconnectTimer]);
 
-  // Connect to SSE stream
   const connectToLogStream = useCallback(() => {
-    // Clear any existing connection and timer
     clearReconnectTimer();
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -112,6 +108,7 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
     es.onmessage = (event) => {
       try {
         const logEntry: LogEntry = JSON.parse(event.data);
+        // Limits log buffer to 500 entries to prevent memory leaks during extended sessions.
         setLogs((prev) => [...prev.slice(-499), logEntry]);
       } catch {
         // Ignore parse errors for malformed messages
@@ -127,7 +124,6 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
     };
   }, [clearReconnectTimer]);
 
-  // Connect/disconnect based on visibility
   useEffect(() => {
     if (isVisible) {
       connectToLogStream();
@@ -166,7 +162,7 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
     setDownloading(true);
     setDownloadError(null);
     try {
-      const result = await api.downloadLogs();
+      const result = await api.exportLogs();
       if (result.success) {
         setLastDownload({
           filePath: result.file_path,
@@ -207,11 +203,9 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
     let match;
 
     while ((match = fileTagRegex.exec(message)) !== null) {
-      // Add text before the match
       if (match.index > lastIndex) {
         parts.push(message.slice(lastIndex, match.index));
       }
-      // Add clickable file link
       const filePath = match[1];
       parts.push(
         <button
@@ -226,7 +220,6 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
       lastIndex = match.index + match[0].length;
     }
 
-    // Add remaining text
     if (lastIndex < message.length) {
       parts.push(message.slice(lastIndex));
     }
@@ -327,7 +320,6 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
           )}
           <div ref={bottomRef} />
         </div>
-        {/* Download error notification */}
         {downloadError && (
           <div className="mt-5 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-4 py-3 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-sm text-red-700 dark:text-red-300">
@@ -347,7 +339,6 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
             </button>
           </div>
         )}
-        {/* Download success notification */}
         {lastDownload && (
           <div className="mt-5 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-300">

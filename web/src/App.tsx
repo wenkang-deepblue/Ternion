@@ -46,7 +46,6 @@ function AppContent() {
   const [activeTab, setActiveTab] = useState<'config' | 'ports' | 'usage' | 'logs'>('config');
   const [modelsReloadSignal, setModelsReloadSignal] = useState(0);
 
-  // Store scroll positions for each tab
   const scrollPositions = useRef<Record<string, number>>({
     config: 0,
     ports: 0,
@@ -54,28 +53,21 @@ function AppContent() {
     logs: 0,
   });
 
-  // Custom tab change handler that saves/restores scroll positions
   const handleTabChange = useCallback((newTab: 'config' | 'ports' | 'usage' | 'logs') => {
-    // Save current scroll position
     scrollPositions.current[activeTab] = window.scrollY;
-    // Switch tab
     setActiveTab(newTab);
-    // Restore scroll position after render
     requestAnimationFrame(() => {
       window.scrollTo(0, scrollPositions.current[newTab]);
     });
   }, [activeTab]);
 
-  // Preference states
   const [themeMode, setThemeMode] = useState<ThemeMode>('system');
   const [languageMode, setLanguageMode] = useState<LanguageMode>('auto');
 
-  // Computed language for i18n
   const effectiveLanguage: Language =
     languageMode === 'auto' ? detectBrowserLanguage() : languageMode;
   const t = getTranslations(effectiveLanguage);
 
-  // Computed dark mode based on theme preference
   const [systemDark, setSystemDark] = useState(() =>
     typeof window !== 'undefined'
       ? window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -85,7 +77,6 @@ function AppContent() {
   const isDarkMode =
     themeMode === 'dark' || (themeMode === 'system' && systemDark);
 
-  // Listen for system theme changes
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handler = (e: MediaQueryListEvent) => setSystemDark(e.matches);
@@ -93,7 +84,6 @@ function AppContent() {
     return () => mediaQuery.removeEventListener('change', handler);
   }, []);
 
-  // Apply dark mode class
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDarkMode);
   }, [isDarkMode]);
@@ -118,7 +108,6 @@ function AppContent() {
       setStatus(statusData);
       await loadModelsData();
 
-      // Load preferences from config
       if (configData?.preferences) {
         if (configData.preferences.theme) {
           setThemeMode(configData.preferences.theme as ThemeMode);
@@ -139,7 +128,6 @@ function AppContent() {
     }
   }, [loadModelsData]);
 
-  // Load initial data and preferences
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadData();

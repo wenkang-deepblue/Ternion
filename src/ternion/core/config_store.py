@@ -282,6 +282,9 @@ class ConfigStore:
 
         Atomic write (tmp + os.replace) provides crash safety without a secondary backup file,
         which would double the API key exposure surface.
+        
+        Args:
+            config: The user configuration to save.
         """
         self._ensure_dir()
         config.updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -308,12 +311,23 @@ class ConfigStore:
             raise
 
     def get_enabled_providers(self) -> list[str]:
-        """Get list of providers with valid API keys."""
+        """Get list of providers with valid API keys.
+        
+        Returns:
+            A list of enabled provider names.
+        """
         config = self.load()
         return [name for name, provider in config.providers.items() if provider.enabled]
 
     def get_provider_api_key(self, provider: str) -> str | None:
-        """Get active API key for a provider."""
+        """Get active API key for a provider.
+        
+        Args:
+            provider: The name of the provider.
+            
+        Returns:
+            The active API key if available, otherwise None.
+        """
         config = self.load()
         provider_config = config.providers.get(provider)
         if provider_config:
@@ -356,7 +370,14 @@ class ConfigStore:
         return role_config
 
     def get_role_config(self, role: str) -> RoleConfig | None:
-        """Get configuration for a role."""
+        """Get configuration for a role.
+        
+        Args:
+            role: The name of the role.
+            
+        Returns:
+            The role configuration if found, otherwise None.
+        """
         config = self.load()
         role_config = config.roles.get(role)
         if role_config is None:
@@ -368,6 +389,9 @@ class ConfigStore:
         Convert config to safe dict (masks API keys).
 
         Used for API responses to avoid exposing full API keys.
+        
+        Returns:
+            A dictionary containing safe configuration values.
         """
         config = self.load()
         return {
@@ -429,7 +453,11 @@ _config_store: ConfigStore | None = None
 
 
 def get_config_store() -> ConfigStore:
-    """Get or create the global config store."""
+    """Get or create the global config store.
+    
+    Returns:
+        The global ConfigStore instance.
+    """
     global _config_store
     if _config_store is None:
         _config_store = ConfigStore()

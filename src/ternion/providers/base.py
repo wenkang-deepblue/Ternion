@@ -150,7 +150,7 @@ class BaseProvider(ABC):
         The return type varies by provider:
         - OpenAI: list[dict[str, Any]]
         - Anthropic: tuple[str, list[dict[str, Any]]] (system_prompt, messages)
-        - Google: tuple[str, list[dict[str, Any]], Any] (system, history, last_msg)
+        - Google: tuple[str, list[dict[str, Any]]] (system_instruction, contents_list)
 
         Args:
             messages: List of ChatMessage objects

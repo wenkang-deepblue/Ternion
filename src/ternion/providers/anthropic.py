@@ -67,7 +67,7 @@ class AnthropicProvider(BaseProvider):
 
         Args:
             messages: List of chat messages
-            model: Model to use (defaults to claude-3-5-sonnet)
+            model: Model to use
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
             **kwargs: Additional parameters
@@ -379,7 +379,7 @@ class AnthropicProvider(BaseProvider):
 
     def _extract_image_data(self, url: str) -> dict[str, str] | None:
         """
-        Extract base64 image data from a data URL or fetch from URL.
+        Extract base64 image data from a data URI.
 
         Args:
             url: Image URL or data URI
