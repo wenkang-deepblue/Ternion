@@ -7,12 +7,17 @@ Provides the main application instance with middleware and exception handlers.
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
+from starlette.types import Scope
 
 from ternion import __version__
 from ternion.core.config_store import config_store
@@ -24,6 +29,34 @@ from ternion.server.routes import router
 from ternion.utils.log_manager import log_manager
 
 logger = structlog.get_logger(__name__)
+
+
+class PanelStaticFiles(StaticFiles):
+    """Static file handler with SPA fallback for the Control Panel."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        """Serve requested assets and fall back to index.html for SPA routes.
+
+        Args:
+            path: Relative path within the mounted static directory.
+            scope: ASGI connection scope for the current request.
+
+        Returns:
+            The resolved static file response or the SPA index fallback response.
+        """
+        requested_path = Path(path)
+
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or requested_path.suffix:
+                raise
+
+        try:
+            return await super().get_response("index.html", scope)
+        except StarletteHTTPException:
+            logger.warning("panel_static_spa_fallback_failed", requested_path=path, exc_info=True)
+            raise
 
 
 def get_allowed_origins() -> list[str]:
@@ -56,6 +89,74 @@ def get_allowed_origins() -> list[str]:
     return origins
 
 
+def get_panel_static_dir() -> Path:
+    """Return the packaged Control Panel static asset directory.
+
+    Returns:
+        The expected packaged Control Panel static asset directory.
+    """
+    return Path(__file__).resolve().parents[1] / "web_static"
+
+
+async def redirect_panel_root() -> RedirectResponse:
+    """Redirect the Control Panel root to the mounted static path."""
+    return RedirectResponse(url="/panel/")
+
+
+def mount_panel_static(app: FastAPI, static_dir: Path | None = None) -> bool:
+    """Mount the packaged Control Panel static assets when available.
+
+    Args:
+        app: The FastAPI application to update.
+        static_dir: Optional directory containing packaged panel assets.
+
+    Returns:
+        `True` if the panel assets were mounted, otherwise `False`.
+    """
+    static_dir = (static_dir or get_panel_static_dir()).resolve()
+    index_file = static_dir / "index.html"
+
+    if not static_dir.exists():
+        logger.info("panel_static_assets_missing", static_dir=str(static_dir))
+        return False
+
+    if not static_dir.is_dir():
+        logger.warning("panel_static_assets_not_directory", static_dir=str(static_dir))
+        return False
+
+    if not index_file.exists():
+        logger.warning("panel_static_index_missing", static_dir=str(static_dir))
+        return False
+
+    app.add_api_route("/panel", redirect_panel_root, methods=["GET"], include_in_schema=False)
+    app.mount(
+        "/panel",
+        PanelStaticFiles(directory=str(static_dir), html=True),
+        name="control-panel",
+    )
+    logger.info("panel_static_assets_mounted", static_dir=str(static_dir))
+    return True
+
+
+def initialize_panel_static(app: FastAPI) -> None:
+    """Initialize the packaged Control Panel static mount safely.
+
+    Args:
+        app: The FastAPI application to update.
+    """
+    try:
+        mounted = mount_panel_static(app)
+    except Exception:
+        logger.error("panel_static_mount_failed", exc_info=True)
+        return
+
+    if not mounted:
+        logger.warning(
+            "control_panel_ui_unavailable",
+            hint="Run the frontend build and collect web_static assets to enable /panel.",
+        )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     """
@@ -80,9 +181,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     log_manager.emit("INFO", "LIFECYCLE", f"Server started (version {__version__})")
 
     scheduler_stop_event = asyncio.Event()
-    scheduler_task = asyncio.create_task(
-        run_model_catalog_refresh_scheduler(scheduler_stop_event)
-    )
+    scheduler_task = asyncio.create_task(run_model_catalog_refresh_scheduler(scheduler_stop_event))
 
     yield  # Application runs here
 
@@ -128,6 +227,7 @@ app.include_router(router)
 # router under prefix="/v1" makes those paths work without changing user settings.
 app.include_router(router, prefix="/v1", include_in_schema=False)
 app.include_router(control_router)  # Control Panel API
+initialize_panel_static(app)
 
 
 @app.exception_handler(TernionError)

@@ -47,8 +47,11 @@ const { webPort, backendPort } = loadPortConfig()
 
 console.log(`[vite] Web port: ${webPort}, Backend port: ${backendPort}`)
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
+  // Dev mode keeps root-relative paths for the standalone Vite server.
+  // Build mode targets the embedded FastAPI mount point at /panel/.
+  base: command === 'build' ? '/panel/' : '/',
   test: {
     environment: 'jsdom',
     setupFiles: './src/test/setup.ts',
@@ -65,4 +68,4 @@ export default defineConfig({
   build: {
     outDir: 'dist',
   },
-})
+}))
