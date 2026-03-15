@@ -8,16 +8,30 @@ backend text. Language preference is stored in user configuration.
 from __future__ import annotations
 
 import json
+import threading
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, cast
+
+import structlog
+
+from ternion.core.config import (
+    DEFAULT_BACKEND_PORT,
+    DEFAULT_WEB_PORT,
+    get_default_local_host,
+    normalize_port,
+)
 
 # When adding a language, update this Literal AND the checks in
 # _load_translations() and get_user_language().
 Language = Literal["en", "zh", "es", "fr", "de", "ja", "ko"]
 
 _TRANSLATIONS_PATH = Path(__file__).with_name("i18n_translations.json")
+_translations_cache: dict[Language, dict[str, str]] | None = None
+_translations_lock = threading.Lock()
+
+logger = structlog.get_logger(__name__)
 
 
 class MessageKey(str, Enum):
@@ -142,7 +156,6 @@ class MessageKey(str, Enum):
 DEFAULT_LANGUAGE: Language = "en"
 
 
-@lru_cache(maxsize=1)
 def _load_translations() -> dict[Language, dict[str, str]]:
     """
     Load backend translations from the bundled JSON file.
@@ -150,27 +163,47 @@ def _load_translations() -> dict[Language, dict[str, str]]:
     Returns:
         Mapping of language code -> {message_key -> template}.
     """
-    try:
-        raw = _TRANSLATIONS_PATH.read_text(encoding="utf-8")
-        data: Any = json.loads(raw)
-    except (OSError, json.JSONDecodeError):
-        return {}
+    global _translations_cache
 
-    if not isinstance(data, dict):
-        return {}
+    if _translations_cache is not None:
+        return _translations_cache
 
-    out: dict[Language, dict[str, str]] = {}
-    for lang, mapping in data.items():
-        if lang not in ("en", "zh", "es", "fr", "de", "ja", "ko"):
-            continue
-        if not isinstance(mapping, dict):
-            continue
-        cleaned: dict[str, str] = {}
-        for k, v in mapping.items():
-            if isinstance(k, str) and isinstance(v, str):
-                cleaned[k] = v
-        out[cast(Language, lang)] = cleaned
-    return out
+    with _translations_lock:
+        if _translations_cache is not None:
+            return _translations_cache
+
+        try:
+            raw = _TRANSLATIONS_PATH.read_text(encoding="utf-8")
+            data: Any = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "i18n_translations_load_failed", path=str(_TRANSLATIONS_PATH), exc_info=True
+            )
+            return {}
+
+        if not isinstance(data, dict):
+            logger.warning(
+                "i18n_translations_invalid_structure",
+                path=str(_TRANSLATIONS_PATH),
+                actual_type=type(data).__name__,
+            )
+            return {}
+
+        out: dict[Language, dict[str, str]] = {}
+        for lang, mapping in data.items():
+            if lang not in ("en", "zh", "es", "fr", "de", "ja", "ko"):
+                continue
+            if not isinstance(mapping, dict):
+                continue
+            cleaned: dict[str, str] = {}
+            for k, v in mapping.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    cleaned[k] = v
+            out[cast(Language, lang)] = cleaned
+
+        if out:
+            _translations_cache = out
+        return out
 
 
 def _load_user_config() -> object | None:
@@ -185,21 +218,53 @@ def _load_user_config() -> object | None:
 
         return config_store.load()
     except Exception:
+        logger.warning("i18n_user_config_load_failed", exc_info=True)
         return None
 
 
-def get_web_base_url() -> str:
-    """
-    Get the Web Control Panel base URL dynamically from user config.
+def get_embedded_panel_base_url() -> str:
+    """Return the embedded Control Panel URL served from the backend port.
+
+    Returns:
+        The Control Panel URL for the embedded `/panel` mount.
     """
     config = _load_user_config()
+    backend_port = DEFAULT_BACKEND_PORT
+    if config is not None:
+        ports = getattr(config, "ports", None)
+        configured_port = getattr(ports, "backend", backend_port)
+        backend_port = normalize_port(configured_port, DEFAULT_BACKEND_PORT)
+
+    return f"http://{get_default_local_host()}:{backend_port}/panel"
+
+
+@lru_cache(maxsize=1)
+def has_embedded_panel_assets() -> bool:
+    """Return whether packaged Control Panel assets are available.
+
+    Returns:
+        `True` when `web_static/index.html` exists, otherwise `False`.
+    """
+    panel_index = Path(__file__).resolve().parents[1] / "web_static" / "index.html"
+    return panel_index.exists()
+
+
+def get_web_base_url() -> str:
+    """Return the Control Panel base URL for the current runtime mode.
+
+    Returns:
+        The embedded `/panel` URL when packaged assets are available, otherwise
+        the standalone development web server URL from `ports.web`.
+    """
+    if has_embedded_panel_assets():
+        return get_embedded_panel_base_url()
+
+    config = _load_user_config()
     if config is None:
-        return "http://localhost:9120"
+        return f"http://{get_default_local_host()}:{DEFAULT_WEB_PORT}"
     ports = getattr(config, "ports", None)
-    port = getattr(ports, "web", 9120)
-    if not isinstance(port, int):
-        port = 9120
-    return f"http://localhost:{port}"
+    port = normalize_port(getattr(ports, "web", DEFAULT_WEB_PORT), DEFAULT_WEB_PORT)
+    return f"http://{get_default_local_host()}:{port}"
 
 
 def get_user_language() -> Language:
@@ -238,12 +303,10 @@ def t(key: MessageKey, **kwargs: str) -> str:
 
     translations = _load_translations()
 
-    # Fallback to English if key missing in target language
     template = translations.get(lang, {}).get(key.value)
     if not template:
         template = translations.get(DEFAULT_LANGUAGE, {}).get(key.value, key.value)
 
-    # Inject Web URL if not provided
     if "{web_url}" in template and "web_url" not in kwargs:
         kwargs["web_url"] = get_web_base_url()
 

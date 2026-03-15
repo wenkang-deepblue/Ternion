@@ -284,7 +284,11 @@ def _build_stream_error_backfill(errors: list[Any]) -> str:
     """Build a fallback text block when streaming ends without user-visible output."""
     if not errors:
         return ""
-    output_parts = [t(MessageKey.DISCUSSION_NO_OUTPUT), "\n\n", t(MessageKey.DISCUSSION_ERRORS_HEADER)]
+    output_parts = [
+        t(MessageKey.DISCUSSION_NO_OUTPUT),
+        "\n\n",
+        t(MessageKey.DISCUSSION_ERRORS_HEADER),
+    ]
     for err in errors:
         err_msg = sanitize_for_cursor_display(str(err))
         if err_msg:
@@ -697,12 +701,16 @@ def _rewrite_tool_call_ids(
         responses_response_id = tc.get("responses_api_response_id")
         raw_id = tc.get("id")
         if (
-            not isinstance(responses_item_id, str) or not responses_item_id.strip()
-        ) and isinstance(raw_id, str) and raw_id.startswith("fc_"):
+            (not isinstance(responses_item_id, str) or not responses_item_id.strip())
+            and isinstance(raw_id, str)
+            and raw_id.startswith("fc_")
+        ):
             responses_item_id = raw_id
         if (
-            not isinstance(responses_call_id, str) or not responses_call_id.strip()
-        ) and isinstance(raw_id, str) and raw_id.startswith("call_"):
+            (not isinstance(responses_call_id, str) or not responses_call_id.strip())
+            and isinstance(raw_id, str)
+            and raw_id.startswith("call_")
+        ):
             responses_call_id = raw_id
 
         if isinstance(responses_item_id, str) and responses_item_id.strip():
@@ -2098,12 +2106,7 @@ def _emit_thinking_logs_to_observability(
 
 
 def get_control_panel_url() -> str:
-    """
-    Get the Control Panel URL dynamically from user config.
-
-    Uses the configured web port from ports.web, defaulting to 9120.
-    This avoids hardcoding URLs throughout the codebase.
-    """
+    """Return the effective Control Panel URL for the current runtime mode."""
     return get_web_base_url()
 
 
@@ -2326,6 +2329,7 @@ async def _run_discussion_streaming(
             # Heartbeats keep the SSE connection alive even when the workflow has
             # long non-streaming steps (e.g., evidence/divergence).
             heartbeat_interval_seconds = 10
+
             async def on_timeout() -> str:
                 return await _sse_heartbeat_event(chunk_id, created, model)
 
@@ -2485,7 +2489,9 @@ async def _run_discussion_streaming(
                     cursor_system_prompt=cursor_prompt,
                     cursor_tools=list(getattr(context, "cursor_tools", []) or []),
                     cursor_tool_choice=getattr(context, "cursor_tool_choice", None),
-                    workspace_root=str(final_state.get("workspace_root") or context.workspace_root or ""),
+                    workspace_root=str(
+                        final_state.get("workspace_root") or context.workspace_root or ""
+                    ),
                     execution_messages=list(final_state.get("conversation_history", []) or []),
                     workflow_phase=workflow_phase,
                     execution_phase_announced=False,
@@ -2915,6 +2921,7 @@ async def _run_implementation_streaming(
         try:
             # Consume events from queue with periodic keep-alive heartbeats.
             heartbeat_interval_seconds = 10
+
             async def on_timeout() -> str:
                 return await _sse_heartbeat_event(chunk_id, created, model)
 
@@ -3951,7 +3958,9 @@ async def chat_completions(
                 cursor_system_prompt=cursor_prompt,
                 cursor_tools=list(request.tools or []),
                 cursor_tool_choice=request.tool_choice,
-                workspace_root=str(final_state.get("workspace_root") or context.workspace_root or ""),
+                workspace_root=str(
+                    final_state.get("workspace_root") or context.workspace_root or ""
+                ),
                 execution_messages=list(final_state.get("conversation_history", []) or []),
                 workflow_phase=workflow_phase,
                 execution_phase_announced=False,
@@ -4068,7 +4077,9 @@ async def chat_completions(
                     tool_calls=filtered_tool_calls,
                     conversation_history=list(final_state.get("conversation_history", []) or []),
                     ternion_report=str(final_state.get("ternion_report", "") or ""),
-                    workspace_root=str(final_state.get("workspace_root") or context.workspace_root or ""),
+                    workspace_root=str(
+                        final_state.get("workspace_root") or context.workspace_root or ""
+                    ),
                 )
             )
             if policy_error:
@@ -4147,7 +4158,9 @@ async def chat_completions(
                     rewritten_tool_calls,
                     round_index=1,
                     workflow_phase=workflow_phase,
-                    workspace_root=str(final_state.get("workspace_root") or context.workspace_root or ""),
+                    workspace_root=str(
+                        final_state.get("workspace_root") or context.workspace_root or ""
+                    ),
                 ),
                 modified_files=modified_files,
                 baseline_file_snapshots=baseline,
@@ -4481,6 +4494,7 @@ async def handle_report_evidence_followup(
 
             try:
                 heartbeat_interval_seconds = 10
+
                 async def on_timeout() -> str:
                     return await _sse_heartbeat_event(chunk_id, created, request.model)
 
@@ -5619,6 +5633,7 @@ async def handle_evidence_followup(
 
             try:
                 heartbeat_interval_seconds = 10
+
                 async def on_timeout() -> str:
                     return await _sse_heartbeat_event(chunk_id, created, request.model)
 
@@ -6522,11 +6537,15 @@ async def handle_execution_followup(
                     max_paths = 50
                     delta_truncated = len(added) > max_paths or len(removed) > max_paths
                     for abs_path in added[:max_paths]:
-                        rel = _workspace_relative_path(abs_path, getattr(session, "workspace_root", ""))
+                        rel = _workspace_relative_path(
+                            abs_path, getattr(session, "workspace_root", "")
+                        )
                         if rel:
                             delta_added_paths.append(rel)
                     for abs_path in removed[:max_paths]:
-                        rel = _workspace_relative_path(abs_path, getattr(session, "workspace_root", ""))
+                        rel = _workspace_relative_path(
+                            abs_path, getattr(session, "workspace_root", "")
+                        )
                         if rel:
                             delta_removed_paths.append(rel)
 
@@ -6536,7 +6555,9 @@ async def handle_execution_followup(
                             modified_set.add(abs_path)
                         if abs_path in baseline:
                             continue
-                        rel = _workspace_relative_path(abs_path, getattr(session, "workspace_root", ""))
+                        rel = _workspace_relative_path(
+                            abs_path, getattr(session, "workspace_root", "")
+                        )
                         if not rel:
                             continue
                         if abs_path in post_untracked:
@@ -7026,6 +7047,7 @@ async def handle_execution_followup(
 
             try:
                 heartbeat_interval_seconds = 10
+
                 async def on_timeout() -> str:
                     return await _sse_heartbeat_event(chunk_id, created, request.model)
 

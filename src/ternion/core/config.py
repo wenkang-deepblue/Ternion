@@ -13,12 +13,38 @@ import yaml
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEFAULT_LOCAL_HOST = "127.0.0.1"
+DEFAULT_BACKEND_PORT = 9110
+DEFAULT_WEB_PORT = 9120
+
+
+def normalize_port(value: object, default: int) -> int:
+    """Return a validated TCP port or the provided default.
+
+    Args:
+        value: Candidate port value from configuration.
+        default: Fallback port when the value is invalid.
+
+    Returns:
+        A valid TCP port in the inclusive range `1..65535`.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    if not 1 <= value <= 65535:
+        return default
+    return value
+
+
+def get_default_local_host() -> str:
+    """Return the canonical local host used in generated local URLs."""
+    return DEFAULT_LOCAL_HOST
+
 
 class ServerSettings(BaseSettings):
     """Server configuration."""
 
-    host: str = "127.0.0.1"
-    port: int = 9110
+    host: str = DEFAULT_LOCAL_HOST
+    port: int = DEFAULT_BACKEND_PORT
     log_level: str = "info"
 
 
@@ -102,10 +128,10 @@ class Settings(BaseSettings):
     @classmethod
     def from_yaml(cls, path: Path) -> "Settings":
         """Load settings from a YAML file.
-        
+
         Args:
             path: Path to the YAML configuration file.
-            
+
         Returns:
             A populated Settings instance.
         """
@@ -141,7 +167,7 @@ def get_settings() -> Settings:
 
     Loads from YAML config file if TERNION_CONFIG_PATH is set,
     otherwise uses defaults with environment variable overrides.
-    
+
     Returns:
         The active Settings instance.
     """

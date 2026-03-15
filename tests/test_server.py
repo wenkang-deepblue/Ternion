@@ -232,9 +232,12 @@ class TestChatCompletions:
         with (
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.utils.i18n._load_user_config") as mock_i18n_loader,
+            patch("ternion.utils.i18n.has_embedded_panel_assets", return_value=True),
             patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
         ):
             mock_config_store.load.return_value = mock_user_config
+            mock_i18n_loader.return_value = mock_user_config
             mock_provider_mgr.has_providers = True
             mock_run.return_value = mock_result
 
@@ -255,7 +258,7 @@ class TestChatCompletions:
         assert error_payload["model"] == "gpt-5.4"
         assert error_payload["refresh_suggested"] is True
         assert "openai / gpt-5.4" in error_payload["message"]
-        assert "http://localhost:9120" in error_payload["message"]
+        assert "http://127.0.0.1:9110/panel" in error_payload["message"]
 
     def test_chat_completions_streaming_surfaces_model_unavailable_guidance(
         self,
@@ -283,6 +286,7 @@ class TestChatCompletions:
             patch("ternion.server.routes.config_store") as mock_config_store,
             patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
             patch("ternion.utils.i18n._load_user_config") as mock_i18n_loader,
+            patch("ternion.utils.i18n.has_embedded_panel_assets", return_value=True),
             patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
         ):
             mock_config_store.load.return_value = mock_user_config
@@ -1331,9 +1335,7 @@ class TestChatCompletions:
             os.chdir(original_cwd)
         assert relative == "docs/development_log.md"
 
-    def test_extract_workspace_root_prefers_explicit_workspace_path(
-        self, tmp_path: Path
-    ) -> None:
+    def test_extract_workspace_root_prefers_explicit_workspace_path(self, tmp_path: Path) -> None:
         """Explicit workspace metadata should win over other path hints."""
         from ternion.server.routes import _extract_workspace_root_from_request_messages
 
@@ -1357,9 +1359,7 @@ class TestChatCompletions:
 
         assert _extract_workspace_root_from_request_messages(messages) == str(workspace.resolve())
 
-    def test_extract_workspace_root_from_open_files_common_ancestor(
-        self, tmp_path: Path
-    ) -> None:
+    def test_extract_workspace_root_from_open_files_common_ancestor(self, tmp_path: Path) -> None:
         """Open file paths should infer the current workspace when explicit metadata is absent."""
         from ternion.server.routes import _extract_workspace_root_from_request_messages
 
