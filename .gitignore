@@ -109,9 +109,6 @@ temp/
 docs/
 usage_test.json
 
-# Ignore README until ready for release
-README.md
-
 # Secret files
 .env.local
 .secrets/
