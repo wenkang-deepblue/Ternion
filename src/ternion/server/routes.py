@@ -12,7 +12,8 @@ Implements:
 import asyncio
 import contextlib
 import json
-import os
+import ntpath
+import posixpath
 import re
 import subprocess
 import time
@@ -78,6 +79,14 @@ from ternion.utils.tool_policy import (
 from ternion.utils.tool_policy import (
     SHELL_TOOL_CANONICAL as _SHELL_TOOL_CANONICAL,
 )
+from ternion.utils.workspace_paths import (
+    detect_path_style,
+    normalize_declared_workspace_path,
+    normalize_local_file_path,
+    normalize_workspace_target_path,
+    resolve_local_workspace_root,
+    workspace_relative_path,
+)
 from ternion.workflow.streaming_events import StreamEventQueue, StreamEventType
 
 logger = structlog.get_logger(__name__)
@@ -97,6 +106,10 @@ _PATCHLIKE_TRIGGERS = (
 _TERNION_TOOL_CALL_ID_SESSION_RE = re.compile(r"\bternion_([a-f0-9]{12})_", re.IGNORECASE)
 _WORKSPACE_PATH_LINE_RE = re.compile(
     r"(?im)^\s*(?:Workspace Path|workspace_path)\s*[:=]\s*(?P<path>.+?)\s*$"
+)
+_OPEN_FILES_SECTION_RE = re.compile(
+    r"<open_and_recently_viewed_files>\s*(?P<body>.*?)\s*</open_and_recently_viewed_files>",
+    flags=re.IGNORECASE | re.DOTALL,
 )
 _DOCUMENT_FILE_SUFFIXES = {
     ".adoc",
@@ -1118,24 +1131,22 @@ def _iter_request_message_texts(messages: list[ChatMessage]) -> Iterable[str]:
         yield from _extract_text_fragments(getattr(message, "content", None))
 
 
-def _normalize_existing_workspace_path(
-    path_str: str,
-    *,
-    prefer_parent_for_files: bool,
-) -> str | None:
-    raw = str(path_str or "").strip().strip("`'\"")
-    if not raw:
-        return None
-    candidate = Path(raw).expanduser()
-    try:
-        resolved = candidate.resolve()
-    except Exception:
-        resolved = candidate
-    if resolved.exists() and resolved.is_dir():
-        return str(resolved)
-    if prefer_parent_for_files and resolved.exists() and resolved.is_file():
-        return str(resolved.parent.resolve())
-    return None
+def _path_module_for_style(style: str) -> Any:
+    return ntpath if style == "windows" else posixpath
+
+
+def _coerce_workspace_candidate_root(path_str: str) -> tuple[str, str]:
+    normalized, style = normalize_declared_workspace_path(path_str)
+    if not normalized or not style:
+        return "", ""
+    path_mod = _path_module_for_style(style)
+    basename = path_mod.basename(normalized)
+    suffix = path_mod.splitext(basename)[1] if basename else ""
+    if suffix:
+        parent = path_mod.dirname(normalized)
+        if parent:
+            normalized = parent
+    return normalized, style
 
 
 def _extract_candidate_paths_from_text(text: str) -> list[str]:
@@ -1149,85 +1160,225 @@ def _extract_candidate_paths_from_text(text: str) -> list[str]:
         if " (" in line:
             line = line.split(" (", 1)[0].strip()
         line = line.strip("`'\"")
-        if line.startswith("/") and not line.startswith("//"):
+        if detect_path_style(line):
             candidates.append(line)
     return candidates
 
 
-def _longest_existing_common_ancestor(paths: list[str]) -> str | None:
-    normalized: list[str] = []
+def _longest_declared_common_ancestor(paths: list[str]) -> tuple[str, str]:
+    grouped: dict[str, list[str]] = {"posix": [], "windows": []}
     for raw_path in paths or []:
-        candidate = _normalize_existing_workspace_path(
-            raw_path,
-            prefer_parent_for_files=True,
-        )
-        if candidate:
-            normalized.append(candidate)
-    if not normalized:
-        return None
-    try:
-        common = Path(os.path.commonpath(normalized)).resolve()
-    except Exception:
-        return None
-    if common.exists() and common.is_dir():
-        return str(common)
-    return None
+        candidate, style = _coerce_workspace_candidate_root(raw_path)
+        if candidate and style in grouped:
+            grouped[style].append(candidate)
+    for style in sorted(grouped, key=lambda item: len(grouped[item]), reverse=True):
+        normalized = grouped[style]
+        if not normalized:
+            continue
+        path_mod = _path_module_for_style(style)
+        try:
+            common = path_mod.commonpath(normalized)
+        except Exception:
+            continue
+        if common:
+            return path_mod.normpath(common), style
+    return "", ""
 
 
-def _extract_workspace_root_from_request_messages(messages: list[ChatMessage]) -> str:
+def _extract_workspace_boundary_from_request_messages(
+    messages: list[ChatMessage],
+) -> tuple[str, str, str, str]:
     texts = list(_iter_request_message_texts(messages))
     for text in texts:
         match = _WORKSPACE_PATH_LINE_RE.search(text)
         if not match:
             continue
-        explicit = _normalize_existing_workspace_path(
-            match.group("path"),
-            prefer_parent_for_files=False,
+        workspace_root, style = normalize_declared_workspace_path(match.group("path"))
+        if workspace_root and style:
+            return (
+                workspace_root,
+                resolve_local_workspace_root(workspace_root),
+                style,
+                "explicit_workspace_path",
+            )
+
+    open_file_candidates: list[str] = []
+    for text in texts:
+        for match in _OPEN_FILES_SECTION_RE.finditer(text):
+            open_file_candidates.extend(_extract_candidate_paths_from_text(match.group("body")))
+    inferred_open_files, open_files_style = _longest_declared_common_ancestor(open_file_candidates)
+    if inferred_open_files and open_files_style:
+        return (
+            inferred_open_files,
+            resolve_local_workspace_root(inferred_open_files),
+            open_files_style,
+            "open_files_common_ancestor",
         )
-        if explicit:
-            return explicit
 
     candidates: list[str] = []
     for text in texts:
         candidates.extend(_extract_candidate_paths_from_text(text))
-    inferred = _longest_existing_common_ancestor(candidates)
-    if inferred:
-        return inferred
+    inferred, inferred_style = _longest_declared_common_ancestor(candidates)
+    if inferred and inferred_style:
+        return (
+            inferred,
+            resolve_local_workspace_root(inferred),
+            inferred_style,
+            "message_paths_common_ancestor",
+        )
 
     fallback = _resolve_project_root()
     logger.warning("workspace_root_fallback_used", fallback=str(fallback))
-    return str(fallback)
+    return str(fallback), str(fallback), "posix", "fallback_project_root"
 
 
-def _resolve_workspace_root(workspace_root: str | None = None) -> Path:
-    resolved = _normalize_existing_workspace_path(
-        workspace_root or "",
-        prefer_parent_for_files=False,
+def _extract_workspace_root_from_request_messages(messages: list[ChatMessage]) -> str:
+    workspace_root, _local_workspace_root, _style, _source = (
+        _extract_workspace_boundary_from_request_messages(messages)
     )
-    if resolved:
-        return Path(resolved)
-    return _resolve_project_root()
+    return workspace_root
 
 
-def _normalize_file_path(path_str: str, workspace_root: str | None = None) -> str | None:
-    """Normalize a file path relative to the workspace root.
+def _apply_workspace_boundary_to_context(
+    context: TernionContext,
+    messages: list[ChatMessage],
+    *,
+    session: Session | None = None,
+) -> None:
+    extracted_root, extracted_local_root, extracted_style, extracted_source = (
+        _extract_workspace_boundary_from_request_messages(messages)
+    )
+    persisted_root = str(getattr(session, "workspace_root", "") or "")
+    persisted_local_root = str(getattr(session, "local_workspace_root", "") or "")
+    persisted_style = str(getattr(session, "workspace_path_style", "") or "")
+    persisted_source = str(getattr(session, "workspace_root_source", "") or "")
+    if persisted_root and not persisted_style:
+        _normalized_root, persisted_style = normalize_declared_workspace_path(persisted_root)
+    if persisted_root and extracted_root and persisted_root != extracted_root:
+        logger.warning(
+            "workspace_root_session_request_mismatch",
+            session_id=str(getattr(session, "session_id", "") or ""),
+            persisted_workspace_root=persisted_root,
+            extracted_workspace_root=extracted_root,
+            persisted_workspace_root_source=persisted_source,
+            extracted_workspace_root_source=extracted_source,
+        )
+    workspace_root = persisted_root or extracted_root
+    context.workspace_root = workspace_root
+    context.local_workspace_root = persisted_local_root
+    if not context.local_workspace_root and extracted_root == workspace_root:
+        context.local_workspace_root = extracted_local_root
+    if not context.local_workspace_root:
+        context.local_workspace_root = resolve_local_workspace_root(workspace_root)
+    context.workspace_path_style = persisted_style
+    if not context.workspace_path_style and extracted_root == workspace_root:
+        context.workspace_path_style = extracted_style
+    if not context.workspace_path_style:
+        _normalized_root, context.workspace_path_style = normalize_declared_workspace_path(
+            workspace_root
+        )
+    context.workspace_root_source = persisted_source
+    if not context.workspace_root_source and extracted_root == workspace_root:
+        context.workspace_root_source = extracted_source
+
+
+def _normalize_file_path(
+    path_str: str,
+    workspace_root: str | None = None,
+    workspace_path_style: str | None = None,
+) -> str | None:
+    """Normalize a file path against the declared workspace boundary.
 
     Args:
         path_str: The path to normalize.
-        workspace_root: Optional workspace root directory.
+        workspace_root: Optional client-declared workspace root.
+        workspace_path_style: Optional workspace path style.
 
     Returns:
-        The normalized path, or None if the path is invalid or unsafe.
+        The normalized client-visible path, or None if invalid.
     """
-    if not isinstance(path_str, str) or not path_str.strip():
-        return None
-    p = Path(path_str).expanduser()
-    if not p.is_absolute():
-        p = _resolve_workspace_root(workspace_root) / p
-    try:
-        return str(p.resolve())
-    except Exception:
-        return str(p)
+    return normalize_workspace_target_path(
+        path_str,
+        workspace_root=str(workspace_root or ""),
+        workspace_path_style=str(workspace_path_style or ""),
+    )
+
+
+def _normalize_local_file_path(
+    path_str: str,
+    *,
+    workspace_root: str | None = None,
+    workspace_path_style: str | None = None,
+    local_workspace_root: str | None = None,
+) -> str | None:
+    """Map a client-visible path onto a locally accessible server path."""
+    provided_local_root = str(local_workspace_root or "").strip()
+    resolved_local_root = provided_local_root
+    if not resolved_local_root:
+        resolved_local_root = resolve_local_workspace_root(str(workspace_root or ""))
+        if resolved_local_root:
+            logger.debug(
+                "workspace_local_root_fallback_used",
+                workspace_root=str(workspace_root or ""),
+                resolved_local_workspace_root=resolved_local_root,
+            )
+    return normalize_local_file_path(
+        path_str,
+        workspace_root=str(workspace_root or ""),
+        workspace_path_style=str(workspace_path_style or ""),
+        local_workspace_root=resolved_local_root,
+    )
+
+
+def _resolve_workspace_fields(
+    *,
+    state: dict[str, Any] | None = None,
+    context: TernionContext | None = None,
+    session: Session | None = None,
+    original_context: dict[str, Any] | None = None,
+) -> tuple[str, str, str, str]:
+    """Resolve workspace boundary fields from the highest-priority available source."""
+
+    def _get_from_dict(source: dict[str, Any] | None, key: str) -> str:
+        if not isinstance(source, dict):
+            return ""
+        value = source.get(key)
+        return value.strip() if isinstance(value, str) and value.strip() else ""
+
+    def _get_from_object(source: object | None, key: str) -> str:
+        value = getattr(source, key, "")
+        return value.strip() if isinstance(value, str) and value.strip() else ""
+
+    workspace_root = (
+        _get_from_dict(state, "workspace_root")
+        or _get_from_dict(original_context, "workspace_root")
+        or _get_from_object(context, "workspace_root")
+        or _get_from_object(session, "workspace_root")
+    )
+    local_workspace_root = (
+        _get_from_dict(state, "local_workspace_root")
+        or _get_from_dict(original_context, "local_workspace_root")
+        or _get_from_object(context, "local_workspace_root")
+        or _get_from_object(session, "local_workspace_root")
+    )
+    workspace_path_style = (
+        _get_from_dict(state, "workspace_path_style")
+        or _get_from_dict(original_context, "workspace_path_style")
+        or _get_from_object(context, "workspace_path_style")
+        or _get_from_object(session, "workspace_path_style")
+    )
+    workspace_root_source = (
+        _get_from_dict(state, "workspace_root_source")
+        or _get_from_dict(original_context, "workspace_root_source")
+        or _get_from_object(context, "workspace_root_source")
+        or _get_from_object(session, "workspace_root_source")
+    )
+    return (
+        workspace_root,
+        local_workspace_root,
+        workspace_path_style,
+        workspace_root_source,
+    )
 
 
 def _read_text_file_best_effort(path_str: str) -> str | None:
@@ -1685,12 +1836,19 @@ def _ensure_baseline_snapshots_for_tool_calls(
         normalized = _normalize_file_path(
             target or "",
             getattr(session, "workspace_root", ""),
+            getattr(session, "workspace_path_style", ""),
         )
         if not normalized:
             continue
 
         if normalized not in baseline:
-            content = _read_text_file_best_effort(normalized)
+            local_target = _normalize_local_file_path(
+                target or "",
+                workspace_root=getattr(session, "workspace_root", ""),
+                workspace_path_style=getattr(session, "workspace_path_style", ""),
+                local_workspace_root=getattr(session, "local_workspace_root", ""),
+            )
+            content = _read_text_file_best_effort(local_target) if local_target else None
             if content is not None:
                 baseline[normalized] = content
 
@@ -1734,22 +1892,16 @@ def _extract_report_scope_for_policy(report: str) -> str:
     return report or ""
 
 
-def _workspace_relative_path(path_str: str, workspace_root: str | None = None) -> str | None:
-    if not isinstance(path_str, str) or not path_str.strip():
-        return None
-    root = _resolve_workspace_root(workspace_root)
-    try:
-        p = Path(path_str).expanduser()
-        if not p.is_absolute():
-            p = root / p
-        try:
-            resolved = p.resolve()
-        except Exception:
-            resolved = p
-        relative = resolved.relative_to(root)
-    except Exception:
-        return None
-    return relative.as_posix()
+def _workspace_relative_path(
+    path_str: str,
+    workspace_root: str | None = None,
+    workspace_path_style: str | None = None,
+) -> str | None:
+    return workspace_relative_path(
+        path_str,
+        workspace_root=str(workspace_root or ""),
+        workspace_path_style=str(workspace_path_style or ""),
+    )
 
 
 @lru_cache(maxsize=1)
@@ -1778,6 +1930,8 @@ def _parse_git_status_porcelain(
     output: str,
     *,
     repo_root: Path,
+    workspace_root: str,
+    workspace_path_style: str,
 ) -> tuple[set[str], set[str]]:
     """
     Parse `git status --porcelain=v1` output into absolute path sets.
@@ -1799,7 +1953,11 @@ def _parse_git_status_porcelain(
             continue
         if " -> " in path_part:
             path_part = path_part.split(" -> ", 1)[1].strip()
-        normalized = _normalize_file_path(str(repo_root / path_part))
+        normalized = _normalize_file_path(
+            str(repo_root / path_part),
+            workspace_root=workspace_root,
+            workspace_path_style=workspace_path_style,
+        )
         if not normalized:
             continue
         if status == "??":
@@ -1809,16 +1967,26 @@ def _parse_git_status_porcelain(
     return modified, untracked
 
 
-def _try_get_git_status_snapshot(workspace_root: str | None = None) -> dict:
+def _try_get_git_status_snapshot(
+    *,
+    workspace_root: str | None = None,
+    workspace_path_style: str | None = None,
+    local_workspace_root: str | None = None,
+) -> dict:
     """
     Best-effort workspace status snapshot for Shell side-effect tracking.
     """
-    repo_root = _resolve_workspace_root(workspace_root)
-    if not (repo_root / ".git").exists():
+    repo_root = str(local_workspace_root or "").strip() or resolve_local_workspace_root(
+        str(workspace_root or "")
+    )
+    if not repo_root:
+        return {}
+    repo_root_path = Path(repo_root)
+    if not (repo_root_path / ".git").exists():
         return {}
     try:
         result = subprocess.run(  # nosec - controlled local command
-            ["git", "-C", str(repo_root), "status", "--porcelain=v1"],
+            ["git", "-C", str(repo_root_path), "status", "--porcelain=v1"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1830,27 +1998,42 @@ def _try_get_git_status_snapshot(workspace_root: str | None = None) -> dict:
         return {}
     if result.returncode != 0:
         return {}
-    modified, untracked = _parse_git_status_porcelain(result.stdout, repo_root=repo_root)
+    modified, untracked = _parse_git_status_porcelain(
+        result.stdout,
+        repo_root=repo_root_path,
+        workspace_root=str(workspace_root or ""),
+        workspace_path_style=str(workspace_path_style or ""),
+    )
     return {
-        "repo_root": str(repo_root),
+        "repo_root": str(repo_root_path),
         "modified": sorted(modified),
         "untracked": sorted(untracked),
     }
 
 
-def _try_read_git_head_file(relative_path: str, *, workspace_root: str | None = None) -> str | None:
+def _try_read_git_head_file(
+    relative_path: str,
+    *,
+    workspace_root: str | None = None,
+    local_workspace_root: str | None = None,
+) -> str | None:
     """
     Best-effort read of a file at HEAD for baseline reconstruction.
     """
     if not isinstance(relative_path, str) or not relative_path.strip():
         return None
-    repo_root = _resolve_workspace_root(workspace_root)
-    if not (repo_root / ".git").exists():
+    repo_root = str(local_workspace_root or "").strip() or resolve_local_workspace_root(
+        str(workspace_root or "")
+    )
+    if not repo_root:
+        return None
+    repo_root_path = Path(repo_root)
+    if not (repo_root_path / ".git").exists():
         return None
     ref = f"HEAD:{relative_path.strip()}"
     try:
         result = subprocess.run(  # nosec - controlled local command
-            ["git", "-C", str(repo_root), "show", ref],
+            ["git", "-C", str(repo_root_path), "show", ref],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1909,10 +2092,16 @@ def _capture_tool_loop_pre_git_status(
     round_index: int,
     workflow_phase: str,
     workspace_root: str | None = None,
+    workspace_path_style: str | None = None,
+    local_workspace_root: str | None = None,
 ) -> dict:
     if not _has_shell_tool_call(tool_calls):
         return {}
-    snapshot = _try_get_git_status_snapshot(workspace_root)
+    snapshot = _try_get_git_status_snapshot(
+        workspace_root=workspace_root,
+        workspace_path_style=workspace_path_style,
+        local_workspace_root=local_workspace_root,
+    )
     if not snapshot:
         return {}
     snapshot["round_index"] = int(round_index or 0)
@@ -1982,6 +2171,7 @@ def _collect_deliverable_policy_violations(
     tool_calls: list[dict],
     deliverable_type: DeliverableType,
     workspace_root: str | None = None,
+    workspace_path_style: str | None = None,
 ) -> list[str]:
     violations: list[str] = []
     unknown_target = t(MessageKey.TOOL_POLICY_UNKNOWN_TARGET)
@@ -1994,7 +2184,7 @@ def _collect_deliverable_policy_violations(
             continue
         target = _extract_mutation_target_path(name or "", args_str)
         target_display = target or unknown_target
-        relative = _workspace_relative_path(target or "", workspace_root)
+        relative = _workspace_relative_path(target or "", workspace_root, workspace_path_style)
         if not relative:
             violations.append(f"{name} -> {target_display}")
             continue
@@ -2035,6 +2225,7 @@ def _enforce_deliverable_policy(
     conversation_history: list[dict],
     ternion_report: str,
     workspace_root: str | None = None,
+    workspace_path_style: str | None = None,
 ) -> tuple[list[dict], str | None, DeliverableType | None, str]:
     if workflow_phase not in {"execution", "optimizer"}:
         return list(tool_calls or []), None, None, ""
@@ -2047,11 +2238,11 @@ def _enforce_deliverable_policy(
         tool_calls,
         deliverable_type,
         workspace_root,
+        workspace_path_style,
     )
     if not violations:
         return list(tool_calls or []), None, deliverable_type, allowed_scope
 
-    project_root = _resolve_workspace_root(workspace_root)
     log_manager.emit(
         level="INFO",
         category="GUARDRAIL",
@@ -2059,7 +2250,8 @@ def _enforce_deliverable_policy(
             "deliverable_policy_blocked | "
             f"type={deliverable_type.value} | "
             f"allowed_scope={allowed_scope} | "
-            f"project_root={project_root} | "
+            f"workspace_root={str(workspace_root or '')} | "
+            f"workspace_path_style={str(workspace_path_style or '')} | "
             f"violations={'; '.join(violations)}"
         ),
     )
@@ -2482,6 +2674,12 @@ async def _run_discussion_streaming(
                     else ""
                 )
                 workflow_phase = str(final_state.get("current_phase") or "execution")
+                (
+                    workspace_root,
+                    local_workspace_root,
+                    workspace_path_style,
+                    workspace_root_source,
+                ) = _resolve_workspace_fields(state=final_state, context=context)
                 session = session_store.create_session(
                     ternion_report=final_state.get("ternion_report", "") or "",
                     execution_mode=ExecutionMode.TERNION_FULL,
@@ -2489,9 +2687,10 @@ async def _run_discussion_streaming(
                     cursor_system_prompt=cursor_prompt,
                     cursor_tools=list(getattr(context, "cursor_tools", []) or []),
                     cursor_tool_choice=getattr(context, "cursor_tool_choice", None),
-                    workspace_root=str(
-                        final_state.get("workspace_root") or context.workspace_root or ""
-                    ),
+                    workspace_root=workspace_root,
+                    local_workspace_root=local_workspace_root,
+                    workspace_path_style=workspace_path_style,
+                    workspace_root_source=workspace_root_source,
                     execution_messages=list(final_state.get("conversation_history", []) or []),
                     workflow_phase=workflow_phase,
                     execution_phase_announced=False,
@@ -2621,9 +2820,8 @@ async def _run_discussion_streaming(
                             final_state.get("conversation_history", []) or []
                         ),
                         ternion_report=str(final_state.get("ternion_report", "") or ""),
-                        workspace_root=str(
-                            final_state.get("workspace_root") or context.workspace_root or ""
-                        ),
+                        workspace_root=workspace_root,
+                        workspace_path_style=workspace_path_style,
                     )
                 )
                 if policy_error:
@@ -2631,7 +2829,8 @@ async def _run_discussion_streaming(
                         _collect_deliverable_policy_violations(
                             before_deliverable_policy,
                             deliverable_type,
-                            str(final_state.get("workspace_root") or context.workspace_root or ""),
+                            workspace_root,
+                            workspace_path_style,
                         )
                         if deliverable_type is not None
                         else []
@@ -2710,9 +2909,9 @@ async def _run_discussion_streaming(
                         rewritten_tool_calls,
                         round_index=1,
                         workflow_phase=workflow_phase,
-                        workspace_root=str(
-                            final_state.get("workspace_root") or context.workspace_root or ""
-                        ),
+                        workspace_root=workspace_root,
+                        workspace_path_style=workspace_path_style,
+                        local_workspace_root=local_workspace_root,
                     ),
                     modified_files=modified_files,
                     baseline_file_snapshots=baseline,
@@ -3782,7 +3981,7 @@ async def chat_completions(
 
     # Extract context using MessageRouter
     context = message_router.extract_context(request.messages)
-    context.workspace_root = _extract_workspace_root_from_request_messages(request.messages)
+    _apply_workspace_boundary_to_context(context, request.messages)
     context.cursor_tools = list(request.tools or [])
     context.cursor_tool_choice = request.tool_choice
 
@@ -3951,6 +4150,12 @@ async def chat_completions(
                 else ""
             )
             workflow_phase = str(final_state.get("current_phase") or "execution")
+            (
+                workspace_root,
+                local_workspace_root,
+                workspace_path_style,
+                workspace_root_source,
+            ) = _resolve_workspace_fields(state=final_state, context=context)
             session = session_store.create_session(
                 ternion_report=final_state.get("ternion_report", "") or "",
                 execution_mode=ExecutionMode.TERNION_FULL,
@@ -3958,9 +4163,10 @@ async def chat_completions(
                 cursor_system_prompt=cursor_prompt,
                 cursor_tools=list(request.tools or []),
                 cursor_tool_choice=request.tool_choice,
-                workspace_root=str(
-                    final_state.get("workspace_root") or context.workspace_root or ""
-                ),
+                workspace_root=workspace_root,
+                local_workspace_root=local_workspace_root,
+                workspace_path_style=workspace_path_style,
+                workspace_root_source=workspace_root_source,
                 execution_messages=list(final_state.get("conversation_history", []) or []),
                 workflow_phase=workflow_phase,
                 execution_phase_announced=False,
@@ -4077,9 +4283,8 @@ async def chat_completions(
                     tool_calls=filtered_tool_calls,
                     conversation_history=list(final_state.get("conversation_history", []) or []),
                     ternion_report=str(final_state.get("ternion_report", "") or ""),
-                    workspace_root=str(
-                        final_state.get("workspace_root") or context.workspace_root or ""
-                    ),
+                    workspace_root=workspace_root,
+                    workspace_path_style=workspace_path_style,
                 )
             )
             if policy_error:
@@ -4087,7 +4292,8 @@ async def chat_completions(
                     _collect_deliverable_policy_violations(
                         before_deliverable_policy,
                         deliverable_type,
-                        str(final_state.get("workspace_root") or context.workspace_root or ""),
+                        workspace_root,
+                        workspace_path_style,
                     )
                     if deliverable_type is not None
                     else []
@@ -4158,9 +4364,9 @@ async def chat_completions(
                     rewritten_tool_calls,
                     round_index=1,
                     workflow_phase=workflow_phase,
-                    workspace_root=str(
-                        final_state.get("workspace_root") or context.workspace_root or ""
-                    ),
+                    workspace_root=workspace_root,
+                    workspace_path_style=workspace_path_style,
+                    local_workspace_root=local_workspace_root,
                 ),
                 modified_files=modified_files,
                 baseline_file_snapshots=baseline,
@@ -4272,10 +4478,7 @@ async def handle_report_evidence_followup(
     )
 
     context = message_router.extract_context(request.messages)
-    context.workspace_root = str(
-        getattr(session, "workspace_root", "")
-        or _extract_workspace_root_from_request_messages(request.messages)
-    )
+    _apply_workspace_boundary_to_context(context, request.messages, session=session)
     cursor_system_prompt = session.cursor_system_prompt
     if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str):
         cursor_system_prompt = context.cursor_system_prompt.content
@@ -4319,6 +4522,10 @@ async def handle_report_evidence_followup(
         cursor_system_prompt=cursor_system_prompt,
         cursor_tools=list(cursor_tools or []),
         cursor_tool_choice=cursor_tool_choice,
+        workspace_root=context.workspace_root,
+        local_workspace_root=context.local_workspace_root,
+        workspace_path_style=context.workspace_path_style,
+        workspace_root_source=context.workspace_root_source,
         execution_messages=updated_execution_messages,
         pending_tool_calls=[],
         workflow_phase="report_evidence",  # Explicitly Phase 1.5
@@ -4446,6 +4653,10 @@ async def handle_report_evidence_followup(
         session_id=session.session_id,
         await_confirmation=await_confirmation,
         execution_mode=user_config.execution_mode,
+        workspace_root=context.workspace_root,
+        local_workspace_root=context.local_workspace_root,
+        workspace_path_style=context.workspace_path_style,
+        workspace_root_source=context.workspace_root_source,
     )
 
     if request.stream:
@@ -5429,10 +5640,7 @@ async def handle_evidence_followup(
     )
 
     context = message_router.extract_context(request.messages)
-    context.workspace_root = str(
-        getattr(session, "workspace_root", "")
-        or _extract_workspace_root_from_request_messages(request.messages)
-    )
+    _apply_workspace_boundary_to_context(context, request.messages, session=session)
     cursor_system_prompt = session.cursor_system_prompt
     if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str):
         cursor_system_prompt = context.cursor_system_prompt.content
@@ -5598,6 +5806,10 @@ async def handle_evidence_followup(
         session_id=session.session_id,
         await_confirmation=await_confirmation,
         execution_mode=user_config.execution_mode,
+        workspace_root=context.workspace_root,
+        local_workspace_root=context.local_workspace_root,
+        workspace_path_style=context.workspace_path_style,
+        workspace_root_source=context.workspace_root_source,
     )
 
     if request.stream:
@@ -6354,10 +6566,7 @@ async def handle_execution_followup(
     )
 
     context = message_router.extract_context(request.messages)
-    context.workspace_root = str(
-        getattr(session, "workspace_root", "")
-        or _extract_workspace_root_from_request_messages(request.messages)
-    )
+    _apply_workspace_boundary_to_context(context, request.messages, session=session)
     cursor_system_prompt = session.cursor_system_prompt
     if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str):
         cursor_system_prompt = context.cursor_system_prompt.content
@@ -6980,13 +7189,22 @@ async def handle_execution_followup(
             )
             return _respond_with_text(request, _budget_confirmation_message(session))
 
+    (
+        workspace_root,
+        local_workspace_root,
+        workspace_path_style,
+        workspace_root_source,
+    ) = _resolve_workspace_fields(session=session)
     initial_state = {
         "cursor_system_prompt": cursor_system_prompt or None,
         "conversation_history": updated_execution_messages,
         "ternion_report": session.ternion_report_raw,
         "session_id": session.session_id,
         "execution_mode": session.execution_mode.value,
-        "workspace_root": str(getattr(session, "workspace_root", "") or ""),
+        "workspace_root": workspace_root,
+        "local_workspace_root": local_workspace_root,
+        "workspace_path_style": workspace_path_style,
+        "workspace_root_source": workspace_root_source,
         "current_phase": resume_phase or "execution",
         "thinking_logs": [],
         "errors": [],
@@ -8164,10 +8382,7 @@ async def handle_confirmed_session(
 
         # Build initial state for implementation stage using session's confirmed report
         context = message_router.extract_context(request.messages)
-        context.workspace_root = str(
-            getattr(session, "workspace_root", "")
-            or _extract_workspace_root_from_request_messages(request.messages)
-        )
+        _apply_workspace_boundary_to_context(context, request.messages, session=session)
 
         # Restore original context from session if available (for better Writer context)
         original_ctx = session.original_context or {}
@@ -8178,15 +8393,22 @@ async def handle_confirmed_session(
             "cursor_system_prompt", context.cursor_system_prompt
         )
 
+        (
+            workspace_root,
+            local_workspace_root,
+            workspace_path_style,
+            workspace_root_source,
+        ) = _resolve_workspace_fields(original_context=original_ctx, session=session)
         initial_state = {
             "cursor_system_prompt": cursor_system_prompt,
             "conversation_history": conversation_history,
             "ternion_report": session.ternion_report_raw,  # Use raw for Writer (internal use)
             "session_id": session.session_id,
             "execution_mode": session.execution_mode.value,
-            "workspace_root": str(
-                original_ctx.get("workspace_root") or getattr(session, "workspace_root", "") or ""
-            ),
+            "workspace_root": workspace_root,
+            "local_workspace_root": local_workspace_root,
+            "workspace_path_style": workspace_path_style,
+            "workspace_root_source": workspace_root_source,
             "thinking_logs": [],
             "errors": [],
             "revision_count": 0,
@@ -8294,10 +8516,7 @@ async def handle_rejected_session(
     from ternion.workflow.graph import run_discussion
 
     context = message_router.extract_context(request.messages)
-    context.workspace_root = str(
-        getattr(session, "workspace_root", "")
-        or _extract_workspace_root_from_request_messages(request.messages)
-    )
+    _apply_workspace_boundary_to_context(context, request.messages, session=session)
     # In ternion_full, we do not stop at the report stage; proceed to execution automatically.
     context.await_confirmation = session.execution_mode != ExecutionMode.TERNION_FULL
     context.rejection_context = feedback

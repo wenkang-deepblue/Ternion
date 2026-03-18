@@ -81,6 +81,7 @@ from ternion.utils.tool_calls_parser import (
     extract_tool_calls_from_text,
 )
 from ternion.utils.tool_policy import EXECUTION_ALLOWED_TOOL_CANONICAL, SHELL_TOOL_CANONICAL
+from ternion.utils.workspace_paths import normalize_workspace_target_path, render_workspace_path
 from ternion.workflow.state import TernionState, WorkflowPhase
 from ternion.workflow.streaming_events import StreamEventQueue
 
@@ -269,18 +270,17 @@ def _detect_malformed_execution_tool_calls(
     return issues
 
 
-def _normalize_tool_target_path(path_str: str, workspace_root: str | None = None) -> str | None:
-    """Normalize a tool target path against the current workspace root."""
-    if not isinstance(path_str, str) or not path_str.strip():
-        return None
-    path = Path(path_str).expanduser()
-    if not path.is_absolute():
-        root = Path(workspace_root or ".").expanduser()
-        path = root / path
-    try:
-        return str(path.resolve())
-    except Exception:
-        return str(path)
+def _normalize_tool_target_path(
+    path_str: str,
+    workspace_root: str | None = None,
+    workspace_path_style: str | None = None,
+) -> str | None:
+    """Normalize a tool target path against the declared workspace boundary."""
+    return normalize_workspace_target_path(
+        path_str,
+        workspace_root=str(workspace_root or ""),
+        workspace_path_style=str(workspace_path_style or ""),
+    )
 
 
 def _extract_mutation_target_path_for_guardrail(
@@ -303,6 +303,7 @@ def _collect_stabilized_document_write_paths(
     *,
     stabilized_document_paths: list[str] | None,
     workspace_root: str | None,
+    workspace_path_style: str | None,
 ) -> list[str]:
     """Collect whole-file Write targets that point to stabilized documents."""
     stabilized_set = {
@@ -318,7 +319,11 @@ def _collect_stabilized_document_write_paths(
     for tc in tool_calls or []:
         name, args_str = _extract_tool_name_and_arguments(tc)
         target = _extract_mutation_target_path_for_guardrail(name, args_str)
-        normalized = _normalize_tool_target_path(target or "", workspace_root)
+        normalized = _normalize_tool_target_path(
+            target or "",
+            workspace_root,
+            workspace_path_style,
+        )
         if not normalized or normalized not in stabilized_set or normalized in seen:
             continue
         seen.add(normalized)
@@ -326,17 +331,17 @@ def _collect_stabilized_document_write_paths(
     return blocked
 
 
-def _render_stabilized_document_path(path_str: str, workspace_root: str | None) -> str:
+def _render_stabilized_document_path(
+    path_str: str,
+    workspace_root: str | None,
+    workspace_path_style: str | None,
+) -> str:
     """Render a stabilized document path relative to the workspace when possible."""
-    try:
-        path = Path(path_str)
-        root = Path(workspace_root or "").expanduser()
-        if root and root.exists():
-            with contextlib.suppress(Exception):
-                return path.resolve().relative_to(root.resolve()).as_posix()
-    except Exception:
-        pass
-    return path_str
+    return render_workspace_path(
+        path_str,
+        workspace_root=str(workspace_root or ""),
+        workspace_path_style=str(workspace_path_style or ""),
+    )
 
 
 def _build_stabilized_document_guardrail_feedback(
@@ -344,9 +349,11 @@ def _build_stabilized_document_guardrail_feedback(
     blocked_paths: list[str],
     deliverable_type: str,
     workspace_root: str | None,
+    workspace_path_style: str | None,
 ) -> str:
     rendered_paths = "\n".join(
-        f"- {_render_stabilized_document_path(path, workspace_root)}" for path in blocked_paths
+        f"- {_render_stabilized_document_path(path, workspace_root, workspace_path_style)}"
+        for path in blocked_paths
     )
     deliverable_label = deliverable_type or "unknown"
     return (
@@ -3279,8 +3286,14 @@ async def convergence_node(state: TernionState) -> TernionState:
                     "conversation_history": state.get("conversation_history", []),
                     "cursor_system_prompt": state.get("cursor_system_prompt"),
                     "workspace_root": state.get("workspace_root", ""),
+                    "local_workspace_root": state.get("local_workspace_root", ""),
+                    "workspace_path_style": state.get("workspace_path_style", ""),
+                    "workspace_root_source": state.get("workspace_root_source", ""),
                 },
                 workspace_root=str(state.get("workspace_root", "") or ""),
+                local_workspace_root=str(state.get("local_workspace_root", "") or ""),
+                workspace_path_style=str(state.get("workspace_path_style", "") or ""),
+                workspace_root_source=str(state.get("workspace_root_source", "") or ""),
                 evidence_bundle=str(state.get("evidence_bundle") or ""),
                 evidence_gaps=str(state.get("evidence_gaps") or ""),
                 evidence_requests=str(state.get("evidence_requests") or ""),
@@ -3556,8 +3569,14 @@ TERNION_REPORT_HASH={session.report_hash}"""
                         "conversation_history": state.get("conversation_history", []),
                         "cursor_system_prompt": state.get("cursor_system_prompt"),
                         "workspace_root": state.get("workspace_root", ""),
+                        "local_workspace_root": state.get("local_workspace_root", ""),
+                        "workspace_path_style": state.get("workspace_path_style", ""),
+                        "workspace_root_source": state.get("workspace_root_source", ""),
                     },
                     workspace_root=str(state.get("workspace_root", "") or ""),
+                    local_workspace_root=str(state.get("local_workspace_root", "") or ""),
+                    workspace_path_style=str(state.get("workspace_path_style", "") or ""),
+                    workspace_root_source=str(state.get("workspace_root_source", "") or ""),
                     evidence_bundle=str(state.get("evidence_bundle") or ""),
                     evidence_gaps=str(state.get("evidence_gaps") or ""),
                     evidence_requests=str(state.get("evidence_requests") or ""),
@@ -3666,8 +3685,14 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     "conversation_history": state.get("conversation_history", []),
                     "cursor_system_prompt": state.get("cursor_system_prompt"),
                     "workspace_root": state.get("workspace_root", ""),
+                    "local_workspace_root": state.get("local_workspace_root", ""),
+                    "workspace_path_style": state.get("workspace_path_style", ""),
+                    "workspace_root_source": state.get("workspace_root_source", ""),
                 },
                 workspace_root=str(state.get("workspace_root", "") or ""),
+                local_workspace_root=str(state.get("local_workspace_root", "") or ""),
+                workspace_path_style=str(state.get("workspace_path_style", "") or ""),
+                workspace_root_source=str(state.get("workspace_root_source", "") or ""),
                 evidence_bundle=str(state.get("evidence_bundle") or ""),
                 evidence_gaps=str(state.get("evidence_gaps") or ""),
                 evidence_requests=str(state.get("evidence_requests") or ""),
@@ -3873,7 +3898,7 @@ async def execution_node(state: TernionState) -> TernionState:
         )
     if stabilized_document_paths:
         rendered_paths = "\n".join(
-            f"- {_render_stabilized_document_path(path, state.get('workspace_root'))}"
+            f"- {_render_stabilized_document_path(path, state.get('workspace_root'), state.get('workspace_path_style'))}"
             for path in stabilized_document_paths
         )
         content_parts.extend(
@@ -4065,6 +4090,7 @@ async def execution_node(state: TernionState) -> TernionState:
                 response.tool_calls,
                 stabilized_document_paths=stabilized_document_paths,
                 workspace_root=state.get("workspace_root"),
+                workspace_path_style=state.get("workspace_path_style"),
             )
             if not blocked_paths:
                 return response
@@ -4095,6 +4121,7 @@ async def execution_node(state: TernionState) -> TernionState:
                 blocked_paths=blocked_paths,
                 deliverable_type=deliverable_policy.deliverable_type.value,
                 workspace_root=state.get("workspace_root"),
+                workspace_path_style=state.get("workspace_path_style"),
             )
             last = messages[-1] if messages else None
             if last and last.role == MessageRole.USER and isinstance(last.content, str):
@@ -4374,6 +4401,7 @@ async def execution_node(state: TernionState) -> TernionState:
                         response.tool_calls,
                         stabilized_document_paths=stabilized_document_paths,
                         workspace_root=state.get("workspace_root"),
+                        workspace_path_style=state.get("workspace_path_style"),
                     )
                     if blocked_stabilized:
                         log_manager.emit(

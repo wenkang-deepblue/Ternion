@@ -1335,6 +1335,151 @@ class TestChatCompletions:
             os.chdir(original_cwd)
         assert relative == "docs/development_log.md"
 
+    def test_extract_workspace_boundary_keeps_nonlocal_explicit_root(self) -> None:
+        """Explicit workspace metadata should survive even when absent on the server."""
+        from ternion.server.routes import _extract_workspace_boundary_from_request_messages
+
+        remote_workspace = "/Users/apple/Desktop/translay-test"
+        messages = [
+            ChatMessage(
+                role=MessageRole.USER,
+                content=f"<user_info>\nWorkspace Path: {remote_workspace}\n</user_info>",
+            )
+        ]
+
+        workspace_root, local_workspace_root, style, source = (
+            _extract_workspace_boundary_from_request_messages(messages)
+        )
+
+        assert workspace_root == remote_workspace
+        assert local_workspace_root == ""
+        assert style == "posix"
+        assert source == "explicit_workspace_path"
+
+    def test_extract_workspace_boundary_reports_open_files_source(self, tmp_path: Path) -> None:
+        """Open-file inference should expose the dedicated source label."""
+        from ternion.server.routes import _extract_workspace_boundary_from_request_messages
+
+        workspace = tmp_path / "inferred-workspace"
+        src_file = workspace / "src" / "app.py"
+        doc_file = workspace / "docs" / "spec.md"
+        src_file.parent.mkdir(parents=True)
+        doc_file.parent.mkdir(parents=True)
+        src_file.write_text("print('x')\n", encoding="utf-8")
+        doc_file.write_text("# spec\n", encoding="utf-8")
+        messages = [
+            ChatMessage(
+                role=MessageRole.USER,
+                content=(
+                    "<open_and_recently_viewed_files>\n"
+                    f"- {src_file} (total lines: 1)\n"
+                    f"- {doc_file} (total lines: 1)\n"
+                    "</open_and_recently_viewed_files>"
+                ),
+            )
+        ]
+
+        workspace_root, local_workspace_root, style, source = (
+            _extract_workspace_boundary_from_request_messages(messages)
+        )
+
+        assert workspace_root == str(workspace.resolve())
+        assert local_workspace_root == str(workspace.resolve())
+        assert style == "posix"
+        assert source == "open_files_common_ancestor"
+
+    def test_extract_workspace_boundary_prefers_majority_path_style(self, tmp_path: Path) -> None:
+        """Mixed path styles should infer from the majority style group."""
+        from ternion.server.routes import _extract_workspace_boundary_from_request_messages
+
+        workspace = tmp_path / "majority-workspace"
+        file_a = workspace / "src" / "a.py"
+        file_b = workspace / "docs" / "b.md"
+        file_a.parent.mkdir(parents=True)
+        file_b.parent.mkdir(parents=True)
+        file_a.write_text("print('a')\n", encoding="utf-8")
+        file_b.write_text("# b\n", encoding="utf-8")
+
+        messages = [
+            ChatMessage(
+                role=MessageRole.USER,
+                content=(
+                    "<open_and_recently_viewed_files>\n"
+                    f"- {file_a} (total lines: 1)\n"
+                    f"- {file_b} (total lines: 1)\n"
+                    "- C:\\Users\\alice\\repo\\src\\other.py (total lines: 1)\n"
+                    "</open_and_recently_viewed_files>"
+                ),
+            )
+        ]
+
+        workspace_root, _local_workspace_root, style, source = (
+            _extract_workspace_boundary_from_request_messages(messages)
+        )
+
+        assert workspace_root == str(workspace.resolve())
+        assert style == "posix"
+        assert source == "open_files_common_ancestor"
+
+    def test_workspace_relative_path_supports_nonlocal_workspace_root(self) -> None:
+        """Client-relative paths should work without a matching local directory."""
+        from ternion.server.routes import _workspace_relative_path
+
+        remote_workspace = "/Users/apple/Desktop/translay-test"
+
+        assert (
+            _workspace_relative_path(
+                "TransLay_design_doc.md",
+                workspace_root=remote_workspace,
+            )
+            == "TransLay_design_doc.md"
+        )
+        assert (
+            _workspace_relative_path(
+                "/Users/apple/Desktop/translay-test/docs/spec.md",
+                workspace_root=remote_workspace,
+            )
+            == "docs/spec.md"
+        )
+        assert (
+            _workspace_relative_path(
+                "/Users/apple/Desktop/other/outside.md",
+                workspace_root=remote_workspace,
+            )
+            is None
+        )
+
+    def test_workspace_relative_path_supports_windows_style_paths(self) -> None:
+        """Windows-style workspace boundaries should use string semantics only."""
+        from ternion.server.routes import _workspace_relative_path
+
+        workspace_root = r"C:\Users\alice\repo"
+
+        assert (
+            _workspace_relative_path(
+                r"src\app.py",
+                workspace_root=workspace_root,
+                workspace_path_style="windows",
+            )
+            == "src/app.py"
+        )
+        assert (
+            _workspace_relative_path(
+                r"C:\Users\alice\repo\docs\spec.md",
+                workspace_root=workspace_root,
+                workspace_path_style="windows",
+            )
+            == "docs/spec.md"
+        )
+        assert (
+            _workspace_relative_path(
+                r"D:\other\outside.py",
+                workspace_root=workspace_root,
+                workspace_path_style="windows",
+            )
+            is None
+        )
+
     def test_extract_workspace_root_prefers_explicit_workspace_path(self, tmp_path: Path) -> None:
         """Explicit workspace metadata should win over other path hints."""
         from ternion.server.routes import _extract_workspace_root_from_request_messages
@@ -1358,6 +1503,108 @@ class TestChatCompletions:
         ]
 
         assert _extract_workspace_root_from_request_messages(messages) == str(workspace.resolve())
+
+    def test_code_change_allows_nonlocal_client_workspace_mutation(self) -> None:
+        """Deliverable policy should honor client workspace boundaries without local access."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _enforce_deliverable_policy
+
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": '{"file_path":"src/app.py","content":"x"}',
+                },
+            }
+        ]
+
+        filtered, message, deliverable_type, allowed_scope = _enforce_deliverable_policy(
+            workflow_phase="execution",
+            tool_calls=tool_calls,
+            conversation_history=[{"role": "user", "content": "please update code"}],
+            ternion_report="Fix Plan: update code.",
+            workspace_root="/Users/apple/Desktop/translay-test",
+        )
+
+        assert filtered == tool_calls
+        assert message is None
+        assert deliverable_type == DeliverableType.CODE_CHANGE
+        assert allowed_scope == "repo/**"
+
+    def test_apply_workspace_boundary_logs_mismatch_and_keeps_persisted_mapping(
+        self, tmp_path: Path
+    ) -> None:
+        """Session/request mismatches should warn and keep the persisted boundary coherent."""
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+        from ternion.router.context import TernionContext
+        from ternion.server.routes import _apply_workspace_boundary_to_context
+
+        local_workspace = tmp_path / "request-workspace"
+        local_workspace.mkdir()
+        session = Session(
+            session_id="abc123def456",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="",
+            ternion_report_safe="",
+            report_hash="deadbeefdeadbeef",
+            created_at="2026-03-18T00:00:00Z",
+            updated_at="2026-03-18T00:00:00Z",
+            workspace_root="/__ternion_remote__/repo",
+            workspace_path_style="posix",
+            workspace_root_source="explicit_workspace_path",
+        )
+        messages = [
+            ChatMessage(
+                role=MessageRole.USER,
+                content=f"<user_info>\nWorkspace Path: {local_workspace}\n</user_info>",
+            )
+        ]
+        context = TernionContext()
+
+        with patch("ternion.server.routes.logger") as mock_logger:
+            _apply_workspace_boundary_to_context(context, messages, session=session)
+
+        assert context.workspace_root == "/__ternion_remote__/repo"
+        assert context.local_workspace_root == ""
+        assert context.workspace_path_style == "posix"
+        assert context.workspace_root_source == "explicit_workspace_path"
+        mock_logger.warning.assert_called_once()
+
+    def test_normalize_local_file_path_logs_fallback_when_resolving_workspace(
+        self, tmp_path: Path
+    ) -> None:
+        """Fallback local resolution should stay visible in debug logs."""
+        from ternion.server.routes import _normalize_local_file_path
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        with patch("ternion.server.routes.logger") as mock_logger:
+            normalized = _normalize_local_file_path(
+                "docs/spec.md",
+                workspace_root=str(workspace),
+                workspace_path_style="posix",
+                local_workspace_root="",
+            )
+
+        assert normalized == str((workspace / "docs" / "spec.md").resolve())
+        mock_logger.debug.assert_called_once()
+
+    def test_git_status_snapshot_skips_when_local_workspace_root_unavailable(self) -> None:
+        """git snapshot should fail closed without a server-local workspace."""
+        from ternion.server.routes import _try_get_git_status_snapshot
+
+        with patch("ternion.server.routes.subprocess.run") as mock_run:
+            snapshot = _try_get_git_status_snapshot(
+                workspace_root="/__ternion_remote__/repo",
+                workspace_path_style="posix",
+                local_workspace_root="",
+            )
+
+        assert snapshot == {}
+        mock_run.assert_not_called()
 
     def test_extract_workspace_root_from_open_files_common_ancestor(self, tmp_path: Path) -> None:
         """Open file paths should infer the current workspace when explicit metadata is absent."""

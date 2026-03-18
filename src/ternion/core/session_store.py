@@ -126,6 +126,9 @@ class Session:
     cursor_tools: list[dict[str, Any]] = field(default_factory=list)
     cursor_tool_choice: Any | None = None
     workspace_root: str = ""
+    local_workspace_root: str = ""
+    workspace_path_style: str = ""
+    workspace_root_source: str = ""
     execution_messages: list[dict[str, Any]] = field(default_factory=list)
     pending_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     # Step 2: When a tool_calls response contains both mutation tools and shell verification,
@@ -199,6 +202,9 @@ class Session:
 
         data.setdefault("confirmation_reason", None)
         data.setdefault("workspace_root", "")
+        data.setdefault("local_workspace_root", "")
+        data.setdefault("workspace_path_style", "")
+        data.setdefault("workspace_root_source", "")
         data.setdefault("evidence_topup_round", 0)
         data.setdefault("report_evidence_resume_phase", "")
         data.setdefault("stabilized_document_paths", [])
@@ -250,7 +256,7 @@ def _append_capped(
 
 def generate_session_id() -> str:
     """Generate a short, unique session ID.
-    
+
     Returns:
         A 12-character hex string representing the session ID.
     """
@@ -259,10 +265,10 @@ def generate_session_id() -> str:
 
 def compute_report_hash(report: str) -> str:
     """Compute hash of report content for verification.
-    
+
     Args:
         report: The textual content of the report to hash.
-        
+
     Returns:
         A 16-character hex string representing the SHA-256 hash.
     """
@@ -383,6 +389,9 @@ class SessionStore:
         cursor_tools: list[dict[str, Any]] | None = None,
         cursor_tool_choice: Any | None = None,
         workspace_root: str = "",
+        local_workspace_root: str = "",
+        workspace_path_style: str = "",
+        workspace_root_source: str = "",
         execution_messages: list[dict[str, Any]] | None = None,
         pending_tool_calls: list[dict[str, Any]] | None = None,
         deferred_tool_calls: list[dict[str, Any]] | None = None,
@@ -452,6 +461,9 @@ class SessionStore:
             cursor_tools=list(cursor_tools or []),
             cursor_tool_choice=cursor_tool_choice,
             workspace_root=str(workspace_root or ""),
+            local_workspace_root=str(local_workspace_root or ""),
+            workspace_path_style=str(workspace_path_style or ""),
+            workspace_root_source=str(workspace_root_source or ""),
             execution_messages=list(execution_messages or []),
             pending_tool_calls=pending_calls,
             deferred_tool_calls=list(deferred_tool_calls or []),
@@ -548,6 +560,9 @@ class SessionStore:
         cursor_tools: list[dict[str, Any]] | None = None,
         cursor_tool_choice: Any | None = None,
         workspace_root: str | None = None,
+        local_workspace_root: str | None = None,
+        workspace_path_style: str | None = None,
+        workspace_root_source: str | None = None,
         execution_messages: list[dict[str, Any]] | None = None,
         pending_tool_calls: list[dict[str, Any]] | None = None,
         deferred_tool_calls: list[dict[str, Any]] | None = None,
@@ -655,6 +670,12 @@ class SessionStore:
             session.cursor_tool_choice = cursor_tool_choice
         if workspace_root is not None:
             session.workspace_root = str(workspace_root or "")
+        if local_workspace_root is not None:
+            session.local_workspace_root = str(local_workspace_root or "")
+        if workspace_path_style is not None:
+            session.workspace_path_style = str(workspace_path_style or "")
+        if workspace_root_source is not None:
+            session.workspace_root_source = str(workspace_root_source or "")
         if execution_messages is not None:
             session.execution_messages = execution_messages
         if pending_tool_calls is not None:
@@ -845,7 +866,7 @@ _session_store: SessionStore | None = None
 
 def get_session_store() -> SessionStore:
     """Get or create the global session store.
-    
+
     Returns:
         The globally shared SessionStore instance.
     """

@@ -160,10 +160,14 @@ class TestSessionStore:
     def test_create_session(self, store: SessionStore) -> None:
         """Should create a new session with correct fields."""
         workspace_root = "/tmp/test-workspace"
+        local_workspace_root = "/tmp/test-workspace"
         session = store.create_session(
             ternion_report="Test report content",
             execution_mode=ExecutionMode.CURSOR_HANDOFF,
             workspace_root=workspace_root,
+            local_workspace_root=local_workspace_root,
+            workspace_path_style="posix",
+            workspace_root_source="explicit_workspace_path",
         )
 
         assert len(session.session_id) == 12
@@ -172,6 +176,29 @@ class TestSessionStore:
         assert session.ternion_report == "Test report content"
         assert session.report_hash == compute_report_hash("Test report content")
         assert session.workspace_root == workspace_root
+        assert session.local_workspace_root == local_workspace_root
+        assert session.workspace_path_style == "posix"
+        assert session.workspace_root_source == "explicit_workspace_path"
+
+    def test_from_dict_defaults_workspace_boundary_fields(self) -> None:
+        """Older session payloads should gain empty workspace boundary fields."""
+        session = Session.from_dict(
+            {
+                "session_id": "abc123def456",
+                "stage": "awaiting_confirmation",
+                "execution_mode": "cursor_handoff",
+                "ternion_report_raw": "Test report",
+                "ternion_report_safe": "Test report",
+                "report_hash": "deadbeefdeadbeef",
+                "created_at": "2026-03-18T00:00:00Z",
+                "updated_at": "2026-03-18T00:00:00Z",
+            }
+        )
+
+        assert session.workspace_root == ""
+        assert session.local_workspace_root == ""
+        assert session.workspace_path_style == ""
+        assert session.workspace_root_source == ""
 
     def test_create_session_persists_to_file(
         self, store: SessionStore, temp_sessions_dir: Path

@@ -65,9 +65,15 @@ class TernionContext:
     await_confirmation: bool = True
     # Execution mode is intentionally empty by default. Must be explicitly configured in Web UI.
     execution_mode: ExecutionMode = ""
-    # Best-effort workspace root for the current Cursor conversation.
+    # Client-declared workspace root for the current Cursor conversation.
     # Empty string means the API layer could not determine a request-scoped workspace.
     workspace_root: str = ""
+    # Best-effort local workspace path that is readable on the server host.
+    local_workspace_root: str = ""
+    # Path style used for client-declared path normalization ("posix" or "windows").
+    workspace_path_style: str = ""
+    # Source used to derive the client workspace root.
+    workspace_root_source: str = ""
     # Populated when the user rejects the convergence report.
     # Contains the user's free-text feedback for the re-analysis cycle.
     rejection_context: str = ""

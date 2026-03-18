@@ -72,7 +72,10 @@ class TernionState(TypedDict, total=False):
         has_images: Whether conversation has image content.
         cursor_tools: List of tool specifications.
         cursor_tool_choice: Force use of specific tool.
-        workspace_root: Absolute path to workspace root.
+        workspace_root: Client-declared workspace root.
+        local_workspace_root: Server-local workspace root when accessible.
+        workspace_path_style: Declared path style ("posix" or "windows").
+        workspace_root_source: Source used to infer workspace_root.
         current_phase: The active workflow phase.
         evidence_bundle: Raw evidence bundle.
         evidence_gaps: Identified gaps in evidence.
@@ -110,6 +113,9 @@ class TernionState(TypedDict, total=False):
     cursor_tools: list[dict[str, Any]] | None
     cursor_tool_choice: Any | None
     workspace_root: str
+    local_workspace_root: str
+    workspace_path_style: str
+    workspace_root_source: str
 
     current_phase: str
 
