@@ -92,6 +92,7 @@ class MessageKey(str, Enum):
     TOOL_LOOP_FAILSAFE_REACHED = "tool_loop_failsafe_reached"
     LOG_TOOL_LOOP_FAILSAFE_REACHED = "log_tool_loop_failsafe_reached"
     DELIVERABLE_POLICY_BLOCKED = "deliverable_policy_blocked"
+    WORKSPACE_ROOT_UNRESOLVED = "workspace_root_unresolved"
     EXECUTION_TOOL_POLICY_BLOCKED = "execution_tool_policy_blocked"
     EVIDENCE_TOPUP_FINAL_REQUIRED = "evidence_topup_final_required"
     EVIDENCE_TOPUP_LIMIT_REACHED = "evidence_topup_limit_reached"

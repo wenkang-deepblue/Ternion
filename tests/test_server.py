@@ -44,6 +44,14 @@ def mock_ternion_config() -> Callable[[str], RoleConfig | None]:
     return get_role_config
 
 
+def _with_workspace_path(
+    user_text: str,
+    workspace_root: str = "/__cursor_workspace__/repo",
+) -> str:
+    """Build a user message that includes Cursor workspace metadata."""
+    return f"<user_info>\nWorkspace Path: {workspace_root}\n</user_info>\n{user_text}"
+
+
 class TestHealthEndpoint:
     """Tests for health check endpoint."""
 
@@ -124,7 +132,7 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "Hello"}],
+                    "messages": [{"role": "user", "content": _with_workspace_path("Hello")}],
                     "stream": False,
                 },
             )
@@ -180,7 +188,7 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "Hello"}],
+                    "messages": [{"role": "user", "content": _with_workspace_path("Hello")}],
                     "stream": True,
                 },
             ) as response:
@@ -245,7 +253,7 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "Hello"}],
+                    "messages": [{"role": "user", "content": _with_workspace_path("Hello")}],
                     "stream": False,
                 },
             )
@@ -371,6 +379,9 @@ class TestChatCompletions:
             report_hash="hash",
             created_at="2026-01-11T00:00:00Z",
             updated_at="2026-01-11T00:00:00Z",
+            workspace_root="/__cursor_workspace__/repo",
+            workspace_path_style="posix",
+            workspace_root_source="explicit_workspace_path",
         )
 
         with (
@@ -391,7 +402,7 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "Hello"}],
+                    "messages": [{"role": "user", "content": _with_workspace_path("Hello")}],
                     "tools": [
                         {
                             "type": "function",
@@ -460,6 +471,9 @@ class TestChatCompletions:
             report_hash="hash",
             created_at="2026-01-11T00:00:00Z",
             updated_at="2026-01-11T00:00:00Z",
+            workspace_root="/__cursor_workspace__/repo",
+            workspace_path_style="posix",
+            workspace_root_source="explicit_workspace_path",
         )
 
         with (
@@ -478,7 +492,9 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "doc-only request"}],
+                    "messages": [
+                        {"role": "user", "content": _with_workspace_path("doc-only request")}
+                    ],
                     "stream": False,
                     "tools": [
                         {
@@ -566,7 +582,9 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "doc-only request"}],
+                    "messages": [
+                        {"role": "user", "content": _with_workspace_path("doc-only request")}
+                    ],
                     "stream": False,
                     "tools": [
                         {
@@ -651,7 +669,9 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "doc-only request"}],
+                    "messages": [
+                        {"role": "user", "content": _with_workspace_path("doc-only request")}
+                    ],
                     "stream": False,
                     "tools": [
                         {
@@ -736,7 +756,9 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "doc-only request"}],
+                    "messages": [
+                        {"role": "user", "content": _with_workspace_path("doc-only request")}
+                    ],
                     "stream": False,
                     "tools": [
                         {
@@ -823,7 +845,9 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "analysis-only request"}],
+                    "messages": [
+                        {"role": "user", "content": _with_workspace_path("analysis-only request")}
+                    ],
                     "stream": False,
                     "tools": [
                         {
@@ -909,7 +933,9 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "code-change request"}],
+                    "messages": [
+                        {"role": "user", "content": _with_workspace_path("code-change request")}
+                    ],
                     "stream": False,
                     "tools": [
                         {
@@ -1154,6 +1180,8 @@ class TestChatCompletions:
             tool_calls=tool_calls,
             conversation_history=[{"role": "user", "content": "doc-only request"}],
             ternion_report="Scope: documentation only. Non-goals: no code changes.",
+            workspace_root="/__cursor_workspace__/repo",
+            workspace_root_source="explicit_workspace_path",
         )
 
         assert filtered == []
@@ -1187,6 +1215,7 @@ class TestChatCompletions:
             conversation_history=[{"role": "user", "content": "doc-only request"}],
             ternion_report="Scope: documentation only. Non-goals: no code changes.",
             workspace_root=str(workspace),
+            workspace_root_source="explicit_workspace_path",
         )
 
         assert filtered == tool_calls
@@ -1217,6 +1246,7 @@ class TestChatCompletions:
             conversation_history=[{"role": "user", "content": "doc-only request"}],
             ternion_report="Scope: documentation only. Non-goals: no code changes.",
             workspace_root=str(workspace),
+            workspace_root_source="explicit_workspace_path",
         )
 
         assert filtered == []
@@ -1250,6 +1280,7 @@ class TestChatCompletions:
             conversation_history=[{"role": "user", "content": "please update code"}],
             ternion_report="REPORT",
             workspace_root=str(workspace),
+            workspace_root_source="explicit_workspace_path",
         )
 
         assert filtered == []
@@ -1282,6 +1313,7 @@ class TestChatCompletions:
             conversation_history=[{"role": "user", "content": "please update code"}],
             ternion_report="Fix Plan: update code.",
             workspace_root=str(workspace),
+            workspace_root_source="explicit_workspace_path",
         )
 
         assert filtered == tool_calls
@@ -1312,6 +1344,7 @@ class TestChatCompletions:
             conversation_history=[{"role": "user", "content": "请更新文档并修复代码。"}],
             ternion_report="Deliver both document updates and code changes.",
             workspace_root=str(workspace),
+            workspace_root_source="explicit_workspace_path",
         )
 
         assert filtered == tool_calls
@@ -1525,12 +1558,205 @@ class TestChatCompletions:
             conversation_history=[{"role": "user", "content": "please update code"}],
             ternion_report="Fix Plan: update code.",
             workspace_root="/Users/apple/Desktop/translay-test",
+            workspace_root_source="explicit_workspace_path",
         )
 
         assert filtered == tool_calls
         assert message is None
         assert deliverable_type == DeliverableType.CODE_CHANGE
         assert allowed_scope == "repo/**"
+
+    def test_mutation_without_trusted_workspace_returns_fail_closed_error(self) -> None:
+        """Mutation tool calls should fail closed when only fallback workspace is available."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _enforce_deliverable_policy
+
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": '{"file_path":"src/app.py","content":"x"}',
+                },
+            }
+        ]
+
+        filtered, message, deliverable_type, allowed_scope = _enforce_deliverable_policy(
+            workflow_phase="execution",
+            tool_calls=tool_calls,
+            conversation_history=[{"role": "user", "content": "please update code"}],
+            ternion_report="Fix Plan: update code.",
+            workspace_root="/Users/apple/Desktop/Ternion",
+            workspace_root_source="fallback_project_root",
+        )
+
+        assert filtered == []
+        assert deliverable_type == DeliverableType.CODE_CHANGE
+        assert allowed_scope == "repo/**"
+        assert message is not None
+        assert "WORKSPACE_ROOT_UNRESOLVED" in message
+        assert "src/app.py" in message
+
+    def test_non_mutating_tools_remain_allowed_without_trusted_workspace(self) -> None:
+        """Read-only tool calls should not be blocked by untrusted workspace fallback."""
+        from ternion.core.deliverable_policy import DeliverableType
+        from ternion.server.routes import _enforce_deliverable_policy
+
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "ReadFile",
+                    "arguments": '{"path":"src/app.py"}',
+                },
+            }
+        ]
+
+        filtered, message, deliverable_type, allowed_scope = _enforce_deliverable_policy(
+            workflow_phase="execution",
+            tool_calls=tool_calls,
+            conversation_history=[{"role": "user", "content": "please inspect the code"}],
+            ternion_report="Fix Plan: update code.",
+            workspace_root="/Users/apple/Desktop/Ternion",
+            workspace_root_source="fallback_project_root",
+        )
+
+        assert filtered == tool_calls
+        assert message is None
+        assert deliverable_type == DeliverableType.CODE_CHANGE
+        assert allowed_scope == "repo/**"
+
+    def test_is_workspace_root_trusted_handles_key_combinations(self) -> None:
+        """Trusted workspace detection should handle empty and client-derived sources."""
+        from ternion.server.routes import _is_workspace_root_trusted
+
+        cases = [
+            (None, None, False),
+            ("", "explicit_workspace_path", False),
+            ("/repo", "open_files_common_ancestor", True),
+            ("/repo", "message_paths_common_ancestor", True),
+            ("   ", "explicit_workspace_path", False),
+        ]
+
+        for root, source, expected in cases:
+            assert _is_workspace_root_trusted(root, source) is expected
+
+    def test_has_mutating_tool_calls_handles_edge_cases(self) -> None:
+        """Mutation tool detection should ignore invalid items and normalize names."""
+        from ternion.server.routes import _has_mutating_tool_calls
+
+        assert _has_mutating_tool_calls([]) is False
+        assert _has_mutating_tool_calls([None]) is False  # type: ignore[list-item]
+        assert (
+            _has_mutating_tool_calls(
+                [{"type": "function", "function": {"name": "ReadFile", "arguments": "{}"}}]
+            )
+            is False
+        )
+        assert (
+            _has_mutating_tool_calls(
+                [{"type": "function", "function": {"name": " write_file ", "arguments": "{}"}}]
+            )
+            is True
+        )
+        assert (
+            _has_mutating_tool_calls(
+                [
+                    {"type": "function", "function": {"name": "ReadFile", "arguments": "{}"}},
+                    {"type": "function", "function": {"name": "Delete", "arguments": "{}"}},
+                ]
+            )
+            is True
+        )
+
+    def test_collect_mutation_targets_and_unresolved_message_helpers(self) -> None:
+        """Workspace guardrail helpers should format target lists consistently."""
+        from ternion.server.routes import (
+            _collect_mutation_target_displays,
+            _workspace_root_unresolved_message,
+        )
+        from ternion.utils.i18n import MessageKey, t
+
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": '{"file_path":"docs/plan.md","content":"x"}',
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "Delete",
+                    "arguments": '{"path":"src/app.py"}',
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "ReadFile",
+                    "arguments": '{"path":"README.md"}',
+                },
+            },
+        ]
+
+        blocked_targets = _collect_mutation_target_displays(tool_calls)
+
+        assert blocked_targets == [
+            "Write -> docs/plan.md",
+            "Delete -> src/app.py",
+        ]
+
+        message = _workspace_root_unresolved_message(blocked_targets)
+        assert "WORKSPACE_ROOT_UNRESOLVED" in message
+        assert "Write -> docs/plan.md" in message
+        assert "Delete -> src/app.py" in message
+
+        empty_message = _workspace_root_unresolved_message([])
+        assert "WORKSPACE_ROOT_UNRESOLVED" in empty_message
+        assert t(MessageKey.TOOL_POLICY_NONE) in empty_message
+
+    def test_baseline_snapshots_skip_when_local_workspace_root_missing(self) -> None:
+        """Baseline capture should skip when the server cannot access the workspace locally."""
+        from ternion.core.session_store import ExecutionMode, Session, SessionStage
+        from ternion.server.routes import _ensure_baseline_snapshots_for_tool_calls
+
+        session = Session(
+            session_id="abc123def456",
+            stage=SessionStage.AWAITING_TOOL_RESULTS,
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_report_raw="",
+            ternion_report_safe="",
+            report_hash="deadbeefdeadbeef",
+            created_at="2026-03-18T00:00:00Z",
+            updated_at="2026-03-18T00:00:00Z",
+            workspace_root="/__ternion_remote__/repo",
+            workspace_path_style="posix",
+            workspace_root_source="explicit_workspace_path",
+            local_workspace_root="",
+            baseline_file_snapshots={"/__ternion_remote__/repo/README.md": "# existing"},
+            modified_files=["/__ternion_remote__/repo/README.md"],
+        )
+        tool_calls = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": '{"file_path":"docs/spec.md","content":"# spec"}',
+                },
+            }
+        ]
+
+        with patch("ternion.server.routes._read_text_file_best_effort") as mock_read:
+            baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(session, tool_calls)
+
+        assert baseline == {"/__ternion_remote__/repo/README.md": "# existing"}
+        assert modified_files == [
+            "/__ternion_remote__/repo/README.md",
+            "/__ternion_remote__/repo/docs/spec.md",
+        ]
+        mock_read.assert_not_called()
 
     def test_apply_workspace_boundary_logs_mismatch_and_keeps_persisted_mapping(
         self, tmp_path: Path
@@ -1752,7 +1978,7 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "Hello"}],
+                    "messages": [{"role": "user", "content": _with_workspace_path("Hello")}],
                     "stream": True,
                 },
             ) as response:
@@ -1942,6 +2168,9 @@ class TestChatCompletions:
             report_hash="hash",
             created_at="2026-01-11T00:00:00Z",
             updated_at="2026-01-11T00:00:00Z",
+            workspace_root="/__cursor_workspace__/repo",
+            workspace_path_style="posix",
+            workspace_root_source="explicit_workspace_path",
         )
 
         async def run_discussion_with_phase(ctx):  # type: ignore[no-untyped-def]
@@ -1967,7 +2196,7 @@ class TestChatCompletions:
                 "/v1/chat/completions",
                 json={
                     "model": "ternion-team",
-                    "messages": [{"role": "user", "content": "Hello"}],
+                    "messages": [{"role": "user", "content": _with_workspace_path("Hello")}],
                     "stream": True,
                 },
             ) as response:

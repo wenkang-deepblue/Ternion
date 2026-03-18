@@ -1531,6 +1531,12 @@ _PYTEST_SUMMARY_RE = re.compile(
     r"(?P<failed>\d+)\s+failed\b.*",
     flags=re.IGNORECASE | re.UNICODE,
 )
+# Client-derived workspace sources considered trustworthy for mutation scoping.
+_TRUSTED_WORKSPACE_ROOT_SOURCES = {
+    "explicit_workspace_path",
+    "open_files_common_ancestor",
+    "message_paths_common_ancestor",
+}
 
 
 def _is_pytest_command(command: str) -> bool:
@@ -1824,6 +1830,9 @@ def _ensure_baseline_snapshots_for_tool_calls(
     baseline = dict(getattr(session, "baseline_file_snapshots", {}) or {})
     modified_files = list(getattr(session, "modified_files", []) or [])
     modified_set = set(modified_files)
+    local_workspace_root = str(getattr(session, "local_workspace_root", "") or "").strip()
+    if not local_workspace_root:
+        logger.debug("baseline_snapshot_skipped_no_local_workspace")
 
     for tc in tool_calls or []:
         if not isinstance(tc, dict):
@@ -1841,12 +1850,12 @@ def _ensure_baseline_snapshots_for_tool_calls(
         if not normalized:
             continue
 
-        if normalized not in baseline:
+        if normalized not in baseline and local_workspace_root:
             local_target = _normalize_local_file_path(
                 target or "",
                 workspace_root=getattr(session, "workspace_root", ""),
                 workspace_path_style=getattr(session, "workspace_path_style", ""),
-                local_workspace_root=getattr(session, "local_workspace_root", ""),
+                local_workspace_root=local_workspace_root,
             )
             content = _read_text_file_best_effort(local_target) if local_target else None
             if content is not None:
@@ -1976,10 +1985,12 @@ def _try_get_git_status_snapshot(
     """
     Best-effort workspace status snapshot for Shell side-effect tracking.
     """
-    repo_root = str(local_workspace_root or "").strip() or resolve_local_workspace_root(
-        str(workspace_root or "")
-    )
+    repo_root = str(local_workspace_root or "").strip()
     if not repo_root:
+        logger.debug(
+            "git_status_snapshot_skipped_no_local_workspace",
+            workspace_root=str(workspace_root or ""),
+        )
         return {}
     repo_root_path = Path(repo_root)
     if not (repo_root_path / ".git").exists():
@@ -2014,7 +2025,6 @@ def _try_get_git_status_snapshot(
 def _try_read_git_head_file(
     relative_path: str,
     *,
-    workspace_root: str | None = None,
     local_workspace_root: str | None = None,
 ) -> str | None:
     """
@@ -2022,9 +2032,7 @@ def _try_read_git_head_file(
     """
     if not isinstance(relative_path, str) or not relative_path.strip():
         return None
-    repo_root = str(local_workspace_root or "").strip() or resolve_local_workspace_root(
-        str(workspace_root or "")
-    )
+    repo_root = str(local_workspace_root or "").strip()
     if not repo_root:
         return None
     repo_root_path = Path(repo_root)
@@ -2167,12 +2175,70 @@ def _is_doc_only_mutation_allowed(relative_path: str) -> bool:
     return bool(_is_document_like_target(relative_path))
 
 
+def _has_mutating_tool_calls(tool_calls: list[dict]) -> bool:
+    """Return whether the tool call batch contains any mutation tool."""
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        name, _args = _extract_tool_name_and_arguments(tc)
+        canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+        if canonical in _MUTATING_TOOL_NAMES:
+            return True
+    return False
+
+
+def _is_workspace_root_trusted(
+    workspace_root: str | None,
+    workspace_root_source: str | None,
+) -> bool:
+    """Return whether the current workspace boundary is client-derived and trustworthy."""
+    root = str(workspace_root or "").strip()
+    source = str(workspace_root_source or "").strip()
+    return bool(root) and source in _TRUSTED_WORKSPACE_ROOT_SOURCES
+
+
+def _collect_mutation_target_displays(tool_calls: list[dict]) -> list[str]:
+    """Collect mutation target display strings for guardrail feedback."""
+    violations: list[str] = []
+    unknown_target = t(MessageKey.TOOL_POLICY_UNKNOWN_TARGET)
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        name, args_str = _extract_tool_name_and_arguments(tc)
+        canonical = re.sub(r"[^a-z0-9]+", "", (name or "").strip().lower())
+        if not canonical or canonical not in _MUTATING_TOOL_NAMES:
+            continue
+        target = _extract_mutation_target_path(name or "", args_str)
+        target_display = target or unknown_target
+        violations.append(f"{name} -> {target_display}")
+    return violations
+
+
+def _workspace_root_unresolved_message(blocked_targets: list[str]) -> str:
+    """Build the fail-closed message for mutation attempts without a trusted workspace."""
+    none_placeholder = t(MessageKey.TOOL_POLICY_NONE)
+    blocked = (
+        "\n".join(f"- {item}" for item in blocked_targets)
+        if blocked_targets
+        else f"- {none_placeholder}"
+    )
+    return t(MessageKey.WORKSPACE_ROOT_UNRESOLVED, blocked_targets=blocked)
+
+
 def _collect_deliverable_policy_violations(
     tool_calls: list[dict],
     deliverable_type: DeliverableType,
     workspace_root: str | None = None,
     workspace_path_style: str | None = None,
+    workspace_root_source: str | None = None,
 ) -> list[str]:
+    # Keep the trust guard here as well because this helper is also invoked
+    # independently by guardrail event builders outside the main enforcement path.
+    if _has_mutating_tool_calls(tool_calls) and not _is_workspace_root_trusted(
+        workspace_root,
+        workspace_root_source,
+    ):
+        return _collect_mutation_target_displays(tool_calls)
     violations: list[str] = []
     unknown_target = t(MessageKey.TOOL_POLICY_UNKNOWN_TARGET)
     for tc in tool_calls or []:
@@ -2226,6 +2292,7 @@ def _enforce_deliverable_policy(
     ternion_report: str,
     workspace_root: str | None = None,
     workspace_path_style: str | None = None,
+    workspace_root_source: str | None = None,
 ) -> tuple[list[dict], str | None, DeliverableType | None, str]:
     if workflow_phase not in {"execution", "optimizer"}:
         return list(tool_calls or []), None, None, ""
@@ -2234,11 +2301,35 @@ def _enforce_deliverable_policy(
         conversation_history,
         ternion_report,
     )
+    if _has_mutating_tool_calls(tool_calls) and not _is_workspace_root_trusted(
+        workspace_root,
+        workspace_root_source,
+    ):
+        blocked_targets = _collect_mutation_target_displays(tool_calls)
+        log_manager.emit(
+            level="INFO",
+            category="GUARDRAIL",
+            message=(
+                "workspace_root_unresolved | "
+                f"type={deliverable_type.value} | "
+                f"allowed_scope={allowed_scope} | "
+                f"workspace_root={str(workspace_root or '')} | "
+                f"workspace_root_source={str(workspace_root_source or '')} | "
+                f"blocked_targets={'; '.join(blocked_targets)}"
+            ),
+        )
+        return (
+            [],
+            _workspace_root_unresolved_message(blocked_targets),
+            deliverable_type,
+            allowed_scope,
+        )
     violations = _collect_deliverable_policy_violations(
         tool_calls,
         deliverable_type,
         workspace_root,
         workspace_path_style,
+        workspace_root_source,
     )
     if not violations:
         return list(tool_calls or []), None, deliverable_type, allowed_scope
@@ -2812,6 +2903,12 @@ async def _run_discussion_streaming(
                     yield "data: [DONE]\n\n"
                     return
                 before_deliverable_policy = list(filtered_tool_calls)
+                (
+                    current_workspace_root,
+                    current_local_workspace_root,
+                    current_workspace_path_style,
+                    current_workspace_root_source,
+                ) = _resolve_workspace_fields(session=session)
                 filtered_tool_calls, policy_error, deliverable_type, allowed_scope = (
                     _enforce_deliverable_policy(
                         workflow_phase=workflow_phase,
@@ -2820,8 +2917,9 @@ async def _run_discussion_streaming(
                             final_state.get("conversation_history", []) or []
                         ),
                         ternion_report=str(final_state.get("ternion_report", "") or ""),
-                        workspace_root=workspace_root,
-                        workspace_path_style=workspace_path_style,
+                        workspace_root=current_workspace_root,
+                        workspace_path_style=current_workspace_path_style,
+                        workspace_root_source=current_workspace_root_source,
                     )
                 )
                 if policy_error:
@@ -2829,8 +2927,9 @@ async def _run_discussion_streaming(
                         _collect_deliverable_policy_violations(
                             before_deliverable_policy,
                             deliverable_type,
-                            workspace_root,
-                            workspace_path_style,
+                            current_workspace_root,
+                            current_workspace_path_style,
+                            current_workspace_root_source,
                         )
                         if deliverable_type is not None
                         else []
@@ -3241,6 +3340,12 @@ async def _run_implementation_streaming(
                     or getattr(session, "workflow_phase", "execution")
                     or "execution"
                 )
+                (
+                    current_workspace_root,
+                    current_local_workspace_root,
+                    current_workspace_path_style,
+                    current_workspace_root_source,
+                ) = _resolve_workspace_fields(session=session)
                 filtered_tool_calls = list(pending_tool_calls or [])
                 todo_written_now = False
                 if workflow_phase in {"execution", "optimizer"} and session is not None:
@@ -3359,7 +3464,9 @@ async def _run_implementation_streaming(
                             or getattr(session, "ternion_report_raw", "")
                             or ""
                         ),
-                        workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                        workspace_root=current_workspace_root,
+                        workspace_path_style=current_workspace_path_style,
+                        workspace_root_source=current_workspace_root_source,
                     )
                 )
                 if policy_error:
@@ -3368,7 +3475,9 @@ async def _run_implementation_streaming(
                             _collect_deliverable_policy_violations(
                                 before_deliverable_policy,
                                 deliverable_type,
-                                str(getattr(session, "workspace_root", "") or ""),
+                                current_workspace_root,
+                                current_workspace_path_style,
+                                current_workspace_root_source,
                             )
                             if deliverable_type is not None
                             else []
@@ -3465,7 +3574,9 @@ async def _run_implementation_streaming(
                         rewritten_tool_calls,
                         round_index=next_round,
                         workflow_phase=workflow_phase,
-                        workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                        workspace_root=current_workspace_root,
+                        workspace_path_style=current_workspace_path_style,
+                        local_workspace_root=current_local_workspace_root,
                     ),
                     modified_files=modified_files,
                     baseline_file_snapshots=baseline,
@@ -4285,6 +4396,7 @@ async def chat_completions(
                     ternion_report=str(final_state.get("ternion_report", "") or ""),
                     workspace_root=workspace_root,
                     workspace_path_style=workspace_path_style,
+                    workspace_root_source=workspace_root_source,
                 )
             )
             if policy_error:
@@ -4294,6 +4406,7 @@ async def chat_completions(
                         deliverable_type,
                         workspace_root,
                         workspace_path_style,
+                        workspace_root_source,
                     )
                     if deliverable_type is not None
                     else []
@@ -4479,6 +4592,12 @@ async def handle_report_evidence_followup(
 
     context = message_router.extract_context(request.messages)
     _apply_workspace_boundary_to_context(context, request.messages, session=session)
+    (
+        workspace_root,
+        local_workspace_root,
+        workspace_path_style,
+        workspace_root_source,
+    ) = _resolve_workspace_fields(context=context, session=session)
     cursor_system_prompt = session.cursor_system_prompt
     if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str):
         cursor_system_prompt = context.cursor_system_prompt.content
@@ -4948,6 +5067,12 @@ async def handle_report_evidence_followup(
                         yield f"data: {final_chunk.model_dump_json()}\n\n"
                         yield "data: [DONE]\n\n"
                         return
+                    (
+                        current_workspace_root,
+                        current_local_workspace_root,
+                        current_workspace_path_style,
+                        current_workspace_root_source,
+                    ) = _resolve_workspace_fields(session=current_session or session)
                     filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
                         workflow_phase=workflow_phase,
                         tool_calls=filtered_tool_calls,
@@ -4959,7 +5084,9 @@ async def handle_report_evidence_followup(
                             or getattr(session, "ternion_report_raw", "")
                             or ""
                         ),
-                        workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                        workspace_root=current_workspace_root,
+                        workspace_path_style=current_workspace_path_style,
+                        workspace_root_source=current_workspace_root_source,
                     )
                     if policy_error:
                         if current_session is not None:
@@ -5053,7 +5180,9 @@ async def handle_report_evidence_followup(
                             rewritten_tool_calls,
                             round_index=next_round,
                             workflow_phase=workflow_phase,
-                            workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                            workspace_root=current_workspace_root,
+                            workspace_path_style=current_workspace_path_style,
+                            local_workspace_root=current_local_workspace_root,
                         ),
                         modified_files=modified_files,
                         baseline_file_snapshots=baseline,
@@ -5399,6 +5528,12 @@ async def handle_report_evidence_followup(
                     pending_tool_calls=[],
                 )
             return _respond_with_text(request, tool_policy_error)
+        (
+            current_workspace_root,
+            current_local_workspace_root,
+            current_workspace_path_style,
+            current_workspace_root_source,
+        ) = _resolve_workspace_fields(session=current_session or session)
         filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
             workflow_phase=workflow_phase,
             tool_calls=filtered_tool_calls,
@@ -5408,7 +5543,9 @@ async def handle_report_evidence_followup(
                 or getattr(session, "ternion_report_raw", "")
                 or ""
             ),
-            workspace_root=str(getattr(session, "workspace_root", "") or ""),
+            workspace_root=current_workspace_root,
+            workspace_path_style=current_workspace_path_style,
+            workspace_root_source=current_workspace_root_source,
         )
         if policy_error:
             if current_session is not None:
@@ -5475,7 +5612,9 @@ async def handle_report_evidence_followup(
                 rewritten_tool_calls,
                 round_index=next_round,
                 workflow_phase=workflow_phase,
-                workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                workspace_root=current_workspace_root,
+                workspace_path_style=current_workspace_path_style,
+                local_workspace_root=current_local_workspace_root,
             ),
             modified_files=modified_files,
             baseline_file_snapshots=baseline,
@@ -5641,6 +5780,12 @@ async def handle_evidence_followup(
 
     context = message_router.extract_context(request.messages)
     _apply_workspace_boundary_to_context(context, request.messages, session=session)
+    (
+        workspace_root,
+        local_workspace_root,
+        workspace_path_style,
+        workspace_root_source,
+    ) = _resolve_workspace_fields(context=context, session=session)
     cursor_system_prompt = session.cursor_system_prompt
     if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str):
         cursor_system_prompt = context.cursor_system_prompt.content
@@ -6098,7 +6243,9 @@ async def handle_evidence_followup(
                             or getattr(session, "ternion_report_raw", "")
                             or ""
                         ),
-                        workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                        workspace_root=current_workspace_root,
+                        workspace_path_style=current_workspace_path_style,
+                        workspace_root_source=current_workspace_root_source,
                     )
                     if policy_error:
                         if current_session is not None:
@@ -6172,7 +6319,9 @@ async def handle_evidence_followup(
                             rewritten_tool_calls,
                             round_index=next_round,
                             workflow_phase=workflow_phase,
-                            workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                            workspace_root=current_workspace_root,
+                            workspace_path_style=current_workspace_path_style,
+                            local_workspace_root=current_local_workspace_root,
                         ),
                         modified_files=modified_files,
                         baseline_file_snapshots=baseline,
@@ -6408,6 +6557,12 @@ async def handle_evidence_followup(
                     pending_tool_calls=[],
                 )
             return _respond_with_text(request, tool_policy_error)
+        (
+            current_workspace_root,
+            current_local_workspace_root,
+            current_workspace_path_style,
+            current_workspace_root_source,
+        ) = _resolve_workspace_fields(session=current_session or session)
         filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
             workflow_phase=workflow_phase,
             tool_calls=filtered_tool_calls,
@@ -6417,7 +6572,9 @@ async def handle_evidence_followup(
                 or getattr(session, "ternion_report_raw", "")
                 or ""
             ),
-            workspace_root=str(getattr(session, "workspace_root", "") or ""),
+            workspace_root=current_workspace_root,
+            workspace_path_style=current_workspace_path_style,
+            workspace_root_source=current_workspace_root_source,
         )
         if policy_error:
             if current_session is not None:
@@ -6470,7 +6627,9 @@ async def handle_evidence_followup(
                 rewritten_tool_calls,
                 round_index=next_round,
                 workflow_phase=workflow_phase,
-                workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                workspace_root=current_workspace_root,
+                workspace_path_style=current_workspace_path_style,
+                local_workspace_root=current_local_workspace_root,
             ),
             modified_files=modified_files,
             baseline_file_snapshots=baseline,
@@ -6567,6 +6726,12 @@ async def handle_execution_followup(
 
     context = message_router.extract_context(request.messages)
     _apply_workspace_boundary_to_context(context, request.messages, session=session)
+    (
+        workspace_root,
+        local_workspace_root,
+        workspace_path_style,
+        workspace_root_source,
+    ) = _resolve_workspace_fields(context=context, session=session)
     cursor_system_prompt = session.cursor_system_prompt
     if context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str):
         cursor_system_prompt = context.cursor_system_prompt.content
@@ -6667,7 +6832,8 @@ async def handle_execution_followup(
             target = _extract_mutation_target_path(tool_name or "", tool_args or "{}")
             normalized = _normalize_file_path(
                 target or "",
-                getattr(session, "workspace_root", ""),
+                workspace_root,
+                workspace_path_style,
             )
             if normalized:
                 git_cursor_modified.add(normalized)
@@ -6675,14 +6841,22 @@ async def handle_execution_followup(
             target = _extract_mutation_target_path(tool_name or "", tool_args or "{}")
             normalized = _normalize_file_path(
                 target or "",
-                getattr(session, "workspace_root", ""),
+                workspace_root,
+                workspace_path_style,
             )
             relative = _workspace_relative_path(
                 normalized or "",
-                getattr(session, "workspace_root", ""),
+                workspace_root,
+                workspace_path_style,
             )
             if normalized and relative and _is_document_like_target(relative):
-                snapshot = _read_text_file_best_effort(normalized)
+                local_target = _normalize_local_file_path(
+                    target or "",
+                    workspace_root=workspace_root,
+                    workspace_path_style=workspace_path_style,
+                    local_workspace_root=local_workspace_root,
+                )
+                snapshot = _read_text_file_best_effort(local_target) if local_target else None
                 if snapshot is not None:
                     writer_output_files[normalized] = snapshot
                     meta["document_output_stabilized"] = True
@@ -6721,7 +6895,11 @@ async def handle_execution_followup(
             delta_truncated = False
 
             if isinstance(git_cursor, dict) and "repo_root" in git_cursor:
-                snapshot = _try_get_git_status_snapshot(getattr(session, "workspace_root", ""))
+                snapshot = _try_get_git_status_snapshot(
+                    workspace_root=workspace_root,
+                    workspace_path_style=workspace_path_style,
+                    local_workspace_root=local_workspace_root,
+                )
                 if snapshot:
                     post_modified = {
                         p
@@ -6747,13 +6925,17 @@ async def handle_execution_followup(
                     delta_truncated = len(added) > max_paths or len(removed) > max_paths
                     for abs_path in added[:max_paths]:
                         rel = _workspace_relative_path(
-                            abs_path, getattr(session, "workspace_root", "")
+                            abs_path,
+                            workspace_root,
+                            workspace_path_style,
                         )
                         if rel:
                             delta_added_paths.append(rel)
                     for abs_path in removed[:max_paths]:
                         rel = _workspace_relative_path(
-                            abs_path, getattr(session, "workspace_root", "")
+                            abs_path,
+                            workspace_root,
+                            workspace_path_style,
                         )
                         if rel:
                             delta_removed_paths.append(rel)
@@ -6765,7 +6947,9 @@ async def handle_execution_followup(
                         if abs_path in baseline:
                             continue
                         rel = _workspace_relative_path(
-                            abs_path, getattr(session, "workspace_root", "")
+                            abs_path,
+                            workspace_root,
+                            workspace_path_style,
                         )
                         if not rel:
                             continue
@@ -6774,7 +6958,7 @@ async def handle_execution_followup(
                             continue
                         base_content = _try_read_git_head_file(
                             rel,
-                            workspace_root=getattr(session, "workspace_root", ""),
+                            local_workspace_root=local_workspace_root,
                         )
                         if base_content is not None:
                             baseline[abs_path] = base_content
@@ -6997,7 +7181,9 @@ async def handle_execution_followup(
                 tool_calls=filtered_tool_calls,
                 conversation_history=updated_execution_messages,
                 ternion_report=str(getattr(session, "ternion_report_raw", "") or ""),
-                workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                workspace_root=workspace_root,
+                workspace_path_style=workspace_path_style,
+                workspace_root_source=workspace_root_source,
             )
         )
         if policy_error:
@@ -7005,7 +7191,9 @@ async def handle_execution_followup(
                 _collect_deliverable_policy_violations(
                     before_deliverable_policy,
                     deliverable_type,
-                    str(getattr(session, "workspace_root", "") or ""),
+                    workspace_root,
+                    workspace_path_style,
+                    workspace_root_source,
                 )
                 if deliverable_type is not None
                 else []
@@ -7078,7 +7266,9 @@ async def handle_execution_followup(
                 rewritten_tool_calls,
                 round_index=next_round,
                 workflow_phase=workflow_phase,
-                workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                workspace_root=workspace_root,
+                workspace_path_style=workspace_path_style,
+                local_workspace_root=local_workspace_root,
             ),
             round_index=next_round,
             workflow_phase=workflow_phase,
@@ -7466,7 +7656,9 @@ async def handle_execution_followup(
                             or getattr(session, "ternion_report_raw", "")
                             or ""
                         ),
-                        workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                        workspace_root=workspace_root,
+                        workspace_path_style=workspace_path_style,
+                        workspace_root_source=workspace_root_source,
                     )
                     if policy_error:
                         session_store.update_session(
@@ -7533,7 +7725,9 @@ async def handle_execution_followup(
                             rewritten_tool_calls,
                             round_index=next_round,
                             workflow_phase=workflow_phase,
-                            workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                            workspace_root=workspace_root,
+                            workspace_path_style=workspace_path_style,
+                            local_workspace_root=local_workspace_root,
                         ),
                         modified_files=modified_files,
                         baseline_file_snapshots=baseline,
@@ -7924,7 +8118,9 @@ async def handle_execution_followup(
                     or getattr(session, "ternion_report_raw", "")
                     or ""
                 ),
-                workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                workspace_root=workspace_root,
+                workspace_path_style=workspace_path_style,
+                workspace_root_source=workspace_root_source,
             )
         )
         if policy_error:
@@ -7932,7 +8128,9 @@ async def handle_execution_followup(
                 _collect_deliverable_policy_violations(
                     before_deliverable_policy,
                     deliverable_type,
-                    str(getattr(session, "workspace_root", "") or ""),
+                    workspace_root,
+                    workspace_path_style,
+                    workspace_root_source,
                 )
                 if deliverable_type is not None
                 else []
@@ -7996,7 +8194,9 @@ async def handle_execution_followup(
                 rewritten_tool_calls,
                 round_index=next_round,
                 workflow_phase=workflow_phase,
-                workspace_root=str(getattr(session, "workspace_root", "") or ""),
+                workspace_root=workspace_root,
+                workspace_path_style=workspace_path_style,
+                local_workspace_root=local_workspace_root,
             ),
             modified_files=modified_files,
             baseline_file_snapshots=baseline,
