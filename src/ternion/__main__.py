@@ -46,6 +46,7 @@ def build_startup_message(backend_port: int) -> str:
     local_api_url = build_local_service_url(backend_port, "/v1")
     control_panel_url = build_local_service_url(backend_port, "/panel")
     api_docs_url = build_local_service_url(backend_port, "/docs")
+    public_base_url = "https://your-public-url"
 
     return dedent(
         f"""\
@@ -56,7 +57,7 @@ def build_startup_message(backend_port: int) -> str:
 
         To use Ternion in Cursor, expose this local service through a public HTTPS tunnel,
         then set Cursor's Override OpenAI Base URL to:
-        https://your-public-url/v1
+        {public_base_url}
         """
     ).strip()
 

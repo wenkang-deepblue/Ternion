@@ -11,9 +11,10 @@ Provides REST API endpoints for the Web Control Panel to manage:
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from typing import Any, get_args
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -21,13 +22,21 @@ from ternion.core.budget import budget_manager
 from ternion.core.config_store import (
     ApiKeyEntry,
     ProviderConfig,
+    PublicAccessConfig,
+    PublicAccessMode,
     RoleConfig,
+    UserConfig,
     config_store,
 )
 from ternion.core.model_catalog import CatalogModel, model_catalog_service
 from ternion.core.model_probe import (
     ModelAvailabilityProbeResult,
     model_availability_probe_service,
+)
+from ternion.core.public_access import (
+    build_public_origin,
+    normalize_public_base_url,
+    resolve_effective_public_base_url,
 )
 from ternion.providers.manager import provider_manager
 from ternion.server.model_catalog_refresh import (
@@ -41,6 +50,7 @@ from ternion.utils.secrets import redact_secrets
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["control-panel"])
+VALID_PUBLIC_ACCESS_MODES = set(get_args(PublicAccessMode))
 
 # Sync budget settings from config_store to budget_manager on module load.
 # This ensures user-configured budget persists across server restarts.
@@ -163,6 +173,13 @@ class PortsUpdateRequest(BaseModel):
     web: int | None = None
 
 
+class PublicAccessUpdateRequest(BaseModel):
+    """Request to update public access guidance settings."""
+
+    mode: str | None = None
+    public_base_url: str | None = None
+
+
 # Display name mapping for providers
 PROVIDER_DISPLAY_NAMES = {
     "google": "Google Gemini",
@@ -181,6 +198,55 @@ def _get_provider_display_name(provider: str) -> str:
         The display name of the provider.
     """
     return PROVIDER_DISPLAY_NAMES.get(provider, provider.title())
+
+
+def _build_request_public_origin(request: Request) -> str:
+    """Build a public origin from request headers for public-access detection.
+
+    Args:
+        request: Incoming control-panel request.
+
+    Returns:
+        A normalized public origin, or an empty string when the request resolves
+        to a local or otherwise non-public address.
+    """
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    forwarded_host = request.headers.get("x-forwarded-host", "")
+    scheme = (forwarded_proto or request.url.scheme or "").strip()
+    host = (forwarded_host or request.headers.get("host") or request.url.netloc or "").strip()
+    return build_public_origin(scheme, host)
+
+
+def _serialize_public_access_state(request: Request, config: UserConfig) -> dict[str, Any]:
+    """Serialize current public-access state for API responses.
+
+    Args:
+        request: Incoming control-panel request.
+        config: User configuration object.
+
+    Returns:
+        A dictionary containing configured and effective public-access values.
+    """
+    mode = str(config.public_access.mode or "none")
+    if mode not in VALID_PUBLIC_ACCESS_MODES:
+        mode = "none"
+
+    configured_public_base_url = normalize_public_base_url(
+        str(config.public_access.public_base_url or "")
+    )
+    effective_public_base_url, effective_source = resolve_effective_public_base_url(
+        configured_public_base_url,
+        request_origin=_build_request_public_origin(request),
+    )
+    return {
+        "mode": mode,
+        "configured_public_base_url": configured_public_base_url,
+        "effective_public_base_url": effective_public_base_url,
+        "effective_source": effective_source,
+        "cursor_override_base_url": effective_public_base_url,
+        "configured": bool(effective_public_base_url),
+        "requires_public_url": True,
+    }
 
 
 def _canonicalize_config_roles(config: object) -> bool:
@@ -247,7 +313,11 @@ async def _get_catalog_model_for_provider(provider: str, model_id: str) -> Catal
     """
     model = model_catalog_service.get_model_cached(model_id)
     if model is None or model.provider != provider:
-        log_manager.emit("ERROR", "ERROR", f"Model '{model_id}' is not available for provider '{provider}' in the current catalog.")
+        log_manager.emit(
+            "ERROR",
+            "ERROR",
+            f"Model '{model_id}' is not available for provider '{provider}' in the current catalog.",
+        )
         raise HTTPException(status_code=400, detail="MODEL_NOT_AVAILABLE")
     return model
 
@@ -264,7 +334,7 @@ def _build_model_probe_failure_response(result: ModelAvailabilityProbeResult) ->
     log_manager.emit(
         "ERROR",
         "ERROR",
-        f"Model probe failed for {result.provider} / {result.model}: {result.code} - {redact_secrets(result.message)}"
+        f"Model probe failed for {result.provider} / {result.model}: {result.code} - {redact_secrets(result.message)}",
     )
     return JSONResponse(
         status_code=400,
@@ -292,6 +362,72 @@ async def get_config() -> dict:
     config = config_store.load()
     _canonicalize_config_roles(config)
     return config_store.to_safe_dict()
+
+
+@router.get("/public-access")
+async def get_public_access(request: Request) -> dict[str, Any]:
+    """Return current public-access guidance state for the Control Panel.
+
+    Args:
+        request: Incoming request used for runtime public-origin detection.
+
+    Returns:
+        A dictionary containing configured and effective public-access values.
+    """
+    config = config_store.load()
+    return _serialize_public_access_state(request, config)
+
+
+@router.post("/public-access")
+async def update_public_access(
+    request: Request,
+    payload: PublicAccessUpdateRequest,
+) -> dict[str, Any]:
+    """Update stored public-access guidance settings.
+
+    Args:
+        request: Incoming request used for runtime public-origin detection.
+        payload: Partial public-access update payload.
+
+    Returns:
+        A dictionary containing success status and effective public-access values.
+    """
+    config = config_store.load()
+    current_public_access = config.public_access
+    current_mode = str(current_public_access.mode or "none")
+    if current_mode not in VALID_PUBLIC_ACCESS_MODES:
+        current_mode = "none"
+
+    mode = str(payload.mode if payload.mode is not None else current_mode).strip() or "none"
+    if mode not in VALID_PUBLIC_ACCESS_MODES:
+        raise HTTPException(status_code=400, detail="INVALID_PUBLIC_ACCESS_MODE")
+
+    raw_public_base_url = (
+        payload.public_base_url
+        if payload.public_base_url is not None
+        else current_public_access.public_base_url
+    )
+    raw_public_base_url = str(raw_public_base_url or "")
+    public_base_url = normalize_public_base_url(raw_public_base_url)
+    if raw_public_base_url.strip() and not public_base_url:
+        raise HTTPException(status_code=400, detail="INVALID_PUBLIC_BASE_URL")
+
+    config.public_access = PublicAccessConfig(
+        mode=mode,
+        public_base_url=public_base_url,
+    )
+    config_store.save(config)
+
+    log_manager.emit(
+        "INFO",
+        "USER_ACTION",
+        (f'Public access configuration saved: mode={mode}, public_base_url="{public_base_url}"'),
+    )
+
+    return {
+        "success": True,
+        **_serialize_public_access_state(request, config),
+    }
 
 
 @router.post("/api-keys/add")
@@ -488,10 +624,18 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
             if role_update is None:
                 continue
             if not role_update.provider or not role_update.model:
-                log_manager.emit("ERROR", "USER_ACTION", f"Role update failed: Incomplete configuration for {role_name}")
+                log_manager.emit(
+                    "ERROR",
+                    "USER_ACTION",
+                    f"Role update failed: Incomplete configuration for {role_name}",
+                )
                 raise HTTPException(status_code=400, detail=f"ROLES_INCOMPLETE:{role_name}")
             if role_update.provider not in enabled_providers:
-                log_manager.emit("ERROR", "USER_ACTION", f"Role update failed: Provider '{role_update.provider}' is not enabled")
+                log_manager.emit(
+                    "ERROR",
+                    "USER_ACTION",
+                    f"Role update failed: Provider '{role_update.provider}' is not enabled",
+                )
                 raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
             catalog_model = await _get_catalog_model_for_provider(
                 role_update.provider,
@@ -511,13 +655,21 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
                 missing_roles.append(role_name)
                 continue
             if role_cfg.provider not in enabled_providers:
-                log_manager.emit("ERROR", "USER_ACTION", f"Role validation failed: Provider '{role_cfg.provider}' is not enabled")
+                log_manager.emit(
+                    "ERROR",
+                    "USER_ACTION",
+                    f"Role validation failed: Provider '{role_cfg.provider}' is not enabled",
+                )
                 raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
             await _get_catalog_model_for_provider(role_cfg.provider, role_cfg.model)
 
         if missing_roles:
-            missing_roles_str = ','.join(missing_roles)
-            log_manager.emit("ERROR", "USER_ACTION", f"Role validation failed: Missing configuration for roles: {missing_roles_str}")
+            missing_roles_str = ",".join(missing_roles)
+            log_manager.emit(
+                "ERROR",
+                "USER_ACTION",
+                f"Role validation failed: Missing configuration for roles: {missing_roles_str}",
+            )
             raise HTTPException(
                 status_code=400,
                 detail=f"ROLES_INCOMPLETE:{missing_roles_str}",
@@ -531,7 +683,11 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
         for provider, model in sorted(unique_pairs):
             api_key = config_store.get_provider_api_key(provider)
             if not api_key:
-                log_manager.emit("ERROR", "USER_ACTION", f"Model probe skipped: Provider '{provider}' has no valid API key")
+                log_manager.emit(
+                    "ERROR",
+                    "USER_ACTION",
+                    f"Model probe skipped: Provider '{provider}' has no valid API key",
+                )
                 raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
 
             probe_result = await model_availability_probe_service.probe_model(
@@ -673,7 +829,11 @@ async def log_role_selection(request: RoleSelectionLogRequest) -> dict:
     """
     enabled = set(config_store.get_enabled_providers())
     if request.provider not in enabled:
-        log_manager.emit("ERROR", "USER_ACTION", f"Role model selection failed: Provider '{request.provider}' is not enabled")
+        log_manager.emit(
+            "ERROR",
+            "USER_ACTION",
+            f"Role model selection failed: Provider '{request.provider}' is not enabled",
+        )
         raise HTTPException(status_code=400, detail="PROVIDER_NOT_ENABLED")
 
     await _get_catalog_model_for_provider(request.provider, request.model)
@@ -976,7 +1136,11 @@ async def refresh_models() -> dict:
             model_count=payload.get("model_count", 0),
             last_updated_at=payload.get("last_updated_at", ""),
         )
-        log_manager.emit("ERROR", "ERROR", "Model catalog refresh resulted in empty catalog or initialization required")
+        log_manager.emit(
+            "ERROR",
+            "ERROR",
+            "Model catalog refresh resulted in empty catalog or initialization required",
+        )
         raise HTTPException(status_code=503, detail="MODEL_CATALOG_REFRESH_FAILED")
 
     payload["success"] = not payload.get("catalog_anomaly_detected", False)

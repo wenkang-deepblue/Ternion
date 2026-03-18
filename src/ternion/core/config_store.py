@@ -19,6 +19,8 @@ from typing import Any, Literal, get_args
 import structlog
 from pydantic import BaseModel, Field
 
+from ternion.core.public_access import normalize_public_base_url
+
 logger = structlog.get_logger(__name__)
 
 # Default configuration path
@@ -76,7 +78,15 @@ class PortsConfig(BaseModel):
     web: int = 9120  # Web control panel port
 
 
+PublicAccessMode = Literal["none", "local_tunnel", "cloud_run", "custom"]
 ModelCatalogRefreshMode = Literal["daily", "interval_days", "interval_weeks"]
+
+
+class PublicAccessConfig(BaseModel):
+    """Public access configuration for Cursor connectivity guidance."""
+
+    mode: PublicAccessMode = "none"
+    public_base_url: str = ""
 
 
 class ModelCatalogRefreshConfig(BaseModel):
@@ -133,6 +143,7 @@ class UserConfig(BaseModel):
     )
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
+    public_access: PublicAccessConfig = Field(default_factory=PublicAccessConfig)
     model_catalog_refresh: ModelCatalogRefreshConfig = Field(
         default_factory=ModelCatalogRefreshConfig
     )
@@ -217,6 +228,16 @@ class ConfigStore:
                             "api_keys": [],
                             "selected_key_id": None,
                         }
+        public_access = data.get("public_access")
+        if not isinstance(public_access, dict):
+            public_access = {}
+            data["public_access"] = public_access
+        valid_public_access_modes = set(get_args(PublicAccessMode))
+        if public_access.get("mode") not in valid_public_access_modes:
+            public_access["mode"] = "none"
+        public_access["public_base_url"] = normalize_public_base_url(
+            str(public_access.get("public_base_url") or "")
+        )
         refresh_settings = data.get("model_catalog_refresh")
         if isinstance(refresh_settings, dict):
             valid_modes = set(get_args(ModelCatalogRefreshMode))
@@ -282,11 +303,20 @@ class ConfigStore:
 
         Atomic write (tmp + os.replace) provides crash safety without a secondary backup file,
         which would double the API key exposure surface.
-        
+
         Args:
             config: The user configuration to save.
         """
         self._ensure_dir()
+        public_access_mode = str(getattr(config.public_access, "mode", "none") or "none")
+        if public_access_mode not in set(get_args(PublicAccessMode)):
+            public_access_mode = "none"
+        config.public_access = PublicAccessConfig(
+            mode=public_access_mode,
+            public_base_url=normalize_public_base_url(
+                str(getattr(config.public_access, "public_base_url", "") or "")
+            ),
+        )
         config.updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
         # Atomic write using temp file + replace
@@ -312,7 +342,7 @@ class ConfigStore:
 
     def get_enabled_providers(self) -> list[str]:
         """Get list of providers with valid API keys.
-        
+
         Returns:
             A list of enabled provider names.
         """
@@ -321,10 +351,10 @@ class ConfigStore:
 
     def get_provider_api_key(self, provider: str) -> str | None:
         """Get active API key for a provider.
-        
+
         Args:
             provider: The name of the provider.
-            
+
         Returns:
             The active API key if available, otherwise None.
         """
@@ -371,10 +401,10 @@ class ConfigStore:
 
     def get_role_config(self, role: str) -> RoleConfig | None:
         """Get configuration for a role.
-        
+
         Args:
             role: The name of the role.
-            
+
         Returns:
             The role configuration if found, otherwise None.
         """
@@ -389,7 +419,7 @@ class ConfigStore:
         Convert config to safe dict (masks API keys).
 
         Used for API responses to avoid exposing full API keys.
-        
+
         Returns:
             A dictionary containing safe configuration values.
         """
@@ -427,6 +457,10 @@ class ConfigStore:
                 "backend": config.ports.backend,
                 "web": config.ports.web,
             },
+            "public_access": {
+                "mode": config.public_access.mode,
+                "public_base_url": config.public_access.public_base_url,
+            },
             "model_catalog_refresh": {
                 "enabled": config.model_catalog_refresh.enabled,
                 "mode": config.model_catalog_refresh.mode,
@@ -454,7 +488,7 @@ _config_store: ConfigStore | None = None
 
 def get_config_store() -> ConfigStore:
     """Get or create the global config store.
-    
+
     Returns:
         The global ConfigStore instance.
     """

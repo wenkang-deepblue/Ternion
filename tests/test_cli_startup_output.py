@@ -23,7 +23,7 @@ def test_build_startup_message_uses_backend_port() -> None:
     assert "http://127.0.0.1:9234/panel" in message
     assert "http://127.0.0.1:9234/docs" in message
     assert "Override OpenAI Base URL" in message
-    assert "https://your-public-url/v1" in message
+    assert "https://your-public-url" in message
 
 
 def test_main_prints_startup_guidance_before_starting_server(

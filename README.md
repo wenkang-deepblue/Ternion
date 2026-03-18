@@ -209,7 +209,7 @@ ngrok http 9110
 Then use:
 
 ```text
-https://YOUR-NGROK-URL/v1
+https://YOUR-NGROK-URL
 ```
 
 as the Cursor base URL.
@@ -223,12 +223,12 @@ To enable Ternion in Cursor:
 3. Turn on the `OpenAI API Key` toggle.
 4. Enter any placeholder value in the OpenAI API key field.
 5. Turn on `Override OpenAI Base URL`.
-6. Paste your public tunnel URL with the `/v1` suffix.
+6. Paste your public tunnel URL root. Do not append `/v1`.
 
 Example:
 
 ```text
-https://your-public-url/v1
+https://your-public-url
 ```
 
 <!-- Screenshot placeholder: Cursor model creation -->
@@ -308,7 +308,7 @@ Check the following:
 
 - Ternion is running locally
 - your tunnel URL is active
-- the Cursor base URL ends with `/v1`
+- the Cursor base URL is your public HTTPS root URL (do not append `/v1`)
 - the `OpenAI API Key` toggle is on
 - `ternion-team` exists in Cursor's model list
 
