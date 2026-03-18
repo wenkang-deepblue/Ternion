@@ -85,6 +85,32 @@ export interface PortsConfig {
 }
 
 /**
+ * Supported public access deployment modes for exposing Ternion to Cursor.
+ */
+export type PublicAccessMode = 'none' | 'local_tunnel' | 'cloud_run' | 'custom';
+
+/**
+ * Resolved public access state returned by the backend.
+ */
+export interface PublicAccessStatus {
+  mode: PublicAccessMode;
+  configured_public_base_url: string;
+  effective_public_base_url: string;
+  effective_source: 'config' | 'request_origin' | 'none';
+  cursor_override_base_url: string;
+  configured: boolean;
+  requires_public_url: boolean;
+}
+
+/**
+ * Partial update payload accepted by the public access endpoint.
+ */
+export interface PublicAccessUpdateRequest {
+  mode?: PublicAccessMode;
+  public_base_url?: string;
+}
+
+/**
  * Automatic model catalog refresh schedule persisted in the backend.
  */
 export interface ModelCatalogRefreshConfig {
@@ -118,6 +144,10 @@ export interface Config {
   roles: Record<string, RoleConfig>;
   budget: BudgetConfig;
   ports?: PortsConfig;
+  public_access?: {
+    mode: PublicAccessMode;
+    public_base_url: string;
+  };
   model_catalog_refresh?: ModelCatalogRefreshConfig;
   execution_mode?: string;
   preferences?: {
@@ -563,6 +593,30 @@ class ApiClient {
     return this.request('/ports', {
       method: 'POST',
       body: JSON.stringify(ports),
+    });
+  }
+
+  /**
+   * Retrieves the current public access configuration and effective Cursor URL.
+   *
+   * @returns The resolved public access state.
+   */
+  async getPublicAccess(): Promise<PublicAccessStatus> {
+    return this.request<PublicAccessStatus>('/public-access');
+  }
+
+  /**
+   * Updates the configured public access mode and public HTTPS URL.
+   *
+   * @param payload - Partial update payload for public access settings.
+   * @returns The updated public access state.
+   */
+  async updatePublicAccess(payload: PublicAccessUpdateRequest): Promise<PublicAccessStatus & {
+    success: boolean;
+  }> {
+    return this.request('/public-access', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     });
   }
 

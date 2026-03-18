@@ -154,6 +154,8 @@ export interface Translations {
   code_INVALID_MODEL_CATALOG_REFRESH_MODE: string;
   code_INVALID_MODEL_CATALOG_REFRESH_TIME: string;
   code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: string;
+  code_INVALID_PUBLIC_ACCESS_MODE: string;
+  code_INVALID_PUBLIC_BASE_URL: string;
   saveChanges: string;
   saving: string;
   noApiKey: string;
@@ -192,6 +194,40 @@ export interface Translations {
   portsRestartNote: string;
   portsSaved: string;
   portsInvalid: string;
+  publicAccessTitle: string;
+  publicAccessDescription: string;
+  publicAccessStatus: string;
+  publicAccessStatusConfigured: string;
+  publicAccessStatusMissing: string;
+  publicAccessMode: string;
+  publicAccessModeNone: string;
+  publicAccessModeLocalTunnel: string;
+  publicAccessModeCloudRun: string;
+  publicAccessModeCustom: string;
+  publicAccessUrlLabel: string;
+  publicAccessUrlPlaceholder: string;
+  publicAccessConfiguredUrl: string;
+  publicAccessEffectiveUrl: string;
+  publicAccessCursorUrl: string;
+  publicAccessSource: string;
+  publicAccessSourceConfig: string;
+  publicAccessSourceRequestOrigin: string;
+  publicAccessSourceNone: string;
+  publicAccessCursorHint: string;
+  publicAccessAutoDetectedNote: string;
+  publicAccessCopy: string;
+  publicAccessCopied: string;
+  publicAccessCopyFailed: string;
+  publicAccessSaved: string;
+  publicAccessUnavailable: string;
+  publicAccessConfiguredToast: string;
+  publicAccessIntroTitle: string;
+  publicAccessIntroBody: string;
+  publicAccessIntroOk: string;
+  publicAccessIntroGuide: string;
+  publicAccessGuideTitle: string;
+  publicAccessGuideBody: string;
+  publicAccessGuideClose: string;
 
   // Usage Dashboard
   usageTitle: string;
@@ -413,6 +449,44 @@ const EN: Translations = {
   portsRestartNote: 'After saving, restart the server with the new configuration',
   portsSaved: 'Port configuration saved',
   portsInvalid: 'Invalid port number (1024-65535)',
+  publicAccessTitle: 'Public Access',
+  publicAccessDescription: 'Configure the public HTTPS URL that Cursor should use to reach Ternion.',
+  publicAccessStatus: 'Status',
+  publicAccessStatusConfigured: 'Configured',
+  publicAccessStatusMissing: 'Not configured',
+  publicAccessMode: 'Deployment mode',
+  publicAccessModeNone: 'None',
+  publicAccessModeLocalTunnel: 'Local tunnel',
+  publicAccessModeCloudRun: 'Cloud Run',
+  publicAccessModeCustom: 'Custom',
+  publicAccessUrlLabel: 'Public HTTPS URL',
+  publicAccessUrlPlaceholder: 'https://example.com',
+  publicAccessConfiguredUrl: 'Configured public URL',
+  publicAccessEffectiveUrl: 'Effective public URL',
+  publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
+  publicAccessSource: 'Effective URL source',
+  publicAccessSourceConfig: 'Configured value',
+  publicAccessSourceRequestOrigin: 'Detected from current request',
+  publicAccessSourceNone: 'No public URL available',
+  publicAccessCursorHint: 'Use the public HTTPS root URL in Cursor. Do not append `/v1`.',
+  publicAccessAutoDetectedNote:
+    'This URL is being inferred from the current public request origin, which is useful for Cloud Run and reverse proxy deployments.',
+  publicAccessCopy: 'Copy',
+  publicAccessCopied: 'Cursor base URL copied',
+  publicAccessCopyFailed: 'Failed to copy the Cursor base URL',
+  publicAccessSaved: 'Public access settings saved',
+  publicAccessUnavailable: 'Unable to load public access settings right now.',
+  publicAccessConfiguredToast:
+    'Public access is available. Open the Ports tab to copy the Cursor base URL.',
+  publicAccessIntroTitle: 'Public HTTPS URL required',
+  publicAccessIntroBody:
+    "Cursor's Override OpenAI Base URL does not accept localhost or other local-only addresses.\nTo connect Cursor to Ternion, expose this service through a public HTTPS URL.",
+  publicAccessIntroOk: 'OK',
+  publicAccessIntroGuide: 'How to configure',
+  publicAccessGuideTitle: 'How to configure public access',
+  publicAccessGuideBody:
+    "Example with ngrok:\n1. Install ngrok and sign in to your account.\n2. Run `ngrok http 9110` on the machine where Ternion is running.\n3. Copy the generated public HTTPS root URL.\n4. Paste that root URL into Cursor's Override OpenAI Base URL.\n5. Do not append `/v1`.\n\nIf you deploy Ternion on Cloud Run, you can use the service's public HTTPS origin directly.",
+  publicAccessGuideClose: 'Close',
 
   // Usage Dashboard
   usageTitle: '📊 Usage Statistics',
@@ -472,6 +546,8 @@ const EN: Translations = {
   code_INVALID_MODEL_CATALOG_REFRESH_MODE: 'Modo de actualización automática no válido',
   code_INVALID_MODEL_CATALOG_REFRESH_TIME: 'Hora de actualización automática no válida',
   code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: 'Intervalo de actualización automática no válido',
+  code_INVALID_PUBLIC_ACCESS_MODE: 'Invalid public access mode',
+  code_INVALID_PUBLIC_BASE_URL: 'Invalid public HTTPS URL',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Unknown error',
@@ -697,6 +773,43 @@ const ZH: Translations = {
   portsRestartNote: '保存后，请使用新配置重启服务器',
   portsSaved: '端口配置已保存',
   portsInvalid: '无效的端口号 (1024-65535)',
+  publicAccessTitle: '公网接入',
+  publicAccessDescription: '配置供 Cursor 访问 Ternion 的公网 HTTPS URL。',
+  publicAccessStatus: '当前状态',
+  publicAccessStatusConfigured: '已配置',
+  publicAccessStatusMissing: '未配置',
+  publicAccessMode: '部署方式',
+  publicAccessModeNone: '未配置',
+  publicAccessModeLocalTunnel: '本地隧道',
+  publicAccessModeCloudRun: 'Cloud Run',
+  publicAccessModeCustom: '自定义',
+  publicAccessUrlLabel: '公网 HTTPS URL',
+  publicAccessUrlPlaceholder: 'https://example.com',
+  publicAccessConfiguredUrl: '已配置公网 URL',
+  publicAccessEffectiveUrl: '当前生效公网 URL',
+  publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
+  publicAccessSource: '生效 URL 来源',
+  publicAccessSourceConfig: '显式配置值',
+  publicAccessSourceRequestOrigin: '根据当前请求自动推断',
+  publicAccessSourceNone: '当前无可用公网 URL',
+  publicAccessCursorHint: '在 Cursor 中填写公网 HTTPS 根 URL，不要追加 `/v1`。',
+  publicAccessAutoDetectedNote:
+    '当前 URL 是根据本次公网请求自动推断的，适用于 Cloud Run 或反向代理部署。',
+  publicAccessCopy: '复制',
+  publicAccessCopied: '已复制 Cursor Base URL',
+  publicAccessCopyFailed: '复制 Cursor Base URL 失败',
+  publicAccessSaved: '公网接入设置已保存',
+  publicAccessUnavailable: '暂时无法加载公网接入配置。',
+  publicAccessConfiguredToast: '已检测到可用公网接入。请打开“端口”页复制 Cursor Base URL。',
+  publicAccessIntroTitle: '需要公网 HTTPS URL',
+  publicAccessIntroBody:
+    'Cursor 的 Override OpenAI Base URL 不接受 localhost 或其他仅本地可访问的地址。\n如果你希望在 Cursor 中连接 Ternion，需要先为该服务提供一个可公网访问的 HTTPS URL。',
+  publicAccessIntroOk: '确定',
+  publicAccessIntroGuide: '配置方法',
+  publicAccessGuideTitle: '公网接入配置指南',
+  publicAccessGuideBody:
+    '以 ngrok 为例：\n1. 安装 ngrok，并完成账号登录。\n2. 在运行 Ternion 的机器上执行 `ngrok http 9110`。\n3. 复制生成的公网 HTTPS 根 URL。\n4. 将该根 URL 填入 Cursor 的 Override OpenAI Base URL。\n5. 不要在末尾追加 `/v1`。\n\n如果你将 Ternion 部署在 Cloud Run 上，也可以直接使用服务自身的公网 HTTPS 域名。',
+  publicAccessGuideClose: '关闭',
 
   // Usage Dashboard
   usageTitle: '📊 用量统计',
@@ -756,6 +869,8 @@ const ZH: Translations = {
   code_INVALID_MODEL_CATALOG_REFRESH_MODE: '自动刷新模式无效',
   code_INVALID_MODEL_CATALOG_REFRESH_TIME: '自动刷新时间无效',
   code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: '自动刷新间隔无效',
+  code_INVALID_PUBLIC_ACCESS_MODE: '公网接入模式无效',
+  code_INVALID_PUBLIC_BASE_URL: '公网 HTTPS URL 无效',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '未知错误',
@@ -980,6 +1095,44 @@ const ES: Translations = {
   portsRestartNote: 'Después de guardar, reinicie el servidor con la nueva configuración',
   portsSaved: 'Configuración de puerto guardada',
   portsInvalid: 'Número de puerto inválido (1024-65535)',
+  publicAccessTitle: 'Acceso Público',
+  publicAccessDescription: 'Configure la URL HTTPS pública que Cursor debe usar para llegar a Ternion.',
+  publicAccessStatus: 'Estado',
+  publicAccessStatusConfigured: 'Configurado',
+  publicAccessStatusMissing: 'Sin configurar',
+  publicAccessMode: 'Modo de despliegue',
+  publicAccessModeNone: 'Ninguno',
+  publicAccessModeLocalTunnel: 'Túnel local',
+  publicAccessModeCloudRun: 'Cloud Run',
+  publicAccessModeCustom: 'Personalizado',
+  publicAccessUrlLabel: 'URL HTTPS pública',
+  publicAccessUrlPlaceholder: 'https://example.com',
+  publicAccessConfiguredUrl: 'URL pública configurada',
+  publicAccessEffectiveUrl: 'URL pública efectiva',
+  publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
+  publicAccessSource: 'Origen de la URL efectiva',
+  publicAccessSourceConfig: 'Valor configurado',
+  publicAccessSourceRequestOrigin: 'Detectada desde la solicitud actual',
+  publicAccessSourceNone: 'No hay URL pública disponible',
+  publicAccessCursorHint: 'Use la URL raíz pública HTTPS en Cursor. No agregue `/v1`.',
+  publicAccessAutoDetectedNote:
+    'Esta URL se infiere de la solicitud pública actual, lo que resulta útil para despliegues en Cloud Run o detrás de un proxy inverso.',
+  publicAccessCopy: 'Copiar',
+  publicAccessCopied: 'La URL base de Cursor se copió',
+  publicAccessCopyFailed: 'No se pudo copiar la URL base de Cursor',
+  publicAccessSaved: 'La configuración de acceso público se guardó',
+  publicAccessUnavailable: 'No se puede cargar la configuración de acceso público en este momento.',
+  publicAccessConfiguredToast:
+    'El acceso público está disponible. Abra la pestaña de Puertos para copiar la URL base de Cursor.',
+  publicAccessIntroTitle: 'Se requiere una URL HTTPS pública',
+  publicAccessIntroBody:
+    'Override OpenAI Base URL de Cursor no acepta localhost ni otras direcciones solo locales.\nPara conectar Cursor con Ternion, exponga este servicio mediante una URL HTTPS pública.',
+  publicAccessIntroOk: 'Aceptar',
+  publicAccessIntroGuide: 'Cómo configurarlo',
+  publicAccessGuideTitle: 'Cómo configurar el acceso público',
+  publicAccessGuideBody:
+    'Ejemplo con ngrok:\n1. Instale ngrok e inicie sesión en su cuenta.\n2. Ejecute `ngrok http 9110` en la máquina donde se está ejecutando Ternion.\n3. Copie la URL raíz HTTPS pública generada.\n4. Pegue esa URL raíz en Override OpenAI Base URL de Cursor.\n5. No agregue `/v1`.\n\nSi despliega Ternion en Cloud Run, también puede usar directamente el origen HTTPS público del servicio.',
+  publicAccessGuideClose: 'Cerrar',
 
   // Usage Dashboard
   usageTitle: '📊 Estadísticas de Uso',
@@ -1039,6 +1192,8 @@ const ES: Translations = {
   code_INVALID_MODEL_CATALOG_REFRESH_MODE: 'Mode d\'actualisation automatique invalide',
   code_INVALID_MODEL_CATALOG_REFRESH_TIME: 'Heure d\'actualisation automatique invalide',
   code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: 'Intervalle d\'actualisation automatique invalide',
+  code_INVALID_PUBLIC_ACCESS_MODE: 'Modo de acceso público no válido',
+  code_INVALID_PUBLIC_BASE_URL: 'URL HTTPS pública no válida',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Error desconocido',
@@ -1265,6 +1420,44 @@ const FR: Translations = {
   portsRestartNote: 'Après la sauvegarde, redémarrez le serveur avec la nouvelle configuration',
   portsSaved: 'Configuration du port sauvegardée',
   portsInvalid: 'Numéro de port invalide (1024-65535)',
+  publicAccessTitle: 'Accès Public',
+  publicAccessDescription: 'Configurez l’URL HTTPS publique que Cursor doit utiliser pour joindre Ternion.',
+  publicAccessStatus: 'Statut',
+  publicAccessStatusConfigured: 'Configuré',
+  publicAccessStatusMissing: 'Non configuré',
+  publicAccessMode: 'Mode de déploiement',
+  publicAccessModeNone: 'Aucun',
+  publicAccessModeLocalTunnel: 'Tunnel local',
+  publicAccessModeCloudRun: 'Cloud Run',
+  publicAccessModeCustom: 'Personnalisé',
+  publicAccessUrlLabel: 'URL HTTPS publique',
+  publicAccessUrlPlaceholder: 'https://example.com',
+  publicAccessConfiguredUrl: 'URL publique configurée',
+  publicAccessEffectiveUrl: 'URL publique effective',
+  publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
+  publicAccessSource: 'Source de l’URL effective',
+  publicAccessSourceConfig: 'Valeur configurée',
+  publicAccessSourceRequestOrigin: 'Détectée depuis la requête actuelle',
+  publicAccessSourceNone: 'Aucune URL publique disponible',
+  publicAccessCursorHint: 'Utilisez l’URL racine HTTPS publique dans Cursor. N’ajoutez pas `/v1`.',
+  publicAccessAutoDetectedNote:
+    'Cette URL est déduite de la requête publique actuelle, ce qui est utile pour Cloud Run et les déploiements derrière un proxy inverse.',
+  publicAccessCopy: 'Copier',
+  publicAccessCopied: 'L’URL de base Cursor a été copiée',
+  publicAccessCopyFailed: 'Impossible de copier l’URL de base Cursor',
+  publicAccessSaved: 'Les paramètres d’accès public ont été enregistrés',
+  publicAccessUnavailable: 'Impossible de charger les paramètres d’accès public pour le moment.',
+  publicAccessConfiguredToast:
+    'Un accès public est disponible. Ouvrez l’onglet Ports pour copier l’URL de base Cursor.',
+  publicAccessIntroTitle: 'Une URL HTTPS publique est requise',
+  publicAccessIntroBody:
+    'Override OpenAI Base URL de Cursor n’accepte pas localhost ni les autres adresses uniquement locales.\nPour connecter Cursor à Ternion, exposez ce service via une URL HTTPS publique.',
+  publicAccessIntroOk: 'OK',
+  publicAccessIntroGuide: 'Méthode de configuration',
+  publicAccessGuideTitle: 'Comment configurer l’accès public',
+  publicAccessGuideBody:
+    'Exemple avec ngrok :\n1. Installez ngrok et connectez-vous à votre compte.\n2. Exécutez `ngrok http 9110` sur la machine où Ternion s’exécute.\n3. Copiez l’URL racine HTTPS publique générée.\n4. Collez cette URL racine dans Override OpenAI Base URL de Cursor.\n5. N’ajoutez pas `/v1`.\n\nSi vous déployez Ternion sur Cloud Run, vous pouvez aussi utiliser directement l’origine HTTPS publique du service.',
+  publicAccessGuideClose: 'Fermer',
 
   // Usage Dashboard
   usageTitle: '📊 Statistiques d\'Utilisation',
@@ -1324,6 +1517,8 @@ const FR: Translations = {
   code_INVALID_MODEL_CATALOG_REFRESH_MODE: 'Ungueltiger automatischer Aktualisierungsmodus',
   code_INVALID_MODEL_CATALOG_REFRESH_TIME: 'Ungueltige automatische Aktualisierungszeit',
   code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: 'Ungueltiges automatisches Aktualisierungsintervall',
+  code_INVALID_PUBLIC_ACCESS_MODE: 'Mode d’accès public invalide',
+  code_INVALID_PUBLIC_BASE_URL: 'URL HTTPS publique invalide',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Erreur inconnue',
@@ -1550,6 +1745,44 @@ const DE: Translations = {
   portsRestartNote: 'Nach dem Speichern Server mit neuer Konfiguration neu starten',
   portsSaved: 'Port-Konfiguration gespeichert',
   portsInvalid: 'Ungültige Portnummer (1024-65535)',
+  publicAccessTitle: 'Öffentlicher Zugriff',
+  publicAccessDescription: 'Konfigurieren Sie die öffentliche HTTPS-URL, über die Cursor Ternion erreichen soll.',
+  publicAccessStatus: 'Status',
+  publicAccessStatusConfigured: 'Konfiguriert',
+  publicAccessStatusMissing: 'Nicht konfiguriert',
+  publicAccessMode: 'Bereitstellungsmodus',
+  publicAccessModeNone: 'Keine',
+  publicAccessModeLocalTunnel: 'Lokaler Tunnel',
+  publicAccessModeCloudRun: 'Cloud Run',
+  publicAccessModeCustom: 'Benutzerdefiniert',
+  publicAccessUrlLabel: 'Öffentliche HTTPS-URL',
+  publicAccessUrlPlaceholder: 'https://example.com',
+  publicAccessConfiguredUrl: 'Konfigurierte öffentliche URL',
+  publicAccessEffectiveUrl: 'Effektive öffentliche URL',
+  publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
+  publicAccessSource: 'Quelle der effektiven URL',
+  publicAccessSourceConfig: 'Konfigurierter Wert',
+  publicAccessSourceRequestOrigin: 'Aus der aktuellen Anfrage erkannt',
+  publicAccessSourceNone: 'Keine öffentliche URL verfügbar',
+  publicAccessCursorHint: 'Verwenden Sie in Cursor die öffentliche HTTPS-Stamm-URL. Fügen Sie kein `/v1` an.',
+  publicAccessAutoDetectedNote:
+    'Diese URL wird aus der aktuellen öffentlichen Anfrage abgeleitet und ist hilfreich für Cloud Run sowie Deployments hinter einem Reverse Proxy.',
+  publicAccessCopy: 'Kopieren',
+  publicAccessCopied: 'Die Cursor-Basis-URL wurde kopiert',
+  publicAccessCopyFailed: 'Die Cursor-Basis-URL konnte nicht kopiert werden',
+  publicAccessSaved: 'Die Einstellungen für den öffentlichen Zugriff wurden gespeichert',
+  publicAccessUnavailable: 'Die Einstellungen für den öffentlichen Zugriff konnten momentan nicht geladen werden.',
+  publicAccessConfiguredToast:
+    'Öffentlicher Zugriff ist verfügbar. Öffnen Sie die Ports-Registerkarte, um die Cursor-Basis-URL zu kopieren.',
+  publicAccessIntroTitle: 'Öffentliche HTTPS-URL erforderlich',
+  publicAccessIntroBody:
+    'Override OpenAI Base URL in Cursor akzeptiert weder localhost noch andere nur lokal erreichbare Adressen.\nUm Cursor mit Ternion zu verbinden, muss dieser Dienst über eine öffentliche HTTPS-URL erreichbar sein.',
+  publicAccessIntroOk: 'OK',
+  publicAccessIntroGuide: 'So wird es eingerichtet',
+  publicAccessGuideTitle: 'Öffentlichen Zugriff konfigurieren',
+  publicAccessGuideBody:
+    'Beispiel mit ngrok:\n1. Installieren Sie ngrok und melden Sie sich bei Ihrem Konto an.\n2. Führen Sie `ngrok http 9110` auf dem Rechner aus, auf dem Ternion läuft.\n3. Kopieren Sie die erzeugte öffentliche HTTPS-Stamm-URL.\n4. Fügen Sie diese Stamm-URL in Cursor bei Override OpenAI Base URL ein.\n5. Hängen Sie kein `/v1` an.\n\nWenn Sie Ternion auf Cloud Run bereitstellen, können Sie auch direkt den öffentlichen HTTPS-Ursprung des Dienstes verwenden.',
+  publicAccessGuideClose: 'Schließen',
 
   // Usage Dashboard
   usageTitle: '📊 Nutzungsstatistiken',
@@ -1609,6 +1842,8 @@ const DE: Translations = {
   code_INVALID_MODEL_CATALOG_REFRESH_MODE: '自動更新モードが無効です',
   code_INVALID_MODEL_CATALOG_REFRESH_TIME: '自動更新時刻が無効です',
   code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: '自動更新間隔が無効です',
+  code_INVALID_PUBLIC_ACCESS_MODE: 'Ungültiger Modus für öffentlichen Zugriff',
+  code_INVALID_PUBLIC_BASE_URL: 'Ungültige öffentliche HTTPS-URL',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: 'Unbekannter Fehler',
@@ -1835,6 +2070,44 @@ const JA: Translations = {
   portsRestartNote: '保存後、新しい設定でサーバーを再起動してください',
   portsSaved: 'ポート設定を保存しました',
   portsInvalid: '無効なポート番号 (1024-65535)',
+  publicAccessTitle: '公開アクセス',
+  publicAccessDescription: 'Cursor が Ternion に接続するための公開 HTTPS URL を設定します。',
+  publicAccessStatus: '状態',
+  publicAccessStatusConfigured: '設定済み',
+  publicAccessStatusMissing: '未設定',
+  publicAccessMode: 'デプロイ方式',
+  publicAccessModeNone: 'なし',
+  publicAccessModeLocalTunnel: 'ローカルトンネル',
+  publicAccessModeCloudRun: 'Cloud Run',
+  publicAccessModeCustom: 'カスタム',
+  publicAccessUrlLabel: '公開 HTTPS URL',
+  publicAccessUrlPlaceholder: 'https://example.com',
+  publicAccessConfiguredUrl: '設定済み公開 URL',
+  publicAccessEffectiveUrl: '現在有効な公開 URL',
+  publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
+  publicAccessSource: '有効 URL の取得元',
+  publicAccessSourceConfig: '明示設定値',
+  publicAccessSourceRequestOrigin: '現在のリクエストから自動検出',
+  publicAccessSourceNone: '利用可能な公開 URL はありません',
+  publicAccessCursorHint: 'Cursor には公開 HTTPS のルート URL を入力し、`/v1` は付けないでください。',
+  publicAccessAutoDetectedNote:
+    'この URL は現在の公開リクエストから自動推定されています。Cloud Run やリバースプロキシ構成で役立ちます。',
+  publicAccessCopy: 'コピー',
+  publicAccessCopied: 'Cursor Base URL をコピーしました',
+  publicAccessCopyFailed: 'Cursor Base URL のコピーに失敗しました',
+  publicAccessSaved: '公開アクセス設定を保存しました',
+  publicAccessUnavailable: '現在、公開アクセス設定を読み込めません。',
+  publicAccessConfiguredToast:
+    '公開アクセスを検出しました。Ports タブで Cursor Base URL をコピーしてください。',
+  publicAccessIntroTitle: '公開 HTTPS URL が必要です',
+  publicAccessIntroBody:
+    'Cursor の Override OpenAI Base URL は localhost やローカル専用アドレスを受け付けません。\nCursor から Ternion に接続するには、このサービスを公開 HTTPS URL で公開する必要があります。',
+  publicAccessIntroOk: 'OK',
+  publicAccessIntroGuide: '設定方法',
+  publicAccessGuideTitle: '公開アクセスの設定方法',
+  publicAccessGuideBody:
+    'ngrok の例:\n1. ngrok をインストールし、アカウントにログインします。\n2. Ternion を実行しているマシンで `ngrok http 9110` を実行します。\n3. 生成された公開 HTTPS ルート URL をコピーします。\n4. そのルート URL を Cursor の Override OpenAI Base URL に貼り付けます。\n5. `/v1` は付けないでください。\n\nTernion を Cloud Run にデプロイしている場合は、サービス自身の公開 HTTPS オリジンをそのまま使用できます。',
+  publicAccessGuideClose: '閉じる',
 
   // Usage Dashboard
   usageTitle: '📊 使用統計',
@@ -1894,6 +2167,8 @@ const JA: Translations = {
   code_INVALID_MODEL_CATALOG_REFRESH_MODE: '자동 새로고침 모드가 올바르지 않습니다',
   code_INVALID_MODEL_CATALOG_REFRESH_TIME: '자동 새로고침 시간이 올바르지 않습니다',
   code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: '자동 새로고침 간격이 올바르지 않습니다',
+  code_INVALID_PUBLIC_ACCESS_MODE: '公開アクセスモードが無効です',
+  code_INVALID_PUBLIC_BASE_URL: '公開 HTTPS URL が無効です',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '不明なエラー',
@@ -2120,6 +2395,44 @@ const KO: Translations = {
   portsRestartNote: '저장 후 새 구성으로 서버를 다시 시작하세요',
   portsSaved: '포트 설정 저장됨',
   portsInvalid: '잘못된 포트 번호 (1024-65535)',
+  publicAccessTitle: '공개 액세스',
+  publicAccessDescription: 'Cursor가 Ternion에 연결할 때 사용할 공개 HTTPS URL을 설정합니다.',
+  publicAccessStatus: '상태',
+  publicAccessStatusConfigured: '구성됨',
+  publicAccessStatusMissing: '미구성',
+  publicAccessMode: '배포 방식',
+  publicAccessModeNone: '없음',
+  publicAccessModeLocalTunnel: '로컬 터널',
+  publicAccessModeCloudRun: 'Cloud Run',
+  publicAccessModeCustom: '사용자 지정',
+  publicAccessUrlLabel: '공개 HTTPS URL',
+  publicAccessUrlPlaceholder: 'https://example.com',
+  publicAccessConfiguredUrl: '구성된 공개 URL',
+  publicAccessEffectiveUrl: '현재 유효한 공개 URL',
+  publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
+  publicAccessSource: '유효 URL 출처',
+  publicAccessSourceConfig: '명시적 구성값',
+  publicAccessSourceRequestOrigin: '현재 요청에서 자동 감지',
+  publicAccessSourceNone: '사용 가능한 공개 URL 없음',
+  publicAccessCursorHint: 'Cursor에는 공개 HTTPS 루트 URL을 입력하고 `/v1`은 붙이지 마세요.',
+  publicAccessAutoDetectedNote:
+    '이 URL은 현재 공개 요청에서 자동 추론된 값으로, Cloud Run 또는 리버스 프록시 배포에 유용합니다.',
+  publicAccessCopy: '복사',
+  publicAccessCopied: 'Cursor Base URL이 복사되었습니다',
+  publicAccessCopyFailed: 'Cursor Base URL 복사에 실패했습니다',
+  publicAccessSaved: '공개 액세스 설정이 저장되었습니다',
+  publicAccessUnavailable: '현재 공개 액세스 설정을 불러올 수 없습니다.',
+  publicAccessConfiguredToast:
+    '공개 액세스를 감지했습니다. Ports 탭에서 Cursor Base URL을 복사하세요.',
+  publicAccessIntroTitle: '공개 HTTPS URL이 필요합니다',
+  publicAccessIntroBody:
+    'Cursor의 Override OpenAI Base URL은 localhost나 로컬 전용 주소를 허용하지 않습니다.\nCursor에서 Ternion에 연결하려면 이 서비스를 공개 HTTPS URL로 노출해야 합니다.',
+  publicAccessIntroOk: '확인',
+  publicAccessIntroGuide: '설정 방법',
+  publicAccessGuideTitle: '공개 액세스 설정 방법',
+  publicAccessGuideBody:
+    'ngrok 예시:\n1. ngrok을 설치하고 계정에 로그인합니다.\n2. Ternion이 실행 중인 머신에서 `ngrok http 9110`을 실행합니다.\n3. 생성된 공개 HTTPS 루트 URL을 복사합니다.\n4. 그 루트 URL을 Cursor의 Override OpenAI Base URL에 붙여 넣습니다.\n5. `/v1`은 추가하지 마세요.\n\nTernion을 Cloud Run에 배포한 경우에는 서비스의 공개 HTTPS origin을 그대로 사용할 수도 있습니다.',
+  publicAccessGuideClose: '닫기',
 
   // Usage Dashboard
   usageTitle: '📊 사용 통계',
@@ -2179,6 +2492,8 @@ const KO: Translations = {
   code_INVALID_MODEL_CATALOG_REFRESH_MODE: 'Invalid automatic refresh mode',
   code_INVALID_MODEL_CATALOG_REFRESH_TIME: 'Invalid automatic refresh time',
   code_INVALID_MODEL_CATALOG_REFRESH_INTERVAL: 'Invalid automatic refresh interval',
+  code_INVALID_PUBLIC_ACCESS_MODE: '공개 액세스 모드가 올바르지 않습니다',
+  code_INVALID_PUBLIC_BASE_URL: '공개 HTTPS URL이 올바르지 않습니다',
 
   // Legacy error keys (for backward compatibility)
   errorUnknown: '알 수 없는 오류',

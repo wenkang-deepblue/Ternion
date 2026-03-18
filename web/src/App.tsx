@@ -10,7 +10,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from './api/client';
-import type { Config, ModelsData, ServerStatus } from './api/client';
+import type { Config, ModelsData, PublicAccessStatus, ServerStatus } from './api/client';
 import { ToastProvider } from './components/Toast';
 import StatusBar from './components/StatusBar';
 import ModelCatalogManager from './components/ModelCatalogManager';
@@ -18,6 +18,7 @@ import ApiKeyManager from './components/ApiKeyManager';
 import RoleModelConfig from './components/RoleModelConfig';
 import BudgetSettings from './components/BudgetSettings';
 import PortsSettings from './components/PortsSettings';
+import PublicAccessNotice from './components/PublicAccessNotice';
 import UsageDashboard from './components/UsageDashboard';
 import ObservabilityPanel from './components/ObservabilityPanel';
 import ExecutionModeSelector from './components/ExecutionModeSelector';
@@ -43,6 +44,8 @@ function AppContent() {
   const [config, setConfig] = useState<Config | null>(null);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
+  const [publicAccess, setPublicAccess] = useState<PublicAccessStatus | null>(null);
+  const [publicAccessReady, setPublicAccessReady] = useState(false);
   const [activeTab, setActiveTab] = useState<'config' | 'ports' | 'usage' | 'logs'>('config');
   const [modelsReloadSignal, setModelsReloadSignal] = useState(0);
 
@@ -98,6 +101,18 @@ function AppContent() {
     }
   }, []);
 
+  const loadPublicAccess = useCallback(async () => {
+    try {
+      const publicAccessState = await api.getPublicAccess();
+      setPublicAccess(publicAccessState);
+    } catch (error) {
+      console.error('Failed to load public access:', error);
+      setPublicAccess(null);
+    } finally {
+      setPublicAccessReady(true);
+    }
+  }, []);
+
   const loadData = useCallback(async () => {
     try {
       const [configData, statusData] = await Promise.all([
@@ -106,7 +121,10 @@ function AppContent() {
       ]);
       setConfig(configData);
       setStatus(statusData);
-      await loadModelsData();
+      await Promise.all([
+        loadModelsData(),
+        loadPublicAccess(),
+      ]);
 
       if (configData?.preferences) {
         if (configData.preferences.theme) {
@@ -115,8 +133,6 @@ function AppContent() {
         if (configData.preferences.language) {
           setLanguageMode(configData.preferences.language as LanguageMode);
 
-          // If language is 'auto', send current browser language to backend
-          // This ensures Ternion reports use the correct language
           if (configData.preferences.language === 'auto') {
             const browserLang = detectBrowserLanguage();
             api.updatePreferences({ browser_language: browserLang }).catch(console.error);
@@ -126,10 +142,9 @@ function AppContent() {
     } catch (error) {
       console.error('Failed to load data:', error);
     }
-  }, [loadModelsData]);
+  }, [loadModelsData, loadPublicAccess]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadData();
   }, [loadData]);
 
@@ -180,8 +195,7 @@ function AppContent() {
   const handleLanguageChange = useCallback(async (language: LanguageMode) => {
     setLanguageMode(language);
     try {
-      // If language is 'auto', also send the detected browser language
-      // so backend knows which language to use for Ternion reports
+      // Keep backend report language aligned with the browser when auto mode is selected.
       if (language === 'auto') {
         const browserLang = detectBrowserLanguage();
         await api.updatePreferences({ language, browser_language: browserLang });
@@ -195,6 +209,7 @@ function AppContent() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors duration-200">
+      <PublicAccessNotice publicAccess={publicAccess} ready={publicAccessReady} t={t} />
       {/* Header */}
       <header className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 py-4">
@@ -321,7 +336,14 @@ function AppContent() {
           </div>
         </div>
         <div style={{ display: activeTab === 'ports' ? 'block' : 'none' }}>
-          <PortsSettings t={t} isDarkMode={isDarkMode} language={effectiveLanguage} />
+          <PortsSettings
+            t={t}
+            isDarkMode={isDarkMode}
+            language={effectiveLanguage}
+            publicAccess={publicAccess}
+            publicAccessReady={publicAccessReady}
+            onPublicAccessUpdate={setPublicAccess}
+          />
         </div>
         <div style={{ display: activeTab === 'usage' ? 'block' : 'none' }}>
           <UsageDashboard t={t} isDarkMode={isDarkMode} onConfigUpdate={handleConfigUpdate} />
