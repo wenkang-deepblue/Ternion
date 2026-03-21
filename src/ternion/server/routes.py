@@ -6232,6 +6232,12 @@ async def handle_evidence_followup(
                         yield f"data: {final_chunk.model_dump_json()}\n\n"
                         yield "data: [DONE]\n\n"
                         return
+                    (
+                        current_workspace_root,
+                        current_local_workspace_root,
+                        current_workspace_path_style,
+                        current_workspace_root_source,
+                    ) = _resolve_workspace_fields(session=current_session or session)
                     filtered_tool_calls, policy_error, _, _ = _enforce_deliverable_policy(
                         workflow_phase=workflow_phase,
                         tool_calls=filtered_tool_calls,

@@ -94,6 +94,12 @@ export type PublicAccessMode = 'none' | 'local_tunnel' | 'cloud_run' | 'custom';
  */
 export interface PublicAccessStatus {
   mode: PublicAccessMode;
+  /** Current server-side deployment environment. */
+  deployment_environment: 'local' | 'cloud_run';
+  /** Method that produced the currently detected or effective public URL. */
+  detection_method: 'request_origin' | 'manual_config' | 'none' | 'ngrok_api';
+  /** Automatically detected public HTTPS root URL, if available. */
+  detected_public_base_url: string;
   configured_public_base_url: string;
   effective_public_base_url: string;
   effective_source: 'config' | 'request_origin' | 'none';

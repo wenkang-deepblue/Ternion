@@ -34,6 +34,9 @@ function buildPorts(overrides?: Partial<PortsConfig>): PortsConfig {
 function buildPublicAccess(overrides?: Partial<PublicAccessStatus>): PublicAccessStatus {
   return {
     mode: 'local_tunnel',
+    deployment_environment: 'local',
+    detection_method: 'manual_config',
+    detected_public_base_url: '',
     configured_public_base_url: 'https://demo.ngrok.app',
     effective_public_base_url: 'https://demo.ngrok.app',
     effective_source: 'config',
@@ -136,6 +139,55 @@ describe('PortsSettings', () => {
     expect(onPublicAccessUpdate).toHaveBeenCalledWith(expect.objectContaining(updatedState));
     expect(showToast).toHaveBeenCalledWith(t.publicAccessSaved, 'success');
   });
+
+  it.each(['https://ternion.run.app/v1/', 'https://ternion.run.app/v1'])(
+    'renders the canonical root URL after saving legacy value %s',
+    async (legacyValue) => {
+      const user = userEvent.setup();
+      const updatedState = buildPublicAccess({
+        mode: 'custom',
+        configured_public_base_url: 'https://ternion.run.app',
+        effective_public_base_url: 'https://ternion.run.app',
+        cursor_override_base_url: 'https://ternion.run.app',
+      });
+      mockApi.updatePublicAccess.mockResolvedValue({
+        success: true,
+        ...updatedState,
+      });
+
+      const { t, showToast, onPublicAccessUpdate } = renderPortsSettings();
+
+      await waitFor(() => {
+        expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+      });
+
+      await user.selectOptions(screen.getByRole('combobox'), 'custom');
+
+      const urlInput = screen.getByPlaceholderText(t.publicAccessUrlPlaceholder);
+      await user.clear(urlInput);
+      await user.type(urlInput, legacyValue);
+
+      await user.click(screen.getByRole('button', { name: t.saveChanges }));
+
+      await waitFor(() => {
+        expect(mockApi.updatePublicAccess).toHaveBeenCalledWith({
+          mode: 'custom',
+          public_base_url: legacyValue,
+        });
+        expect(onPublicAccessUpdate).toHaveBeenCalledWith(
+          expect.objectContaining(updatedState)
+        );
+        expect(showToast).toHaveBeenCalledWith(t.publicAccessSaved, 'success');
+        expect(screen.getByDisplayValue('https://ternion.run.app')).toBeInTheDocument();
+        expect(
+          screen.queryByDisplayValue('https://ternion.run.app/v1')
+        ).not.toBeInTheDocument();
+        expect(
+          screen.queryByDisplayValue('https://ternion.run.app/v1/')
+        ).not.toBeInTheDocument();
+      });
+    }
+  );
 
   it('shows a localized error toast when public access saving fails', async () => {
     const user = userEvent.setup();

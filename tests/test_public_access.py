@@ -3,12 +3,16 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from ternion.core.config_store import ConfigStore, UserConfig
 from ternion.core.public_access import (
     build_public_origin,
+    detect_deployment_environment,
     is_local_origin,
     normalize_public_base_url,
     resolve_effective_public_base_url,
+    resolve_public_access_state,
 )
 
 
@@ -71,6 +75,72 @@ def test_resolve_effective_public_base_url_falls_back_to_request_origin() -> Non
 def test_resolve_effective_public_base_url_returns_none_source_without_signal() -> None:
     """Missing signals should resolve to an empty effective URL."""
     assert resolve_effective_public_base_url("") == ("", "none")
+
+
+def test_detect_deployment_environment_defaults_to_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deployment detection should default to local outside Cloud Run."""
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    assert detect_deployment_environment() == "local"
+
+
+def test_detect_deployment_environment_treats_empty_k_service_as_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty Cloud Run service variable should still be treated as local."""
+    monkeypatch.setenv("K_SERVICE", "")
+    assert detect_deployment_environment() == "local"
+
+
+def test_detect_deployment_environment_recognizes_cloud_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cloud Run should be detected via its runtime environment variable."""
+    monkeypatch.setenv("K_SERVICE", "ternion-service")
+    assert detect_deployment_environment() == "cloud_run"
+
+
+def test_resolve_public_access_state_marks_manual_config_effective_source() -> None:
+    """Configured URLs should be marked as the effective manual-config source."""
+    assert resolve_public_access_state(
+        "https://configured.example/v1",
+        request_origin="https://detected.example",
+        deployment_environment="local",
+    ) == {
+        "deployment_environment": "local",
+        "detection_method": "manual_config",
+        "detected_public_base_url": "https://detected.example",
+        "effective_public_base_url": "https://configured.example",
+        "effective_source": "config",
+    }
+
+
+def test_resolve_public_access_state_marks_request_origin_detection() -> None:
+    """Detected request origins should populate the runtime state when config is empty."""
+    assert resolve_public_access_state(
+        "",
+        request_origin="https://detected.example/v1",
+        deployment_environment="local",
+    ) == {
+        "deployment_environment": "local",
+        "detection_method": "request_origin",
+        "detected_public_base_url": "https://detected.example",
+        "effective_public_base_url": "https://detected.example",
+        "effective_source": "request_origin",
+    }
+
+
+def test_resolve_public_access_state_returns_none_without_any_signal() -> None:
+    """Runtime state should stay empty when neither config nor request-origin exists."""
+    assert resolve_public_access_state(
+        "",
+        deployment_environment="local",
+    ) == {
+        "deployment_environment": "local",
+        "detection_method": "none",
+        "detected_public_base_url": "",
+        "effective_public_base_url": "",
+        "effective_source": "none",
+    }
 
 
 def test_config_store_save_canonicalizes_public_access_values(tmp_path: Path) -> None:

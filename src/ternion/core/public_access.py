@@ -3,10 +3,24 @@ Canonical public-access URL helpers for Cursor connectivity guidance.
 """
 
 import ipaddress
-from typing import Literal
+import os
+from typing import Literal, TypedDict
 from urllib.parse import urlparse, urlunparse
 
+DeploymentEnvironment = Literal["local", "cloud_run"]
+# `ngrok_api` is reserved for Step 3 local tunnel auto-detection.
+PublicAccessDetectionMethod = Literal["request_origin", "manual_config", "none", "ngrok_api"]
 PublicAccessSource = Literal["config", "request_origin", "none"]
+
+
+class ResolvedPublicAccessState(TypedDict):
+    """Resolved runtime public-access state for Control Panel responses."""
+
+    deployment_environment: DeploymentEnvironment
+    detection_method: PublicAccessDetectionMethod
+    detected_public_base_url: str
+    effective_public_base_url: str
+    effective_source: PublicAccessSource
 
 
 def normalize_public_base_url(raw: str) -> str:
@@ -97,6 +111,16 @@ def build_public_origin(scheme: str, host: str) -> str:
     return origin
 
 
+def detect_deployment_environment() -> DeploymentEnvironment:
+    """Detect the current deployment environment.
+
+    Returns:
+        ``cloud_run`` when the current process is running on Google Cloud Run.
+        Otherwise returns ``local`` for local or self-hosted deployments.
+    """
+    return "cloud_run" if os.getenv("K_SERVICE") else "local"
+
+
 def resolve_effective_public_base_url(
     config_value: str,
     *,
@@ -125,3 +149,49 @@ def resolve_effective_public_base_url(
         return detected, "request_origin"
 
     return "", "none"
+
+
+def resolve_public_access_state(
+    config_value: str,
+    *,
+    request_origin: str = "",
+    deployment_environment: DeploymentEnvironment | None = None,
+) -> ResolvedPublicAccessState:
+    """Resolve runtime public-access state for the Control Panel.
+
+    Args:
+        config_value: Configured public base URL candidate.
+        request_origin: Optional runtime-detected origin candidate.
+        deployment_environment: Optional explicit deployment environment. When
+            omitted, the current process environment is detected automatically.
+
+    Returns:
+        A structured runtime state containing deployment environment, detection
+        method, detected public URL, and effective public URL.
+    """
+    configured = normalize_public_base_url(config_value)
+    detected_public_base_url = normalize_public_base_url(request_origin)
+    if configured:
+        effective_public_base_url = configured
+        effective_source: PublicAccessSource = "config"
+    elif detected_public_base_url:
+        effective_public_base_url = detected_public_base_url
+        effective_source = "request_origin"
+    else:
+        effective_public_base_url = ""
+        effective_source = "none"
+
+    if effective_source == "config":
+        detection_method: PublicAccessDetectionMethod = "manual_config"
+    elif detected_public_base_url:
+        detection_method = "request_origin"
+    else:
+        detection_method = "none"
+
+    return {
+        "deployment_environment": deployment_environment or detect_deployment_environment(),
+        "detection_method": detection_method,
+        "detected_public_base_url": detected_public_base_url,
+        "effective_public_base_url": effective_public_base_url,
+        "effective_source": effective_source,
+    }

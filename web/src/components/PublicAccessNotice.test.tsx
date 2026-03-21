@@ -10,6 +10,9 @@ import { ToastContext } from './toastContext';
 function buildPublicAccess(overrides?: Partial<PublicAccessStatus>): PublicAccessStatus {
   return {
     mode: 'local_tunnel',
+    deployment_environment: 'local',
+    detection_method: 'manual_config',
+    detected_public_base_url: '',
     configured_public_base_url: 'https://demo.ngrok.app',
     effective_public_base_url: 'https://demo.ngrok.app',
     effective_source: 'config',

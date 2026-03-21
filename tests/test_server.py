@@ -4,6 +4,7 @@ Tests for the FastAPI server.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -13,9 +14,10 @@ import pytest
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from ternion.core.config_store import RoleConfig
+from ternion.core.config_store import ApiKeyEntry, ProviderConfig, RoleConfig, UserConfig
 from ternion.core.exceptions import RuntimeModelUnavailableError
 from ternion.core.models import ChatMessage, MessageRole
+from ternion.core.session_store import ExecutionMode, Session, SessionStage
 from ternion.server.app import app
 
 
@@ -50,6 +52,57 @@ def _with_workspace_path(
 ) -> str:
     """Build a user message that includes Cursor workspace metadata."""
     return f"<user_info>\nWorkspace Path: {workspace_root}\n</user_info>\n{user_text}"
+
+
+def _build_mock_user_config(
+    *,
+    language: str = "en",
+    show_phase_indicators: bool = False,
+) -> UserConfig:
+    """Create a user config fixture with roles and provider keys populated."""
+    user_config = UserConfig()
+    user_config.execution_mode = "ternion_full"
+    user_config.show_thinking_logs = False
+    user_config.show_phase_indicators = show_phase_indicators
+    user_config.language = language
+    user_config.roles = {
+        "ternion_a": RoleConfig(provider="openai", model="gpt-4"),
+        "ternion_b": RoleConfig(provider="openai", model="gpt-4"),
+        "ternion_c": RoleConfig(provider="openai", model="gpt-4"),
+        "arbiter": RoleConfig(provider="openai", model="gpt-4"),
+        "writer": RoleConfig(provider="openai", model="gpt-4"),
+        "reviewer": RoleConfig(provider="openai", model="gpt-4"),
+    }
+    api_key = ApiKeyEntry(id="test-key-id", name="Test Key", api_key="sk-test")
+    user_config.providers["openai"] = ProviderConfig(
+        api_keys=[api_key],
+        selected_key_id=api_key.id,
+    )
+    return user_config
+
+
+def _build_pending_tool_session(
+    *,
+    workspace_root: str = "",
+    workspace_path_style: str = "",
+    workspace_root_source: str = "",
+    local_workspace_root: str = "",
+) -> Session:
+    """Create a session fixture for pending tool-call route tests."""
+    return Session(
+        session_id="0123456789ab",
+        stage=SessionStage.AWAITING_TOOL_RESULTS,
+        execution_mode=ExecutionMode.TERNION_FULL,
+        ternion_report_raw="REPORT",
+        ternion_report_safe="REPORT",
+        report_hash="hash",
+        created_at="2026-01-11T00:00:00Z",
+        updated_at="2026-01-11T00:00:00Z",
+        workspace_root=workspace_root,
+        workspace_path_style=workspace_path_style,
+        workspace_root_source=workspace_root_source,
+        local_workspace_root=local_workspace_root,
+    )
 
 
 class TestHealthEndpoint:
@@ -955,6 +1008,129 @@ class TestChatCompletions:
             tool_calls = data["choices"][0]["message"]["tool_calls"]
             assert tool_calls[0]["function"]["name"] == "Write"
 
+    @pytest.mark.parametrize(
+        ("workspace_root", "absolute_target", "workspace_path_style", "expected_finish_reason"),
+        [
+            (
+                "/Users/bob/Desktop/remote-project",
+                "/Users/bob/Desktop/remote-project/src/app.py",
+                "posix",
+                "tool_calls",
+            ),
+            (
+                "/Users/bob/Desktop/remote-project",
+                "/Users/bob/Desktop/another-project/src/app.py",
+                "posix",
+                "stop",
+            ),
+            (
+                r"C:\Users\bob\project",
+                r"C:\Users\bob\project\src\main.py",
+                "windows",
+                "tool_calls",
+            ),
+            (
+                r"C:\Users\bob\project",
+                r"D:\OtherProject\src\main.py",
+                "windows",
+                "stop",
+            ),
+        ],
+        ids=[
+            "posix-inside-workspace",
+            "posix-outside-workspace",
+            "windows-inside-workspace",
+            "windows-outside-workspace",
+        ],
+    )
+    def test_code_change_handles_cross_device_absolute_targets_via_route(
+        self,
+        client: TestClient,
+        workspace_root: str,
+        absolute_target: str,
+        workspace_path_style: str,
+        expected_finish_reason: str,
+    ) -> None:
+        """Cross-device absolute targets should respect the declared workspace boundary."""
+        mock_user_config = _build_mock_user_config()
+        mock_result = {
+            "ternion_report": "Fix Plan: update code.",
+            "conversation_history": [{"role": "user", "content": "please update code"}],
+            "pending_tool_calls": [
+                {
+                    "id": "call_cross_device",
+                    "type": "function",
+                    "function": {
+                        "name": "Write",
+                        "arguments": json.dumps({"file_path": absolute_target, "content": "x"}),
+                    },
+                }
+            ],
+            "thinking_logs": [],
+            "errors": [],
+        }
+        fake_session = _build_pending_tool_session(
+            workspace_root=workspace_root,
+            workspace_path_style=workspace_path_style,
+            workspace_root_source="explicit_workspace_path",
+        )
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.provider_manager") as mock_provider_mgr,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_provider_mgr.has_providers = True
+            mock_run.return_value = mock_result
+            mock_session_store.create_session.return_value = fake_session
+            mock_session_store.update_session.return_value = fake_session
+
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": _with_workspace_path("code-change request", workspace_root),
+                        }
+                    ],
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "description": "dummy",
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
+                        }
+                    ],
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["choices"][0]["finish_reason"] == expected_finish_reason
+        message = data["choices"][0]["message"]
+        if expected_finish_reason == "tool_calls":
+            tool_calls = message["tool_calls"]
+            assert tool_calls[0]["function"]["name"] == "Write"
+            parsed_arguments = json.loads(tool_calls[0]["function"]["arguments"])
+            assert parsed_arguments["file_path"] == absolute_target
+        else:
+            content = message.get("content") or ""
+            assert absolute_target in content
+            assert not message.get("tool_calls")
+        mock_run.assert_awaited_once()
+        mock_session_store.create_session.assert_called_once()
+        session_kwargs = mock_session_store.create_session.call_args.kwargs
+        assert session_kwargs["workspace_root"] == workspace_root
+        assert session_kwargs["workspace_path_style"] == workspace_path_style
+        assert session_kwargs["workspace_root_source"] == "explicit_workspace_path"
+
     def test_execution_tool_policy_blocks_read_tool_calls(self, client: TestClient) -> None:
         """Execution tool policy should block read/search tool calls."""
         mock_user_config = MagicMock()
@@ -1749,7 +1925,9 @@ class TestChatCompletions:
         ]
 
         with patch("ternion.server.routes._read_text_file_best_effort") as mock_read:
-            baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(session, tool_calls)
+            baseline, modified_files = _ensure_baseline_snapshots_for_tool_calls(
+                session, tool_calls
+            )
 
         assert baseline == {"/__ternion_remote__/repo/README.md": "# existing"}
         assert modified_files == [
@@ -1909,8 +2087,6 @@ class TestChatCompletions:
 
     def test_streaming_tool_calls_finishes_with_tool_calls(self, client: TestClient) -> None:
         """When streaming returns tool_calls, SSE must end with finish_reason=tool_calls."""
-        import json as json_lib
-
         mock_user_config = MagicMock()
         mock_user_config.execution_mode = "ternion_full"
         mock_user_config.show_thinking_logs = True
@@ -1996,7 +2172,7 @@ class TestChatCompletions:
                     payload = line.removeprefix("data: ").strip()
                     if payload == "[DONE]":
                         break
-                    chunks.append(json_lib.loads(payload))
+                    chunks.append(json.loads(payload))
 
                 assert chunks, "Expected at least one SSE data chunk"
 
@@ -2120,8 +2296,6 @@ class TestChatCompletions:
         the first TOKEN_DELTA arrives. If the workflow ends with tool_calls and
         no tokens were streamed, the SSE stream must contain no delta.content.
         """
-        import json as json_lib
-
         mock_user_config = MagicMock()
         mock_user_config.execution_mode = "ternion_full"
         mock_user_config.show_thinking_logs = False
@@ -2213,7 +2387,7 @@ class TestChatCompletions:
                     payload = line.removeprefix("data: ").strip()
                     if payload == "[DONE]":
                         break
-                    chunks.append(json_lib.loads(payload))
+                    chunks.append(json.loads(payload))
 
                 assert chunks, "Expected at least one SSE data chunk"
 
@@ -2660,6 +2834,124 @@ class TestChatCompletions:
             assert prior_tool_call_id in assistant_tool_call_ids
             assert "ternion_0123456789ab_r0002_c00" in assistant_tool_call_ids
 
+    def test_streaming_evidence_followup_returns_tool_calls(self, client: TestClient) -> None:
+        """Streaming evidence follow-up should emit tool_calls without scope errors."""
+        mock_user_config = _build_mock_user_config()
+        resume_session = _build_pending_tool_session(
+            workspace_root="/__cursor_workspace__/repo",
+            workspace_path_style="posix",
+            workspace_root_source="explicit_workspace_path",
+        )
+        resume_session.round_index = 1
+        resume_session.workflow_phase = "evidence"
+        resume_session.cursor_system_prompt = "SYS"
+        resume_session.cursor_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "description": "dummy",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                },
+            }
+        ]
+
+        mock_final_state = {
+            "current_phase": "optimizer",
+            "ternion_report": "REPORT",
+            "pending_tool_calls": [
+                {
+                    "id": "call_write",
+                    "type": "function",
+                    "function": {
+                        "name": "Write",
+                        "arguments": '{"file_path":"docs/a.md","content":"x"}',
+                    },
+                }
+            ],
+            "conversation_history": [],
+            "thinking_logs": [],
+            "errors": [],
+        }
+
+        with (
+            patch("ternion.server.routes.config_store") as mock_config_store,
+            patch("ternion.server.routes.session_store") as mock_session_store,
+            patch("ternion.server.routes.budget_manager") as mock_budget_manager,
+            patch("ternion.workflow.graph.run_discussion", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_config_store.load.return_value = mock_user_config
+            mock_session_store.load_session.return_value = resume_session
+            mock_session_store.update_session.return_value = resume_session
+            mock_budget_manager.check_budget.return_value = (True, None)
+            mock_run.return_value = mock_final_state
+
+            with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "ternion-team",
+                    "messages": [
+                        {
+                            "role": "tool",
+                            "tool_call_id": "ternion_0123456789ab_r0001_c00",
+                            "content": "RESULT_A",
+                        }
+                    ],
+                    "stream": True,
+                },
+            ) as response:
+                assert response.status_code == 200
+                assert "text/event-stream" in response.headers["content-type"]
+
+                chunks: list[dict] = []
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line.removeprefix("data: ").strip()
+                    if payload == "[DONE]":
+                        break
+                    chunks.append(json.loads(payload))
+
+            assert chunks, "Expected at least one SSE data chunk"
+            assert any(
+                isinstance(c.get("choices", [{}])[0].get("delta", {}).get("tool_calls"), list)
+                for c in chunks
+            ), "Expected a delta.tool_calls chunk in SSE stream"
+            assert any(
+                any(
+                    tool_call.get("function", {}).get("name") == "Write"
+                    and "docs/a.md" in str(tool_call.get("function", {}).get("arguments", ""))
+                    for tool_call in (
+                        c.get("choices", [{}])[0].get("delta", {}).get("tool_calls") or []
+                    )
+                    if isinstance(tool_call, dict)
+                )
+                for c in chunks
+            ), "Expected a Write tool_call for docs/a.md in SSE stream"
+            assert any(
+                c.get("choices", [{}])[0].get("finish_reason") == "tool_calls" for c in chunks
+            ), "Expected a finish_reason='tool_calls' final SSE chunk"
+
+            matching_updates = [
+                call
+                for call in mock_session_store.update_session.call_args_list
+                if call.args
+                and call.args[0] == resume_session.session_id
+                and call.kwargs.get("round_index") == 2
+                and call.kwargs.get("workflow_phase") == "optimizer"
+                and isinstance(call.kwargs.get("pending_tool_calls"), list)
+            ]
+            assert matching_updates
+
     def test_report_evidence_followup_with_resume_phase_routes_to_execution_followup(
         self, client: TestClient
     ) -> None:
@@ -2763,7 +3055,6 @@ class TestChatCompletions:
         self, client: TestClient
     ) -> None:
         """Server should normalize repo-relative Read paths like /docs/x.md."""
-        import json as json_lib
         from pathlib import Path
 
         from ternion.server.routes import _rewrite_tool_call_ids
@@ -2782,7 +3073,7 @@ class TestChatCompletions:
             round_index=1,
             workflow_phase="report_evidence",
         )
-        args = json_lib.loads(rewritten[0]["function"]["arguments"])
+        args = json.loads(rewritten[0]["function"]["arguments"])
         assert args["path"] == str(repo_root / "docs" / "development_log.md")
 
     def test_cursor_handoff_agent_auto_switches_to_ternion_full(self, client: TestClient) -> None:

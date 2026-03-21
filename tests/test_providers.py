@@ -127,6 +127,153 @@ class TestOpenAIProviderFallback:
         assert OpenAIProvider._is_non_chat_model_error(other) is False
 
 
+class TestOpenAIJsonBodyDiagnostics:
+    """Tests for OpenAI JSON body parse diagnostics."""
+
+    def test_json_body_parse_error_detection_handles_message_variants(self) -> None:
+        """JSON-body parse detection should tolerate status-code and message variations."""
+        from ternion.providers.openai import OpenAIProvider
+
+        class MockOpenAIError(RuntimeError):
+            """Minimal error object with OpenAI-like attributes."""
+
+            def __init__(self, message: str, *, status_code: int | None = None, body: Any = None):
+                super().__init__(message)
+                self.status_code = status_code
+                self.body = body
+
+        assert OpenAIProvider._is_json_body_parse_error(
+            MockOpenAIError(
+                "Failed to parse JSON body",
+                status_code=400,
+                body={"error": {"message": "Malformed JSON body"}},
+            )
+        )
+        assert OpenAIProvider._is_json_body_parse_error(
+            MockOpenAIError("Could not parse the JSON body for this request")
+        )
+        assert not OpenAIProvider._is_json_body_parse_error(
+            MockOpenAIError("Model not found", status_code=404)
+        )
+
+    def test_build_chat_payload_diagnostics_summarizes_structure_without_content(self) -> None:
+        """Diagnostics should capture structural counts and serialization failures safely."""
+        from ternion.providers.openai import OpenAIProvider
+
+        diagnostics = OpenAIProvider._build_chat_payload_diagnostics(
+            {
+                "messages": [
+                    {"role": "tool", "content": "RESULT_A"},
+                    {
+                        "role": "assistant",
+                        "content": [object()],
+                        "tool_calls": [
+                            {
+                                "id": "call_write",
+                                "type": "function",
+                                "responses_api_call_id": "resp_call",
+                                "function": {
+                                    "name": "Write",
+                                    "arguments": '{"file_path":"docs/a.md","content":"x"}',
+                                },
+                            },
+                            {
+                                "id": "call_bad_args",
+                                "type": "function",
+                                "function": {"name": "Edit", "arguments": {"path": "docs/a.md"}},
+                            },
+                            {
+                                "id": "call_bad_function",
+                                "type": "function",
+                                "function": "not-a-dict",
+                            },
+                        ],
+                    },
+                ],
+                "tools": [{"type": "function"}, {"type": "function"}],
+            }
+        )
+
+        assert diagnostics["payload_message_count"] == 2
+        assert diagnostics["payload_tools_count"] == 2
+        assert diagnostics["payload_tool_message_count"] == 1
+        assert diagnostics["payload_assistant_tool_call_messages"] == 1
+        assert diagnostics["payload_assistant_tool_call_total"] == 3
+        assert diagnostics["payload_assistant_internal_tool_call_total"] == 1
+        assert diagnostics["payload_assistant_write_tool_call_total"] == 1
+        assert diagnostics["payload_assistant_non_string_tool_call_arguments_total"] == 1
+        assert diagnostics["payload_assistant_non_dict_tool_call_function_total"] == 1
+        assert diagnostics["payload_non_string_content_serialize_error_total"] == 1
+        assert diagnostics["payload_tool_call_names_preview"] == "Write,Edit"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_preserves_original_error_when_diagnostics_fail(self) -> None:
+        """Diagnostics failures should not mask the original chat-completions exception."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        original_error = RuntimeError("Failed to parse JSON body")
+
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                AsyncMock(side_effect=original_error),
+            ),
+            patch.object(
+                provider,
+                "_build_chat_payload_diagnostics",
+                side_effect=RuntimeError("diagnostics failed"),
+            ),
+            patch("ternion.providers.openai.logger.error") as mock_logger_error,
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            await provider.chat_completion(
+                messages=[ChatMessage(role=MessageRole.USER, content="Hello")],
+                model="gpt-4.1",
+            )
+
+        assert exc_info.value is original_error
+        assert (
+            mock_logger_error.call_args_list[0].args[0] == "openai_chat_payload_diagnostics_failed"
+        )
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_stream_preserves_original_error_when_diagnostics_fail(
+        self,
+    ) -> None:
+        """Diagnostics failures should not mask the original streaming exception."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        original_error = RuntimeError("Failed to parse JSON body")
+
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                AsyncMock(side_effect=original_error),
+            ),
+            patch.object(
+                provider,
+                "_build_chat_payload_diagnostics",
+                side_effect=RuntimeError("diagnostics failed"),
+            ),
+            patch("ternion.providers.openai.logger.error") as mock_logger_error,
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            async for _ in provider.chat_completion_stream(
+                messages=[ChatMessage(role=MessageRole.USER, content="Hello")],
+                model="gpt-4.1",
+            ):
+                pass
+
+        assert exc_info.value is original_error
+        assert (
+            mock_logger_error.call_args_list[0].args[0] == "openai_chat_payload_diagnostics_failed"
+        )
+
+
 class TestConvertToolsForResponsesApi:
     """Tests for Chat Completions → Responses API tool schema conversion."""
 
@@ -203,9 +350,7 @@ class TestResolveApiMode:
         catalog_model = MagicMock()
         catalog_model.mode = "responses"
 
-        with patch(
-            "ternion.workflow.nodes.model_catalog_service"
-        ) as mock_catalog:
+        with patch("ternion.workflow.nodes.model_catalog_service") as mock_catalog:
             mock_catalog.get_model_cached.return_value = catalog_model
             result = _resolve_api_mode(provider, "gpt-5-pro")
 
@@ -223,9 +368,7 @@ class TestResolveApiMode:
         catalog_model = MagicMock()
         catalog_model.mode = "chat"
 
-        with patch(
-            "ternion.workflow.nodes.model_catalog_service"
-        ) as mock_catalog:
+        with patch("ternion.workflow.nodes.model_catalog_service") as mock_catalog:
             mock_catalog.get_model_cached.return_value = catalog_model
             result = _resolve_api_mode(provider, "gpt-5")
 
@@ -251,9 +394,7 @@ class TestResolveApiMode:
         provider = MagicMock()
         provider.name = "openai"
 
-        with patch(
-            "ternion.workflow.nodes.model_catalog_service"
-        ) as mock_catalog:
+        with patch("ternion.workflow.nodes.model_catalog_service") as mock_catalog:
             mock_catalog.get_model_cached.return_value = None
             result = _resolve_api_mode(provider, "unknown-model")
 
@@ -284,7 +425,7 @@ class TestOpenAIResponsesCompatibility:
                             "arguments": '{"path":"/tmp/a.py"}',
                         },
                     )()
-                ]
+                ],
             },
         )()
 
@@ -693,4 +834,3 @@ class TestAnthropicProviderModelNormalization:
 
         assert chunks == ["ok"]
         assert mock_stream.call_args.kwargs["model"] == "claude-sonnet-4-8"
-

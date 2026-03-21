@@ -4,6 +4,8 @@ OpenAI provider adapter.
 Implements chat completion using the OpenAI API with full multimodal support.
 """
 
+import hashlib
+import json
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -66,6 +68,184 @@ class OpenAIProvider(BaseProvider):
         """Overrides base class default; OpenAI's /v1/chat/completions natively accepts `tools` and `tool_choice`."""
         return True
 
+    @staticmethod
+    def _is_json_body_parse_error(error: Exception) -> bool:
+        """Return whether the error indicates the request JSON body could not be parsed."""
+        status_code = getattr(error, "status_code", None)
+        response = getattr(error, "response", None)
+        if status_code is None and response is not None:
+            status_code = getattr(response, "status_code", None)
+
+        detail_parts = [str(error)]
+        body = getattr(error, "body", None)
+        if body is not None:
+            if isinstance(body, (dict, list)):
+                try:
+                    detail_parts.append(json.dumps(body, ensure_ascii=False))
+                except Exception:
+                    detail_parts.append(str(body))
+            else:
+                detail_parts.append(str(body))
+
+        combined = " ".join(part for part in detail_parts if part).lower()
+        has_json_body_context = "json" in combined and "body" in combined
+        has_parse_signal = any(
+            marker in combined for marker in ("parse", "parsing", "parsed", "invalid", "malformed")
+        )
+        if has_json_body_context and has_parse_signal:
+            return True
+
+        return status_code in {400, 422} and has_json_body_context
+
+    @staticmethod
+    def _build_chat_payload_diagnostics(api_params: dict[str, Any]) -> dict[str, Any]:
+        """Summarize chat payload shape without logging payload contents."""
+        messages = api_params.get("messages")
+        tools = api_params.get("tools")
+
+        assistant_tool_call_messages = 0
+        assistant_tool_call_total = 0
+        assistant_internal_tool_call_total = 0
+        assistant_write_tool_call_total = 0
+        assistant_non_string_tool_call_arguments_total = 0
+        assistant_non_dict_tool_call_function_total = 0
+        assistant_max_tool_call_arguments_chars = 0
+        tool_message_total = 0
+        max_string_content_chars = 0
+        non_string_content_serialize_error_total = 0
+        tool_call_names_preview: list[str] = []
+
+        if isinstance(messages, list):
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+
+                role = msg.get("role")
+                content = msg.get("content")
+                if isinstance(content, str):
+                    max_string_content_chars = max(max_string_content_chars, len(content))
+                elif isinstance(content, list):
+                    try:
+                        content_chars = len(json.dumps(content, ensure_ascii=False))
+                        max_string_content_chars = max(max_string_content_chars, content_chars)
+                    except Exception:
+                        non_string_content_serialize_error_total += 1
+
+                if role == "tool":
+                    tool_message_total += 1
+
+                if role != "assistant":
+                    continue
+
+                tool_calls = msg.get("tool_calls")
+                if not isinstance(tool_calls, list) or not tool_calls:
+                    continue
+
+                assistant_tool_call_messages += 1
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+
+                    assistant_tool_call_total += 1
+                    if any(str(key).startswith("responses_api_") for key in tool_call):
+                        assistant_internal_tool_call_total += 1
+
+                    function = tool_call.get("function")
+                    if not isinstance(function, dict):
+                        assistant_non_dict_tool_call_function_total += 1
+                        continue
+
+                    name = function.get("name")
+                    if isinstance(name, str) and name:
+                        if len(tool_call_names_preview) < 5 and name not in tool_call_names_preview:
+                            tool_call_names_preview.append(name)
+                        if name.strip().lower() in {"write", "writefile"}:
+                            assistant_write_tool_call_total += 1
+
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, str):
+                        assistant_max_tool_call_arguments_chars = max(
+                            assistant_max_tool_call_arguments_chars,
+                            len(arguments),
+                        )
+                    else:
+                        assistant_non_string_tool_call_arguments_total += 1
+
+        diagnostics: dict[str, Any] = {
+            "payload_message_count": len(messages) if isinstance(messages, list) else 0,
+            "payload_tools_count": len(tools) if isinstance(tools, list) else 0,
+            "payload_tool_message_count": tool_message_total,
+            "payload_assistant_tool_call_messages": assistant_tool_call_messages,
+            "payload_assistant_tool_call_total": assistant_tool_call_total,
+            "payload_assistant_internal_tool_call_total": assistant_internal_tool_call_total,
+            "payload_assistant_write_tool_call_total": assistant_write_tool_call_total,
+            "payload_assistant_non_string_tool_call_arguments_total": (
+                assistant_non_string_tool_call_arguments_total
+            ),
+            "payload_assistant_non_dict_tool_call_function_total": (
+                assistant_non_dict_tool_call_function_total
+            ),
+            "payload_assistant_max_tool_call_arguments_chars": (
+                assistant_max_tool_call_arguments_chars
+            ),
+            "payload_max_string_content_chars": max_string_content_chars,
+            "payload_non_string_content_serialize_error_total": (
+                non_string_content_serialize_error_total
+            ),
+            "payload_tool_call_names_preview": ",".join(tool_call_names_preview),
+            "payload_json_dump_ok": False,
+            "payload_json_utf8_ok": False,
+            "payload_chars": 0,
+            "payload_sha256_16": "",
+            "payload_json_dump_error": "",
+            "payload_json_utf8_error": "",
+        }
+
+        try:
+            payload_text = json.dumps(api_params, ensure_ascii=False)
+            diagnostics["payload_json_dump_ok"] = True
+            diagnostics["payload_chars"] = len(payload_text)
+            try:
+                payload_bytes = payload_text.encode("utf-8")
+                diagnostics["payload_json_utf8_ok"] = True
+                diagnostics["payload_sha256_16"] = hashlib.sha256(payload_bytes).hexdigest()[:16]
+            except UnicodeEncodeError as exc:
+                diagnostics["payload_json_utf8_error"] = f"{exc.reason}@{exc.start}"
+        except Exception as exc:
+            diagnostics["payload_json_dump_error"] = f"{type(exc).__name__}: {exc}"
+
+        return diagnostics
+
+    def _log_chat_payload_diagnostics(
+        self,
+        *,
+        event_name: str,
+        model: str,
+        api_mode: str,
+        error: Exception,
+        api_params: dict[str, Any],
+    ) -> None:
+        """Emit payload diagnostics without masking the original provider exception."""
+        try:
+            diagnostics = self._build_chat_payload_diagnostics(api_params)
+        except Exception as diagnostics_error:
+            logger.error(
+                "openai_chat_payload_diagnostics_failed",
+                model=model,
+                api_mode=api_mode,
+                error=str(error),
+                diagnostics_error=str(diagnostics_error),
+            )
+            return
+
+        logger.error(
+            event_name,
+            model=model,
+            api_mode=api_mode,
+            error=str(error),
+            **diagnostics,
+        )
+
     async def chat_completion(
         self,
         messages: list[ChatMessage],
@@ -121,6 +301,14 @@ class OpenAIProvider(BaseProvider):
         try:
             response = await self._client.chat.completions.create(**api_params)  # type: ignore
         except Exception as e:
+            if self._is_json_body_parse_error(e):
+                self._log_chat_payload_diagnostics(
+                    event_name="openai_chat_completion_json_body_parse_error",
+                    model=model,
+                    api_mode=api_mode or "auto",
+                    error=e,
+                    api_params=api_params,
+                )
             if self._is_non_chat_model_error(e):
                 try:
                     return await self._responses_chat_completion(
@@ -236,7 +424,8 @@ class OpenAIProvider(BaseProvider):
 
         return ProviderResponse(
             content=(
-                (choice.message.content if getattr(choice, "message", None) is not None else "") or ""
+                (choice.message.content if getattr(choice, "message", None) is not None else "")
+                or ""
             ),
             finish_reason=choice.finish_reason,
             tool_calls=tool_calls,
@@ -311,6 +500,14 @@ class OpenAIProvider(BaseProvider):
                 yield chunk
             return
         except Exception as e:
+            if self._is_json_body_parse_error(e):
+                self._log_chat_payload_diagnostics(
+                    event_name="openai_chat_completion_stream_json_body_parse_error",
+                    model=model,
+                    api_mode=api_mode or "auto",
+                    error=e,
+                    api_params=api_params,
+                )
             if not self._is_non_chat_model_error(e):
                 raise
 
@@ -1092,8 +1289,12 @@ class OpenAIProvider(BaseProvider):
         if not isinstance(call_id, str) or not call_id.strip():
             call_id = raw_id if isinstance(raw_id, str) and raw_id.startswith("call_") else None
 
-        normalized_item_id = item_id.strip() if isinstance(item_id, str) and item_id.strip() else None
-        normalized_call_id = call_id.strip() if isinstance(call_id, str) and call_id.strip() else None
+        normalized_item_id = (
+            item_id.strip() if isinstance(item_id, str) and item_id.strip() else None
+        )
+        normalized_call_id = (
+            call_id.strip() if isinstance(call_id, str) and call_id.strip() else None
+        )
         return normalized_item_id, normalized_call_id
 
     @staticmethod

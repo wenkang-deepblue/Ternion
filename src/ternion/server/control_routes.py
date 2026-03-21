@@ -36,7 +36,7 @@ from ternion.core.model_probe import (
 from ternion.core.public_access import (
     build_public_origin,
     normalize_public_base_url,
-    resolve_effective_public_base_url,
+    resolve_public_access_state,
 )
 from ternion.providers.manager import provider_manager
 from ternion.server.model_catalog_refresh import (
@@ -231,20 +231,22 @@ def _serialize_public_access_state(request: Request, config: UserConfig) -> dict
     if mode not in VALID_PUBLIC_ACCESS_MODES:
         mode = "none"
 
-    configured_public_base_url = normalize_public_base_url(
-        str(config.public_access.public_base_url or "")
-    )
-    effective_public_base_url, effective_source = resolve_effective_public_base_url(
-        configured_public_base_url,
+    raw_configured_public_base_url = str(config.public_access.public_base_url or "")
+    configured_public_base_url = normalize_public_base_url(raw_configured_public_base_url)
+    resolved_state = resolve_public_access_state(
+        raw_configured_public_base_url,
         request_origin=_build_request_public_origin(request),
     )
     return {
         "mode": mode,
+        "deployment_environment": resolved_state["deployment_environment"],
+        "detection_method": resolved_state["detection_method"],
+        "detected_public_base_url": resolved_state["detected_public_base_url"],
         "configured_public_base_url": configured_public_base_url,
-        "effective_public_base_url": effective_public_base_url,
-        "effective_source": effective_source,
-        "cursor_override_base_url": effective_public_base_url,
-        "configured": bool(effective_public_base_url),
+        "effective_public_base_url": resolved_state["effective_public_base_url"],
+        "effective_source": resolved_state["effective_source"],
+        "cursor_override_base_url": resolved_state["effective_public_base_url"],
+        "configured": bool(resolved_state["effective_public_base_url"]),
         "requires_public_url": True,
     }
 
