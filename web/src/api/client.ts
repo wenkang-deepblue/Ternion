@@ -102,7 +102,7 @@ export interface PublicAccessStatus {
   detected_public_base_url: string;
   configured_public_base_url: string;
   effective_public_base_url: string;
-  effective_source: 'config' | 'request_origin' | 'none';
+  effective_source: 'config' | 'request_origin' | 'none' | 'ngrok_api';
   cursor_override_base_url: string;
   configured: boolean;
   requires_public_url: boolean;

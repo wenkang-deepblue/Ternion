@@ -91,6 +91,24 @@ describe('PortsSettings', () => {
     expect(screen.queryByText('https://demo.ngrok.app/v1')).not.toBeInTheDocument();
   });
 
+  it('shows the auto-detected note for ngrok-discovered public URLs', async () => {
+    const { t } = renderPortsSettings({
+      publicAccess: buildPublicAccess({
+        detection_method: 'ngrok_api',
+        detected_public_base_url: 'https://live.ngrok.app',
+        effective_public_base_url: 'https://live.ngrok.app',
+        effective_source: 'ngrok_api',
+        cursor_override_base_url: 'https://live.ngrok.app',
+      }),
+    });
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText(t.publicAccessAutoDetectedNote)).toBeInTheDocument();
+  });
+
   it('shows loading first and then renders an unavailable warning when port loading fails', async () => {
     mockApi.getPorts.mockRejectedValueOnce(
       new ApiError(503, { code: 'CONNECTION_ERROR', detail: 'CONNECTION_ERROR' })

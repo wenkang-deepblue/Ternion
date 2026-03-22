@@ -11,7 +11,7 @@ Provides REST API endpoints for the Web Control Panel to manage:
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import Any, get_args
+from typing import TypedDict, get_args
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request
@@ -34,6 +34,9 @@ from ternion.core.model_probe import (
     model_availability_probe_service,
 )
 from ternion.core.public_access import (
+    DeploymentEnvironment,
+    PublicAccessDetectionMethod,
+    PublicAccessSource,
     build_public_origin,
     normalize_public_base_url,
     resolve_public_access_state,
@@ -51,6 +54,27 @@ from ternion.utils.secrets import redact_secrets
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["control-panel"])
 VALID_PUBLIC_ACCESS_MODES = set(get_args(PublicAccessMode))
+class PublicAccessStateResponse(TypedDict):
+    """Serialized public-access state returned by the Control Panel API."""
+
+    mode: PublicAccessMode
+    deployment_environment: DeploymentEnvironment
+    detection_method: PublicAccessDetectionMethod
+    detected_public_base_url: str
+    configured_public_base_url: str
+    effective_public_base_url: str
+    effective_source: PublicAccessSource
+    cursor_override_base_url: str
+    configured: bool
+    requires_public_url: bool
+
+
+class PublicAccessUpdateResponse(PublicAccessStateResponse):
+    """Serialized response for a public-access update operation."""
+
+    success: bool
+
+
 
 # Sync budget settings from config_store to budget_manager on module load.
 # This ensures user-configured budget persists across server restarts.
@@ -217,7 +241,9 @@ def _build_request_public_origin(request: Request) -> str:
     return build_public_origin(scheme, host)
 
 
-def _serialize_public_access_state(request: Request, config: UserConfig) -> dict[str, Any]:
+def _serialize_public_access_state(
+    request: Request, config: UserConfig
+) -> PublicAccessStateResponse:
     """Serialize current public-access state for API responses.
 
     Args:
@@ -236,6 +262,7 @@ def _serialize_public_access_state(request: Request, config: UserConfig) -> dict
     resolved_state = resolve_public_access_state(
         raw_configured_public_base_url,
         request_origin=_build_request_public_origin(request),
+        backend_port=config.ports.backend,
     )
     return {
         "mode": mode,
@@ -367,7 +394,7 @@ async def get_config() -> dict:
 
 
 @router.get("/public-access")
-async def get_public_access(request: Request) -> dict[str, Any]:
+def get_public_access(request: Request) -> PublicAccessStateResponse:
     """Return current public-access guidance state for the Control Panel.
 
     Args:
@@ -381,10 +408,10 @@ async def get_public_access(request: Request) -> dict[str, Any]:
 
 
 @router.post("/public-access")
-async def update_public_access(
+def update_public_access(
     request: Request,
     payload: PublicAccessUpdateRequest,
-) -> dict[str, Any]:
+) -> PublicAccessUpdateResponse:
     """Update stored public-access guidance settings.
 
     Args:

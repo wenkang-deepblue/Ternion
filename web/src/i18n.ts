@@ -212,6 +212,7 @@ export interface Translations {
   publicAccessSource: string;
   publicAccessSourceConfig: string;
   publicAccessSourceRequestOrigin: string;
+  publicAccessSourceNgrokApi: string;
   publicAccessSourceNone: string;
   publicAccessCursorHint: string;
   publicAccessAutoDetectedNote: string;
@@ -467,10 +468,11 @@ const EN: Translations = {
   publicAccessSource: 'Effective URL source',
   publicAccessSourceConfig: 'Configured value',
   publicAccessSourceRequestOrigin: 'Detected from current request',
+  publicAccessSourceNgrokApi: 'Detected from local ngrok API',
   publicAccessSourceNone: 'No public URL available',
   publicAccessCursorHint: 'Use the public HTTPS root URL in Cursor. Do not append `/v1`.',
   publicAccessAutoDetectedNote:
-    'This URL is being inferred from the current public request origin, which is useful for Cloud Run and reverse proxy deployments.',
+    'This URL was auto-detected from the current public request or the local ngrok API, which is useful for Cloud Run, reverse proxy, and local tunnel deployments.',
   publicAccessCopy: 'Copy',
   publicAccessCopied: 'Cursor base URL copied',
   publicAccessCopyFailed: 'Failed to copy the Cursor base URL',
@@ -791,10 +793,11 @@ const ZH: Translations = {
   publicAccessSource: '生效 URL 来源',
   publicAccessSourceConfig: '显式配置值',
   publicAccessSourceRequestOrigin: '根据当前请求自动推断',
+  publicAccessSourceNgrokApi: '根据本机 ngrok API 自动发现',
   publicAccessSourceNone: '当前无可用公网 URL',
   publicAccessCursorHint: '在 Cursor 中填写公网 HTTPS 根 URL，不要追加 `/v1`。',
   publicAccessAutoDetectedNote:
-    '当前 URL 是根据本次公网请求自动推断的，适用于 Cloud Run 或反向代理部署。',
+    '当前 URL 是根据本次公网请求或本机 ngrok API 自动检测得到的，适用于 Cloud Run、反向代理或本地隧道部署。',
   publicAccessCopy: '复制',
   publicAccessCopied: '已复制 Cursor Base URL',
   publicAccessCopyFailed: '复制 Cursor Base URL 失败',
@@ -1113,10 +1116,11 @@ const ES: Translations = {
   publicAccessSource: 'Origen de la URL efectiva',
   publicAccessSourceConfig: 'Valor configurado',
   publicAccessSourceRequestOrigin: 'Detectada desde la solicitud actual',
+  publicAccessSourceNgrokApi: 'Detectada desde la API local de ngrok',
   publicAccessSourceNone: 'No hay URL pública disponible',
   publicAccessCursorHint: 'Use la URL raíz pública HTTPS en Cursor. No agregue `/v1`.',
   publicAccessAutoDetectedNote:
-    'Esta URL se infiere de la solicitud pública actual, lo que resulta útil para despliegues en Cloud Run o detrás de un proxy inverso.',
+    'Esta URL se detectó automáticamente a partir de la solicitud pública actual o de la API local de ngrok, lo que resulta útil para despliegues en Cloud Run, detrás de un proxy inverso o con túneles locales.',
   publicAccessCopy: 'Copiar',
   publicAccessCopied: 'La URL base de Cursor se copió',
   publicAccessCopyFailed: 'No se pudo copiar la URL base de Cursor',
@@ -1438,10 +1442,11 @@ const FR: Translations = {
   publicAccessSource: 'Source de l’URL effective',
   publicAccessSourceConfig: 'Valeur configurée',
   publicAccessSourceRequestOrigin: 'Détectée depuis la requête actuelle',
+  publicAccessSourceNgrokApi: 'Détectée depuis l’API locale ngrok',
   publicAccessSourceNone: 'Aucune URL publique disponible',
   publicAccessCursorHint: 'Utilisez l’URL racine HTTPS publique dans Cursor. N’ajoutez pas `/v1`.',
   publicAccessAutoDetectedNote:
-    'Cette URL est déduite de la requête publique actuelle, ce qui est utile pour Cloud Run et les déploiements derrière un proxy inverse.',
+    'Cette URL a été détectée automatiquement à partir de la requête publique actuelle ou de l’API locale ngrok, ce qui est utile pour Cloud Run, les déploiements derrière un proxy inverse et les tunnels locaux.',
   publicAccessCopy: 'Copier',
   publicAccessCopied: 'L’URL de base Cursor a été copiée',
   publicAccessCopyFailed: 'Impossible de copier l’URL de base Cursor',
@@ -1763,10 +1768,11 @@ const DE: Translations = {
   publicAccessSource: 'Quelle der effektiven URL',
   publicAccessSourceConfig: 'Konfigurierter Wert',
   publicAccessSourceRequestOrigin: 'Aus der aktuellen Anfrage erkannt',
+  publicAccessSourceNgrokApi: 'Aus der lokalen ngrok-API erkannt',
   publicAccessSourceNone: 'Keine öffentliche URL verfügbar',
   publicAccessCursorHint: 'Verwenden Sie in Cursor die öffentliche HTTPS-Stamm-URL. Fügen Sie kein `/v1` an.',
   publicAccessAutoDetectedNote:
-    'Diese URL wird aus der aktuellen öffentlichen Anfrage abgeleitet und ist hilfreich für Cloud Run sowie Deployments hinter einem Reverse Proxy.',
+    'Diese URL wurde automatisch aus der aktuellen öffentlichen Anfrage oder der lokalen ngrok-API erkannt und ist hilfreich für Cloud Run, Deployments hinter einem Reverse Proxy sowie lokale Tunnel.',
   publicAccessCopy: 'Kopieren',
   publicAccessCopied: 'Die Cursor-Basis-URL wurde kopiert',
   publicAccessCopyFailed: 'Die Cursor-Basis-URL konnte nicht kopiert werden',
@@ -2088,10 +2094,11 @@ const JA: Translations = {
   publicAccessSource: '有効 URL の取得元',
   publicAccessSourceConfig: '明示設定値',
   publicAccessSourceRequestOrigin: '現在のリクエストから自動検出',
+  publicAccessSourceNgrokApi: 'ローカル ngrok API から自動検出',
   publicAccessSourceNone: '利用可能な公開 URL はありません',
   publicAccessCursorHint: 'Cursor には公開 HTTPS のルート URL を入力し、`/v1` は付けないでください。',
   publicAccessAutoDetectedNote:
-    'この URL は現在の公開リクエストから自動推定されています。Cloud Run やリバースプロキシ構成で役立ちます。',
+    'この URL は現在の公開リクエストまたはローカル ngrok API から自動検出されています。Cloud Run、リバースプロキシ構成、ローカルトンネルで役立ちます。',
   publicAccessCopy: 'コピー',
   publicAccessCopied: 'Cursor Base URL をコピーしました',
   publicAccessCopyFailed: 'Cursor Base URL のコピーに失敗しました',
@@ -2413,10 +2420,11 @@ const KO: Translations = {
   publicAccessSource: '유효 URL 출처',
   publicAccessSourceConfig: '명시적 구성값',
   publicAccessSourceRequestOrigin: '현재 요청에서 자동 감지',
+  publicAccessSourceNgrokApi: '로컬 ngrok API에서 자동 감지',
   publicAccessSourceNone: '사용 가능한 공개 URL 없음',
   publicAccessCursorHint: 'Cursor에는 공개 HTTPS 루트 URL을 입력하고 `/v1`은 붙이지 마세요.',
   publicAccessAutoDetectedNote:
-    '이 URL은 현재 공개 요청에서 자동 추론된 값으로, Cloud Run 또는 리버스 프록시 배포에 유용합니다.',
+    '이 URL은 현재 공개 요청 또는 로컬 ngrok API에서 자동 감지된 값으로, Cloud Run, 리버스 프록시 배포, 로컬 터널에 유용합니다.',
   publicAccessCopy: '복사',
   publicAccessCopied: 'Cursor Base URL이 복사되었습니다',
   publicAccessCopyFailed: 'Cursor Base URL 복사에 실패했습니다',

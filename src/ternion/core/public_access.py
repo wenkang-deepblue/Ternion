@@ -7,10 +7,13 @@ import os
 from typing import Literal, TypedDict
 from urllib.parse import urlparse, urlunparse
 
+import httpx
+import structlog
+
 DeploymentEnvironment = Literal["local", "cloud_run"]
-# `ngrok_api` is reserved for Step 3 local tunnel auto-detection.
 PublicAccessDetectionMethod = Literal["request_origin", "manual_config", "none", "ngrok_api"]
-PublicAccessSource = Literal["config", "request_origin", "none"]
+PublicAccessSource = Literal["config", "request_origin", "none", "ngrok_api"]
+logger = structlog.get_logger(__name__)
 
 
 class ResolvedPublicAccessState(TypedDict):
@@ -27,7 +30,7 @@ def normalize_public_base_url(raw: str) -> str:
     """Return a canonical public base URL for Cursor configuration guidance.
 
     Args:
-        raw: Raw URL text provided by config, UI input, or future runtime detection.
+        raw: Raw URL text provided by config, UI input, or runtime detection.
 
     Returns:
         A normalized HTTP(S) origin/path without a trailing slash. If the raw URL
@@ -93,8 +96,10 @@ def build_public_origin(scheme: str, host: str) -> str:
     """Build a public origin from request-derived scheme/host components.
 
     Args:
-        scheme: Request scheme such as `https`.
-        host: Request host or forwarded host, optionally including a port.
+        scheme: Request scheme such as `https`. Only the first comma-separated
+            value is considered.
+        host: Request host or forwarded host, optionally including a port. Only
+            the first comma-separated value is considered.
 
     Returns:
         A normalized public base URL, or an empty string if the origin is empty,
@@ -121,32 +126,80 @@ def detect_deployment_environment() -> DeploymentEnvironment:
     return "cloud_run" if os.getenv("K_SERVICE") else "local"
 
 
-def resolve_effective_public_base_url(
-    config_value: str,
-    *,
-    request_origin: str = "",
-) -> tuple[str, PublicAccessSource]:
-    """Resolve the effective public base URL from currently available signals.
-
-    Step 1 establishes the canonical URL semantics only. Configured values take
-    precedence, while future request-origin detection can be threaded in later by
-    passing `request_origin` explicitly.
+def matches_backend_addr(addr: str, backend_port: int) -> bool:
+    """Return whether an ngrok tunnel target matches the configured backend port.
 
     Args:
-        config_value: Configured public base URL candidate.
-        request_origin: Optional runtime-detected origin candidate.
+        addr: Raw tunnel target address from the ngrok local API.
+        backend_port: Configured Ternion backend port.
 
     Returns:
-        A tuple of `(effective_url, source)` where `source` indicates whether the
-        resolved value came from config, request-origin detection, or no signal.
+        True when the address targets the local backend port through a supported
+        localhost-style address. False otherwise.
     """
-    configured = normalize_public_base_url(config_value)
-    if configured:
-        return configured, "config"
+    normalized = str(addr or "").strip().lower().rstrip("/")
+    if not normalized:
+        return False
 
-    detected = normalize_public_base_url(request_origin)
-    if detected:
-        return detected, "request_origin"
+    if normalized == str(backend_port):
+        return True
+
+    if "://" not in normalized:
+        normalized = f"http://{normalized}"
+
+    parsed = urlparse(normalized)
+    hostname = str(parsed.hostname or "").strip().lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return hostname in {"127.0.0.1", "localhost", "0.0.0.0"} and port == backend_port
+
+
+def detect_ngrok_public_base_url(backend_port: int) -> tuple[str, PublicAccessDetectionMethod]:
+    """Best-effort detect an ngrok public base URL for the backend port.
+
+    Args:
+        backend_port: Configured Ternion backend port.
+
+    Returns:
+        A tuple of `(public_base_url, detection_method)`. Returns an empty URL
+        with `none` when ngrok is unavailable, malformed, or no matching HTTPS
+        tunnel targets the backend port.
+    """
+    for api_base in ("http://127.0.0.1:4040", "http://localhost:4040"):
+        try:
+            response = httpx.get(f"{api_base}/api/tunnels", timeout=1.0)
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            logger.debug("ngrok_probe_failed", api_base=api_base, error=str(exc))
+            continue
+
+        if not isinstance(payload, dict):
+            logger.debug("ngrok_probe_invalid_payload", api_base=api_base, payload_type=type(payload).__name__)
+            continue
+
+        tunnels = payload.get("tunnels", [])
+        if not isinstance(tunnels, list):
+            logger.debug("ngrok_probe_invalid_tunnels", api_base=api_base, tunnels_type=type(tunnels).__name__)
+            continue
+
+        for tunnel in tunnels:
+            if not isinstance(tunnel, dict):
+                continue
+            if str(tunnel.get("proto") or "").strip().lower() != "https":
+                continue
+
+            config = tunnel.get("config") or {}
+            if not isinstance(config, dict):
+                continue
+            if not matches_backend_addr(str(config.get("addr") or ""), backend_port):
+                continue
+
+            public_url = normalize_public_base_url(str(tunnel.get("public_url") or ""))
+            if public_url:
+                return public_url, "ngrok_api"
 
     return "", "none"
 
@@ -156,40 +209,69 @@ def resolve_public_access_state(
     *,
     request_origin: str = "",
     deployment_environment: DeploymentEnvironment | None = None,
+    backend_port: int = 9110,
 ) -> ResolvedPublicAccessState:
     """Resolve runtime public-access state for the Control Panel.
+
+    Priority depends on deployment environment. Cloud Run trusts the live public
+    request origin over saved config because the effective service URL should
+    reflect the current inbound endpoint. Local or tunnel-based deployments
+    prefer a live public request origin, then best-effort ngrok detection, and
+    finally fall back to explicit config.
 
     Args:
         config_value: Configured public base URL candidate.
         request_origin: Optional runtime-detected origin candidate.
         deployment_environment: Optional explicit deployment environment. When
             omitted, the current process environment is detected automatically.
+        backend_port: Configured backend port used for ngrok tunnel matching in
+            local deployments.
 
     Returns:
         A structured runtime state containing deployment environment, detection
-        method, detected public URL, and effective public URL.
+        method, detected public URL, effective public URL, and effective source.
     """
+    resolved_environment = deployment_environment or detect_deployment_environment()
     configured = normalize_public_base_url(config_value)
     detected_public_base_url = normalize_public_base_url(request_origin)
-    if configured:
-        effective_public_base_url = configured
-        effective_source: PublicAccessSource = "config"
-    elif detected_public_base_url:
-        effective_public_base_url = detected_public_base_url
-        effective_source = "request_origin"
+
+    if resolved_environment == "cloud_run":
+        if detected_public_base_url:
+            effective_public_base_url = detected_public_base_url
+            effective_source: PublicAccessSource = "request_origin"
+        elif configured:
+            effective_public_base_url = configured
+            effective_source = "config"
+        else:
+            effective_public_base_url = ""
+            effective_source = "none"
     else:
-        effective_public_base_url = ""
-        effective_source = "none"
+        if detected_public_base_url:
+            effective_public_base_url = detected_public_base_url
+            effective_source = "request_origin"
+        else:
+            detected_public_base_url, _ = detect_ngrok_public_base_url(backend_port)
+            if detected_public_base_url:
+                effective_public_base_url = detected_public_base_url
+                effective_source = "ngrok_api"
+            elif configured:
+                effective_public_base_url = configured
+                effective_source = "config"
+            else:
+                effective_public_base_url = ""
+                effective_source = "none"
 
     if effective_source == "config":
         detection_method: PublicAccessDetectionMethod = "manual_config"
-    elif detected_public_base_url:
+    elif effective_source == "request_origin":
         detection_method = "request_origin"
+    elif effective_source == "ngrok_api":
+        detection_method = "ngrok_api"
     else:
         detection_method = "none"
 
     return {
-        "deployment_environment": deployment_environment or detect_deployment_environment(),
+        "deployment_environment": resolved_environment,
         "detection_method": detection_method,
         "detected_public_base_url": detected_public_base_url,
         "effective_public_base_url": effective_public_base_url,

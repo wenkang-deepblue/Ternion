@@ -2,16 +2,19 @@
 
 import json
 from pathlib import Path
+from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 
 from ternion.core.config_store import ConfigStore, UserConfig
 from ternion.core.public_access import (
     build_public_origin,
     detect_deployment_environment,
+    detect_ngrok_public_base_url,
     is_local_origin,
+    matches_backend_addr,
     normalize_public_base_url,
-    resolve_effective_public_base_url,
     resolve_public_access_state,
 )
 
@@ -56,27 +59,6 @@ def test_build_public_origin_handles_public_and_local_inputs() -> None:
     assert build_public_origin("", "service.run.app") == ""
 
 
-def test_resolve_effective_public_base_url_prefers_config_value() -> None:
-    """Configured public URLs should win over any later runtime detection signal."""
-    assert resolve_effective_public_base_url(
-        "https://configured.example/v1",
-        request_origin="https://detected.example",
-    ) == ("https://configured.example", "config")
-
-
-def test_resolve_effective_public_base_url_falls_back_to_request_origin() -> None:
-    """Runtime-detected origins should be accepted when config is empty."""
-    assert resolve_effective_public_base_url(
-        "",
-        request_origin="https://detected.example/v1",
-    ) == ("https://detected.example", "request_origin")
-
-
-def test_resolve_effective_public_base_url_returns_none_source_without_signal() -> None:
-    """Missing signals should resolve to an empty effective URL."""
-    assert resolve_effective_public_base_url("") == ("", "none")
-
-
 def test_detect_deployment_environment_defaults_to_local(monkeypatch: pytest.MonkeyPatch) -> None:
     """Deployment detection should default to local outside Cloud Run."""
     monkeypatch.delenv("K_SERVICE", raising=False)
@@ -99,48 +81,257 @@ def test_detect_deployment_environment_recognizes_cloud_run(
     assert detect_deployment_environment() == "cloud_run"
 
 
-def test_resolve_public_access_state_marks_manual_config_effective_source() -> None:
-    """Configured URLs should be marked as the effective manual-config source."""
-    assert resolve_public_access_state(
-        "https://configured.example/v1",
-        request_origin="https://detected.example",
-        deployment_environment="local",
-    ) == {
-        "deployment_environment": "local",
-        "detection_method": "manual_config",
-        "detected_public_base_url": "https://detected.example",
-        "effective_public_base_url": "https://configured.example",
-        "effective_source": "config",
-    }
+def test_matches_backend_addr_accepts_supported_local_targets() -> None:
+    """ngrok tunnel targets should match the local backend port across common forms."""
+    assert matches_backend_addr("http://127.0.0.1:9110", 9110) is True
+    assert matches_backend_addr("https://localhost:9110", 9110) is True
+    assert matches_backend_addr("localhost:9110", 9110) is True
+    assert matches_backend_addr("0.0.0.0:9110", 9110) is True
+    assert matches_backend_addr("9110", 9110) is True
 
 
-def test_resolve_public_access_state_marks_request_origin_detection() -> None:
-    """Detected request origins should populate the runtime state when config is empty."""
-    assert resolve_public_access_state(
-        "",
-        request_origin="https://detected.example/v1",
-        deployment_environment="local",
-    ) == {
-        "deployment_environment": "local",
-        "detection_method": "request_origin",
-        "detected_public_base_url": "https://detected.example",
-        "effective_public_base_url": "https://detected.example",
-        "effective_source": "request_origin",
+def test_matches_backend_addr_rejects_unrelated_targets() -> None:
+    """Only localhost-style addresses for the configured backend port should match."""
+    assert matches_backend_addr("http://127.0.0.1:9120", 9110) is False
+    assert matches_backend_addr("https://example.com:9110", 9110) is False
+    assert matches_backend_addr("", 9110) is False
+
+
+def test_detect_ngrok_public_base_url_prefers_matching_https_tunnel() -> None:
+    """ngrok detection should return the matching HTTPS tunnel for the backend port."""
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "tunnels": [
+            {
+                "proto": "http",
+                "public_url": "http://ignored.ngrok.app",
+                "config": {"addr": "http://127.0.0.1:9110"},
+            },
+            {
+                "proto": "https",
+                "public_url": "https://ternion.ngrok.app/v1",
+                "config": {"addr": "http://127.0.0.1:9110"},
+            },
+        ]
     }
+
+    with patch("ternion.core.public_access.httpx.get", return_value=response) as mock_get:
+        assert detect_ngrok_public_base_url(9110) == ("https://ternion.ngrok.app", "ngrok_api")
+
+    mock_get.assert_called_once_with("http://127.0.0.1:4040/api/tunnels", timeout=1.0)
+
+
+def test_detect_ngrok_public_base_url_falls_back_to_localhost_probe() -> None:
+    """ngrok detection should try localhost when the default loopback probe fails."""
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "tunnels": [
+            {
+                "proto": "https",
+                "public_url": "https://localhost-probe.ngrok.app",
+                "config": {"addr": "localhost:9110"},
+            }
+        ]
+    }
+
+    with patch(
+        "ternion.core.public_access.httpx.get",
+        side_effect=[httpx.ConnectError("default probe failed"), response],
+    ) as mock_get:
+        assert detect_ngrok_public_base_url(9110) == (
+            "https://localhost-probe.ngrok.app",
+            "ngrok_api",
+        )
+
+    assert mock_get.call_count == 2
+
+
+def test_detect_ngrok_public_base_url_returns_none_without_matching_https_tunnel() -> None:
+    """ngrok detection should fail closed when no matching HTTPS tunnel exists."""
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "tunnels": [
+            {
+                "proto": "https",
+                "public_url": "https://other.ngrok.app",
+                "config": {"addr": "http://127.0.0.1:9120"},
+            }
+        ]
+    }
+
+    with patch("ternion.core.public_access.httpx.get", return_value=response):
+        assert detect_ngrok_public_base_url(9110) == ("", "none")
+
+
+def test_detect_ngrok_public_base_url_returns_none_when_ngrok_is_unavailable() -> None:
+    """ngrok detection should stay best-effort when both probes are unreachable."""
+    with patch(
+        "ternion.core.public_access.httpx.get",
+        side_effect=[
+            httpx.ConnectError("loopback probe failed"),
+            httpx.ConnectError("localhost probe failed"),
+        ],
+    ):
+        assert detect_ngrok_public_base_url(9110) == ("", "none")
+
+
+def test_detect_ngrok_public_base_url_ignores_non_mapping_payload() -> None:
+    """ngrok detection should ignore non-dict JSON payloads instead of raising."""
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.side_effect = [[{"proto": "https"}], {"tunnels": []}]
+
+    with patch("ternion.core.public_access.httpx.get", return_value=response):
+        assert detect_ngrok_public_base_url(9110) == ("", "none")
+
+
+def test_detect_ngrok_public_base_url_ignores_malformed_tunnels_shape() -> None:
+    """ngrok detection should ignore malformed tunnel collections."""
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.side_effect = [
+        {"tunnels": {"proto": "https"}},
+        {"tunnels": ["not-a-dict"]},
+    ]
+
+    with patch("ternion.core.public_access.httpx.get", return_value=response):
+        assert detect_ngrok_public_base_url(9110) == ("", "none")
+
+
+def test_resolve_public_access_state_local_request_origin_beats_config() -> None:
+    """In local mode, a live public request origin should beat saved config."""
+    with patch("ternion.core.public_access.detect_ngrok_public_base_url") as mock_detect:
+        assert resolve_public_access_state(
+            "https://configured.example/v1",
+            request_origin="https://detected.example",
+            deployment_environment="local",
+        ) == {
+            "deployment_environment": "local",
+            "detection_method": "request_origin",
+            "detected_public_base_url": "https://detected.example",
+            "effective_public_base_url": "https://detected.example",
+            "effective_source": "request_origin",
+        }
+
+    mock_detect.assert_not_called()
+
+
+def test_resolve_public_access_state_local_uses_ngrok_detection_before_config() -> None:
+    """In local mode, ngrok detection should beat manual config when origin is unavailable."""
+    with patch(
+        "ternion.core.public_access.detect_ngrok_public_base_url",
+        return_value=("https://ternion.ngrok.app", "ngrok_api"),
+    ) as mock_detect:
+        assert resolve_public_access_state(
+            "https://configured.example/v1",
+            deployment_environment="local",
+            backend_port=9110,
+        ) == {
+            "deployment_environment": "local",
+            "detection_method": "ngrok_api",
+            "detected_public_base_url": "https://ternion.ngrok.app",
+            "effective_public_base_url": "https://ternion.ngrok.app",
+            "effective_source": "ngrok_api",
+        }
+
+    mock_detect.assert_called_once_with(9110)
+
+
+def test_resolve_public_access_state_local_falls_back_to_config_when_ngrok_missing() -> None:
+    """In local mode, config should still be used when ngrok auto-discovery fails."""
+    with patch(
+        "ternion.core.public_access.detect_ngrok_public_base_url",
+        return_value=("", "none"),
+    ) as mock_detect:
+        assert resolve_public_access_state(
+            "https://configured.example/v1",
+            deployment_environment="local",
+            backend_port=9110,
+        ) == {
+            "deployment_environment": "local",
+            "detection_method": "manual_config",
+            "detected_public_base_url": "",
+            "effective_public_base_url": "https://configured.example",
+            "effective_source": "config",
+        }
+
+    mock_detect.assert_called_once_with(9110)
+
+
+def test_resolve_public_access_state_cloud_run_prefers_request_origin() -> None:
+    """Cloud Run should prioritize the current public request origin over saved config."""
+    with patch("ternion.core.public_access.detect_ngrok_public_base_url") as mock_detect:
+        assert resolve_public_access_state(
+            "https://configured.example",
+            request_origin="https://service-abc.run.app/v1",
+            deployment_environment="cloud_run",
+        ) == {
+            "deployment_environment": "cloud_run",
+            "detection_method": "request_origin",
+            "detected_public_base_url": "https://service-abc.run.app",
+            "effective_public_base_url": "https://service-abc.run.app",
+            "effective_source": "request_origin",
+        }
+
+    mock_detect.assert_not_called()
+
+
+def test_resolve_public_access_state_cloud_run_falls_back_to_config_when_origin_missing() -> None:
+    """Cloud Run should still use saved config when no public request origin is available."""
+    with patch("ternion.core.public_access.detect_ngrok_public_base_url") as mock_detect:
+        assert resolve_public_access_state(
+            "https://configured.example/v1",
+            deployment_environment="cloud_run",
+        ) == {
+            "deployment_environment": "cloud_run",
+            "detection_method": "manual_config",
+            "detected_public_base_url": "",
+            "effective_public_base_url": "https://configured.example",
+            "effective_source": "config",
+        }
+
+    mock_detect.assert_not_called()
+
+
+def test_resolve_public_access_state_cloud_run_returns_none_without_any_signal() -> None:
+    """Cloud Run should resolve to none when neither origin nor config is available."""
+    with patch("ternion.core.public_access.detect_ngrok_public_base_url") as mock_detect:
+        assert resolve_public_access_state(
+            "",
+            deployment_environment="cloud_run",
+        ) == {
+            "deployment_environment": "cloud_run",
+            "detection_method": "none",
+            "detected_public_base_url": "",
+            "effective_public_base_url": "",
+            "effective_source": "none",
+        }
+
+    mock_detect.assert_not_called()
 
 
 def test_resolve_public_access_state_returns_none_without_any_signal() -> None:
     """Runtime state should stay empty when neither config nor request-origin exists."""
-    assert resolve_public_access_state(
-        "",
-        deployment_environment="local",
-    ) == {
-        "deployment_environment": "local",
-        "detection_method": "none",
-        "detected_public_base_url": "",
-        "effective_public_base_url": "",
-        "effective_source": "none",
-    }
+    with patch(
+        "ternion.core.public_access.detect_ngrok_public_base_url",
+        return_value=("", "none"),
+    ) as mock_detect:
+        assert resolve_public_access_state(
+            "",
+            deployment_environment="local",
+            backend_port=9110,
+        ) == {
+            "deployment_environment": "local",
+            "detection_method": "none",
+            "detected_public_base_url": "",
+            "effective_public_base_url": "",
+            "effective_source": "none",
+        }
+
+    mock_detect.assert_called_once_with(9110)
 
 
 def test_config_store_save_canonicalizes_public_access_values(tmp_path: Path) -> None:

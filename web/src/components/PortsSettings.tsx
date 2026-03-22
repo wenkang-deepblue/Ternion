@@ -63,6 +63,9 @@ function getEffectiveSourceLabel(t: Translations, source: PublicAccessStatus['ef
   if (source === 'request_origin') {
     return t.publicAccessSourceRequestOrigin;
   }
+  if (source === 'ngrok_api') {
+    return t.publicAccessSourceNgrokApi;
+  }
   return t.publicAccessSourceNone;
 }
 
@@ -426,7 +429,7 @@ export function PortsSettings({
                 <p className="text-sm text-slate-700 dark:text-slate-200">
                   {t.publicAccessCursorHint}
                 </p>
-                {publicAccess.effective_source === 'request_origin' && (
+                {['request_origin', 'ngrok_api'].includes(publicAccess.effective_source) && (
                   <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
                     {t.publicAccessAutoDetectedNote}
                   </p>
