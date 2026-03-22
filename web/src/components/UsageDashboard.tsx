@@ -416,7 +416,7 @@ export function UsageDashboard({ t, isDarkMode = false, onConfigUpdate }: UsageD
         </div>
         <div className="card p-4">
           <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-            <img src={openaiLogo} alt={t.providerOpenai} className="w-5 h-5" />
+            <img src={openaiLogo} alt={t.providerOpenai} className="w-5 h-5 dark:invert" />
             <span>{usage.month} {t.providerOpenai}</span>
           </div>
           <div className="text-xl font-bold mt-1 text-slate-900 dark:text-white">

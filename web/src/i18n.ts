@@ -225,6 +225,7 @@ export interface Translations {
   publicAccessSourceNgrokApi: string;
   publicAccessSourceNone: string;
   publicAccessCursorHint: string;
+  publicAccessCursorGuide: string;
   publicAccessAutoDetectedNote: string;
   publicAccessCopy: string;
   publicAccessCopied: string;
@@ -498,6 +499,8 @@ const EN: Translations = {
   publicAccessSourceNgrokApi: 'Detected from local ngrok API',
   publicAccessSourceNone: 'No public URL available',
   publicAccessCursorHint: 'Use the public HTTPS root URL in Cursor. Do not append `/v1`.',
+  publicAccessCursorGuide:
+    'Please copy the URL above to Cursor --> Settings --> Models --> API Keys --> Override OpenAI Base URL, switch it on, open "OpenAI API Key" and enter any characters. Turn on "Add Custom Model" in "Models" and enter "ternion-team" to start using ternion!',
   publicAccessAutoDetectedNote:
     'This URL was auto-detected from the current public request or the local ngrok API, which is useful for Cloud Run, reverse proxy, and local tunnel deployments.',
   publicAccessCopy: 'Copy',
@@ -837,6 +840,8 @@ const ZH: Translations = {
   publicAccessSourceNgrokApi: '根据本机 ngrok API 自动发现',
   publicAccessSourceNone: '当前无可用公网 URL',
   publicAccessCursorHint: '在 Cursor 中填写公网 HTTPS 根 URL，不要追加 `/v1`。',
+  publicAccessCursorGuide:
+    '请将上面的URL复制到Cursor --> Settings --> Models --> API Keys --> Override OpenAI Base URL下方的输入框中，并打开开关，打开"OpenAI API Key"并填入任意字符。在“Models”中点击“View All Models” --> "Add Custom Model"，填写“ternion-team”，即可开始使用ternion!',
   publicAccessAutoDetectedNote:
     '当前 URL 是根据本次公网请求或本机 ngrok API 自动检测得到的，适用于 Cloud Run、反向代理或本地隧道部署。',
   publicAccessCopy: '复制',
@@ -1177,6 +1182,8 @@ const ES: Translations = {
   publicAccessSourceNgrokApi: 'Detectada desde la API local de ngrok',
   publicAccessSourceNone: 'No hay URL pública disponible',
   publicAccessCursorHint: 'Use la URL raíz pública HTTPS en Cursor. No agregue `/v1`.',
+  publicAccessCursorGuide:
+    'Copie la URL anterior en Cursor --> Settings --> Models --> API Keys --> Override OpenAI Base URL, actívelo, abra "OpenAI API Key" e introduzca cualquier carácter. Active "Add Custom Model" en "Models" e introduzca "ternion-team" para empezar a usar ternion.',
   publicAccessAutoDetectedNote:
     'Esta URL se detectó automáticamente a partir de la solicitud pública actual o de la API local de ngrok, lo que resulta útil para despliegues en Cloud Run, detrás de un proxy inverso o con túneles locales.',
   publicAccessCopy: 'Copiar',
@@ -1520,6 +1527,8 @@ const FR: Translations = {
   publicAccessSourceNgrokApi: 'Détectée depuis l’API locale ngrok',
   publicAccessSourceNone: 'Aucune URL publique disponible',
   publicAccessCursorHint: 'Utilisez l’URL racine HTTPS publique dans Cursor. N’ajoutez pas `/v1`.',
+  publicAccessCursorGuide:
+    'Veuillez copier l\'URL ci-dessus dans Cursor --> Settings --> Models --> API Keys --> Override OpenAI Base URL, activez-le, ouvrez "OpenAI API Key" et saisissez n\'importe quel caractère. Activez "Add Custom Model" dans "Models" et saisissez "ternion-team" pour commencer à utiliser ternion !',
   publicAccessAutoDetectedNote:
     'Cette URL a été détectée automatiquement à partir de la requête publique actuelle ou de l’API locale ngrok, ce qui est utile pour Cloud Run, les déploiements derrière un proxy inverse et les tunnels locaux.',
   publicAccessCopy: 'Copier',
@@ -1863,6 +1872,8 @@ const DE: Translations = {
   publicAccessSourceNgrokApi: 'Aus der lokalen ngrok-API erkannt',
   publicAccessSourceNone: 'Keine öffentliche URL verfügbar',
   publicAccessCursorHint: 'Verwenden Sie in Cursor die öffentliche HTTPS-Stamm-URL. Fügen Sie kein `/v1` an.',
+  publicAccessCursorGuide:
+    'Bitte kopieren Sie die obige URL in Cursor --> Settings --> Models --> API Keys --> Override OpenAI Base URL, aktivieren Sie es, öffnen Sie "OpenAI API Key" und geben Sie beliebige Zeichen ein. Aktivieren Sie "Add Custom Model" unter "Models" und geben Sie "ternion-team" ein, um ternion zu nutzen!',
   publicAccessAutoDetectedNote:
     'Diese URL wurde automatisch aus der aktuellen öffentlichen Anfrage oder der lokalen ngrok-API erkannt und ist hilfreich für Cloud Run, Deployments hinter einem Reverse Proxy sowie lokale Tunnel.',
   publicAccessCopy: 'Kopieren',
@@ -2206,6 +2217,8 @@ const JA: Translations = {
   publicAccessSourceNgrokApi: 'ローカル ngrok API から自動検出',
   publicAccessSourceNone: '利用可能な公開 URL はありません',
   publicAccessCursorHint: 'Cursor には公開 HTTPS のルート URL を入力し、`/v1` は付けないでください。',
+  publicAccessCursorGuide:
+    '上のURLを Cursor --> Settings --> Models --> API Keys --> Override OpenAI Base URL の下の入力ボックスにコピーしてスイッチをオンにし、「OpenAI API Key」を開いて任意の文字を入力してください。「Models」で「View All Models」をクリックして「Add Custom Model」をオンにし、「ternion-team」と入力すると、ternionの使用を開始できます！',
   publicAccessAutoDetectedNote:
     'この URL は現在の公開リクエストまたはローカル ngrok API から自動検出されています。Cloud Run、リバースプロキシ構成、ローカルトンネルで役立ちます。',
   publicAccessCopy: 'コピー',
@@ -2549,6 +2562,8 @@ const KO: Translations = {
   publicAccessSourceNgrokApi: '로컬 ngrok API에서 자동 감지',
   publicAccessSourceNone: '사용 가능한 공개 URL 없음',
   publicAccessCursorHint: 'Cursor에는 공개 HTTPS 루트 URL을 입력하고 `/v1`은 붙이지 마세요.',
+  publicAccessCursorGuide:
+    '위의 URL을 Cursor --> Settings --> Models --> API Keys --> Override OpenAI Base URL 아래의 입력 상자에 복사한 후 스위치를 켜고, "OpenAI API Key"를 열어 임의의 문자를 입력하세요. "Models"에서 "View All Models"를 클릭하고 "Add Custom Model"을 켠 다음 "ternion-team"을 입력하면 ternion 사용을 시작할 수 있습니다!',
   publicAccessAutoDetectedNote:
     '이 URL은 현재 공개 요청 또는 로컬 ngrok API에서 자동 감지된 값으로, Cloud Run, 리버스 프록시 배포, 로컬 터널에 유용합니다.',
   publicAccessCopy: '복사',

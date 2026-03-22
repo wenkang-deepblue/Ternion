@@ -19,6 +19,7 @@ import portIconLight from '../assets/icons/port_light_mode_50dp.svg';
 import portIconDark from '../assets/icons/port_dark_mode_50dp.svg';
 import warningIconLight from '../assets/icons/warning_light_mode_50dp.svg';
 import warningIconDark from '../assets/icons/warning_dark_mode_50dp.svg';
+import copyIcon from '../assets/icons/copy_icon.svg';
 
 interface PortsSettingsProps {
   t: Translations;
@@ -291,87 +292,97 @@ export function PortsSettings({
           {portsReady && !portsLoadErrorCode && (
             <>
               <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-5 dark:border-slate-700 dark:bg-slate-900/40">
-                <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                  {t.portsCurrentBackend}
-                </p>
-                <p className="mt-2 text-2xl font-bold" style={{ color: '#4083f2' }}>
-                  {originalPorts.backend}
-                </p>
-                <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
-                  http://localhost:{originalPorts.backend}
-                </p>
-              </div>
-
-              <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
-                <p className="text-amber-800 dark:text-amber-200 text-sm font-medium flex items-center justify-center gap-2">
-                  <img src={isDarkMode ? warningIconDark : warningIconLight} alt="" className="w-6 h-6" />
-                  {t.portsWarning}
-                </p>
-              </div>
-
-              {isCloudRun ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-5 dark:border-slate-700 dark:bg-slate-900/40">
-                  <h3 className="text-base font-semibold text-slate-900 dark:text-white">
-                    {t.portsAdvancedSettings}
-                  </h3>
-                  <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">
-                    {t.portsCloudRunManaged}
+                <div>
+                  <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                    {t.portsCurrentBackend}
                   </p>
+                  <p className="mt-2 text-2xl font-bold" style={{ color: '#4083f2' }}>
+                    {originalPorts.backend}
+                  </p>
+                  <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
+                    http://localhost:{originalPorts.backend}
+                  </p>
+
+                  <div className="mx-auto mt-4 w-2/3 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                    <p className="text-amber-800 dark:text-amber-200 text-sm font-medium flex items-center justify-center gap-2">
+                      <img src={isDarkMode ? warningIconDark : warningIconLight} alt="" className="w-6 h-6 shrink-0" />
+                      {t.portsWarning}
+                    </p>
+                  </div>
                 </div>
-              ) : (
-                <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-5 dark:border-slate-700 dark:bg-slate-900/40">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div>
-                      <h3 className="text-base font-semibold text-slate-900 dark:text-white">
-                        {t.portsAdvancedSettings}
-                      </h3>
-                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                        {t.portsAdvancedDescription}
-                      </p>
-                    </div>
+
+                {isCloudRun ? (
+                  <div className="mt-6">
+                    <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+                      {t.portsAdvancedSettings}
+                    </h3>
+                    <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">
+                      {t.portsCloudRunManaged}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-6">
                     <button
                       type="button"
-                      className="btn btn-secondary text-xs whitespace-nowrap"
+                      className="flex items-start text-left w-full group focus:outline-none -ml-[17px]"
                       onClick={() => setShowAdvancedPorts(prev => !prev)}
                     >
-                      {showAdvancedPorts ? t.portsHideAdvancedSettings : t.portsShowAdvancedSettings}
-                    </button>
-                  </div>
-
-                  {showAdvancedPorts && (
-                    <div className="mt-5 space-y-4">
+                      <div className="mt-1 shrink-0 pt-[2px] w-[14px] flex justify-center">
+                        {showAdvancedPorts ? (
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="#4083f2">
+                            <polygon points="4,7 20,7 12,19" />
+                          </svg>
+                        ) : (
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="#4083f2">
+                            <polygon points="7,4 19,12 7,20" />
+                          </svg>
+                        )}
+                      </div>
                       <div>
-                        <label className="label">{t.portsBackend}</label>
-                        <div className="input-rainbow-glow">
-                          <input
-                            type="number"
-                            className="input"
-                            style={{ width: '100%' }}
-                            value={ports.backend}
-                            onChange={(e) => handlePortChange(e.target.value)}
-                            min="1024"
-                            max="65535"
-                          />
-                        </div>
-                        <p className="text-sm text-slate-500 mt-1">
-                          http://localhost:{ports.backend}
+                        <h3 className="text-base font-semibold text-slate-900 dark:text-white group-hover:text-[#4083f2] transition-colors">
+                          {t.portsAdvancedSettings}
+                        </h3>
+                        <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                          {t.portsAdvancedDescription}
                         </p>
                       </div>
+                    </button>
 
-                      {hasPortChanges && (
-                        <button
-                          style={{ minWidth: '100px', height: '46px' }}
-                          className="btn btn-primary text-xs whitespace-nowrap"
-                          onClick={handleSave}
-                          disabled={savingPorts}
-                        >
-                          {savingPorts ? t.saving : t.saveChanges}
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+                    {showAdvancedPorts && (
+                      <div className="mt-5 space-y-4">
+                        <div>
+                          <label className="label">{t.portsBackend}</label>
+                          <div className="input-rainbow-glow">
+                            <input
+                              type="number"
+                              className="input"
+                              style={{ width: '100%' }}
+                              value={ports.backend}
+                              onChange={(e) => handlePortChange(e.target.value)}
+                              min="1024"
+                              max="65535"
+                            />
+                          </div>
+                          <p className="text-sm text-slate-500 mt-1">
+                            http://localhost:{ports.backend}
+                          </p>
+                        </div>
+
+                        {hasPortChanges && (
+                          <button
+                            style={{ minWidth: '100px', height: '46px' }}
+                            className="btn btn-primary text-xs whitespace-nowrap"
+                            onClick={handleSave}
+                            disabled={savingPorts}
+                          >
+                            {savingPorts ? t.saving : t.saveChanges}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>
@@ -413,23 +424,25 @@ export function PortsSettings({
                 />
 
                 <div>
-                  <div className="flex items-center justify-between gap-3">
-                    <label className="label">{t.publicAccessCursorUrl}</label>
+                  <div className="flex items-center gap-3 mb-2">
+                    <label className="label mb-0!">{t.publicAccessCursorUrl}</label>
+                    <span className="text-sm font-normal text-slate-500">{t.publicAccessCursorHint}</span>
+                  </div>
+                  <div className="relative rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 pr-12 font-mono text-sm break-all text-slate-700 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-200">
+                    {cursorBaseUrl || t.notConfigured}
                     {cursorBaseUrl && (
                       <button
                         type="button"
-                        className="btn btn-secondary text-xs whitespace-nowrap"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 transition-colors"
                         onClick={handleCopyCursorUrl}
+                        title={t.publicAccessCopy}
                       >
-                        {t.publicAccessCopy}
+                        <img src={copyIcon} alt="Copy" className="w-4 h-4 dark:invert opacity-70 hover:opacity-100" />
                       </button>
                     )}
                   </div>
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm break-all text-slate-700 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-200">
-                    {cursorBaseUrl || t.notConfigured}
-                  </div>
-                  <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">
-                    {t.publicAccessCursorHint}
+                  <p className="mt-2 text-sm text-[#FF9800]">
+                    {t.publicAccessCursorGuide}
                   </p>
                   {showAutoDetectedNote && (
                     <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
