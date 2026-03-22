@@ -6,6 +6,11 @@ import { ApiError } from '../api/client';
 import type { PortsConfig, PublicAccessStatus } from '../api/client';
 import { getTranslations } from '../i18n';
 import { PortsSettings } from './PortsSettings';
+
+const REPOSITORY_URL = 'https://github.com/ternion-ai/ternion';
+const LOCAL_TUNNEL_DOC_URL = `${REPOSITORY_URL}#public-url-options`;
+const CLOUD_RUN_DOC_URL = `${REPOSITORY_URL}#cloud-run-deployment`;
+const GITHUB_DOCS_URL = `${REPOSITORY_URL}/tree/main/docs`;
 import { ToastContext } from './toastContext';
 
 const mockApi = vi.hoisted(() => ({
@@ -54,8 +59,10 @@ function renderPortsSettings(overrides?: {
   const t = getTranslations('zh');
   const showToast = vi.fn();
   const onPublicAccessUpdate = vi.fn();
-  const publicAccess =
-    overrides && 'publicAccess' in overrides ? overrides.publicAccess : buildPublicAccess();
+  const publicAccess: PublicAccessStatus | null =
+    overrides && 'publicAccess' in overrides
+      ? (overrides.publicAccess ?? null)
+      : buildPublicAccess();
 
   const utils = render(
     <ToastContext.Provider value={{ showToast }}>
@@ -163,6 +170,7 @@ describe('PortsSettings', () => {
     });
 
     expect(screen.queryByText(t.publicAccessManualFallbackTitle)).not.toBeInTheDocument();
+    expect(screen.queryByText(t.publicAccessDocsTitle)).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText(t.publicAccessUrlPlaceholder)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: t.saveChanges })).not.toBeInTheDocument();
@@ -187,8 +195,58 @@ describe('PortsSettings', () => {
     expect(screen.getByText(t.publicAccessManualFallbackDescription)).toBeInTheDocument();
     expect(screen.getByText(t.publicAccessManualFallbackHint)).toBeInTheDocument();
     expect(screen.getByText(t.publicAccessDetectedPublicUrlUnavailable)).toBeInTheDocument();
+    expect(screen.getByText(t.publicAccessDocsTitle)).toBeInTheDocument();
+    expect(screen.getByText(t.publicAccessDocsDescription)).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: t.publicAccessDocsLocalTunnel })
+    ).toHaveAttribute('href', LOCAL_TUNNEL_DOC_URL);
+    expect(
+      screen.getByRole('link', { name: t.publicAccessDocsLocalTunnel })
+    ).toHaveAttribute('target', '_blank');
+    expect(
+      screen.getByRole('link', { name: t.publicAccessDocsLocalTunnel })
+    ).toHaveAttribute('rel', 'noreferrer');
+    expect(
+      screen.getByRole('link', { name: t.publicAccessDocsCloudRun })
+    ).toHaveAttribute('href', CLOUD_RUN_DOC_URL);
+    expect(screen.getByRole('link', { name: t.publicAccessDocsGitHub })).toHaveAttribute(
+      'href',
+      GITHUB_DOCS_URL
+    );
     expect(screen.getByRole('combobox')).toBeInTheDocument();
     expect(screen.getByPlaceholderText(t.publicAccessUrlPlaceholder)).toBeInTheDocument();
+  });
+
+  it('shows the documentation entry points when Cloud Run has no detected public URL yet', async () => {
+    const { t } = renderPortsSettings({
+      publicAccess: buildPublicAccess({
+        mode: 'cloud_run',
+        deployment_environment: 'cloud_run',
+        detected_public_base_url: '',
+        configured_public_base_url: '',
+        effective_public_base_url: '',
+        effective_source: 'none',
+        cursor_override_base_url: '',
+        configured: false,
+      }),
+    });
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getAllByText(t.publicAccessDeploymentEnvironmentCloudRun)).not.toHaveLength(0);
+    expect(screen.getByText(t.publicAccessDetectedPublicUrlUnavailable)).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: t.publicAccessDocsLocalTunnel })
+    ).toHaveAttribute('href', LOCAL_TUNNEL_DOC_URL);
+    expect(
+      screen.getByRole('link', { name: t.publicAccessDocsCloudRun })
+    ).toHaveAttribute('href', CLOUD_RUN_DOC_URL);
+    expect(screen.getByRole('link', { name: t.publicAccessDocsGitHub })).toHaveAttribute(
+      'href',
+      GITHUB_DOCS_URL
+    );
   });
 
   it('shows loading first and then renders an unavailable warning when port loading fails', async () => {
@@ -308,6 +366,7 @@ describe('PortsSettings', () => {
     expect(screen.getByText(t.publicAccessUnavailable)).toBeInTheDocument();
     expect(screen.getByText(t.portsCurrentBackend)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: t.portsShowAdvancedSettings })).toBeInTheDocument();
+    expect(screen.queryByText(t.publicAccessDocsTitle)).not.toBeInTheDocument();
   });
 
   it('saves the public access form and propagates the updated state', async () => {

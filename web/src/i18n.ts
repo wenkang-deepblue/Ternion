@@ -206,6 +206,11 @@ export interface Translations {
   publicAccessManualFallbackTitle: string;
   publicAccessManualFallbackDescription: string;
   publicAccessManualFallbackHint: string;
+  publicAccessDocsTitle: string;
+  publicAccessDocsDescription: string;
+  publicAccessDocsLocalTunnel: string;
+  publicAccessDocsCloudRun: string;
+  publicAccessDocsGitHub: string;
   publicAccessMode: string;
   publicAccessModeNone: string;
   publicAccessModeLocalTunnel: string;
@@ -473,6 +478,12 @@ const EN: Translations = {
     'If auto-detection is unavailable, you can store a public HTTPS URL here so it can still be displayed and copied on other devices.',
   publicAccessManualFallbackHint:
     'This does not start or configure any tunnel. It only saves a fallback value for display and copy.',
+  publicAccessDocsTitle: 'Public access guides',
+  publicAccessDocsDescription:
+    'If no public URL is detected yet, use these guides to set up a local tunnel, deploy on Cloud Run, or review the repository documentation.',
+  publicAccessDocsLocalTunnel: 'Local tunnel guide',
+  publicAccessDocsCloudRun: 'Cloud Run deployment guide',
+  publicAccessDocsGitHub: 'GitHub documentation',
   publicAccessMode: 'Deployment mode',
   publicAccessModeNone: 'None',
   publicAccessModeLocalTunnel: 'Local tunnel',
@@ -806,6 +817,12 @@ const ZH: Translations = {
     '如果当前无法自动检测到公网 URL，你可以在这里补充一个公网 HTTPS URL，便于在其他设备上继续展示和复制。',
   publicAccessManualFallbackHint:
     '这不会自动启动或配置任何 tunnel，只会保存一个用于展示和复制的 fallback 值。',
+  publicAccessDocsTitle: '公网接入文档入口',
+  publicAccessDocsDescription:
+    '如果当前还没有检测到公网 URL，可以通过下面的入口查看本地隧道、Cloud Run 部署方式，以及仓库文档。',
+  publicAccessDocsLocalTunnel: '本地隧道配置文档',
+  publicAccessDocsCloudRun: 'Cloud Run 部署文档',
+  publicAccessDocsGitHub: 'GitHub 文档',
   publicAccessMode: '部署方式',
   publicAccessModeNone: '未配置',
   publicAccessModeLocalTunnel: '本地隧道',
@@ -1140,6 +1157,12 @@ const ES: Translations = {
     'Si la detección automática no está disponible, puede guardar aquí una URL HTTPS pública para seguir mostrándola y copiándola en otros dispositivos.',
   publicAccessManualFallbackHint:
     'Esto no inicia ni configura ningún túnel. Solo guarda un valor de respaldo para mostrarlo y copiarlo.',
+  publicAccessDocsTitle: 'Guías de acceso público',
+  publicAccessDocsDescription:
+    'Si todavía no se detecta ninguna URL pública, use estas guías para configurar un túnel local, desplegar en Cloud Run o revisar la documentación del repositorio.',
+  publicAccessDocsLocalTunnel: 'Guía de túnel local',
+  publicAccessDocsCloudRun: 'Guía de despliegue en Cloud Run',
+  publicAccessDocsGitHub: 'Documentación de GitHub',
   publicAccessMode: 'Modo de despliegue',
   publicAccessModeNone: 'Ninguno',
   publicAccessModeLocalTunnel: 'Túnel local',
@@ -1477,6 +1500,12 @@ const FR: Translations = {
     'Si la détection automatique n’est pas disponible, vous pouvez enregistrer ici une URL HTTPS publique afin qu’elle puisse encore être affichée et copiée sur d’autres appareils.',
   publicAccessManualFallbackHint:
     'Cela ne démarre ni ne configure aucun tunnel. Cela enregistre seulement une valeur de secours pour l’affichage et la copie.',
+  publicAccessDocsTitle: 'Guides d’accès public',
+  publicAccessDocsDescription:
+    'Si aucune URL publique n’est encore détectée, utilisez ces guides pour configurer un tunnel local, déployer sur Cloud Run ou consulter la documentation du dépôt.',
+  publicAccessDocsLocalTunnel: 'Guide du tunnel local',
+  publicAccessDocsCloudRun: 'Guide de déploiement Cloud Run',
+  publicAccessDocsGitHub: 'Documentation GitHub',
   publicAccessMode: 'Mode de déploiement',
   publicAccessModeNone: 'Aucun',
   publicAccessModeLocalTunnel: 'Tunnel local',
@@ -1814,6 +1843,12 @@ const DE: Translations = {
     'Wenn keine automatische Erkennung verfügbar ist, können Sie hier eine öffentliche HTTPS-URL speichern, damit sie auf anderen Geräten weiterhin angezeigt und kopiert werden kann.',
   publicAccessManualFallbackHint:
     'Dadurch wird kein Tunnel gestartet oder konfiguriert. Es speichert nur einen Fallback-Wert zum Anzeigen und Kopieren.',
+  publicAccessDocsTitle: 'Anleitungen für öffentlichen Zugriff',
+  publicAccessDocsDescription:
+    'Wenn noch keine öffentliche URL erkannt wurde, verwenden Sie diese Anleitungen, um einen lokalen Tunnel einzurichten, auf Cloud Run bereitzustellen oder die Repository-Dokumentation zu lesen.',
+  publicAccessDocsLocalTunnel: 'Anleitung für lokalen Tunnel',
+  publicAccessDocsCloudRun: 'Cloud Run-Bereitstellungsanleitung',
+  publicAccessDocsGitHub: 'GitHub-Dokumentation',
   publicAccessMode: 'Bereitstellungsmodus',
   publicAccessModeNone: 'Keine',
   publicAccessModeLocalTunnel: 'Lokaler Tunnel',
@@ -2151,6 +2186,12 @@ const JA: Translations = {
     '現在公開 URL を自動検出できない場合は、他の端末でも表示・コピーできるように、ここで公開 HTTPS URL を補足できます。',
   publicAccessManualFallbackHint:
     'これは tunnel を自動起動または設定しません。表示とコピー用の fallback 値を保存するだけです。',
+  publicAccessDocsTitle: '公開アクセスのガイド',
+  publicAccessDocsDescription:
+    'まだ公開 URL が検出されていない場合は、これらのガイドからローカルトンネル設定、Cloud Run へのデプロイ、またはリポジトリ文書を確認できます。',
+  publicAccessDocsLocalTunnel: 'ローカルトンネル設定ガイド',
+  publicAccessDocsCloudRun: 'Cloud Run デプロイガイド',
+  publicAccessDocsGitHub: 'GitHub ドキュメント',
   publicAccessMode: 'デプロイ方式',
   publicAccessModeNone: 'なし',
   publicAccessModeLocalTunnel: 'ローカルトンネル',
@@ -2488,6 +2529,12 @@ const KO: Translations = {
     '현재 공개 URL을 자동으로 감지할 수 없다면, 다른 기기에서도 계속 표시하고 복사할 수 있도록 여기에서 공개 HTTPS URL을 보완할 수 있습니다.',
   publicAccessManualFallbackHint:
     '이 작업은 어떤 터널도 자동으로 시작하거나 구성하지 않습니다. 표시와 복사용 fallback 값만 저장합니다.',
+  publicAccessDocsTitle: '공개 액세스 가이드',
+  publicAccessDocsDescription:
+    '아직 공개 URL이 감지되지 않았다면 이 가이드를 통해 로컬 터널 설정, Cloud Run 배포, 또는 저장소 문서를 확인할 수 있습니다.',
+  publicAccessDocsLocalTunnel: '로컬 터널 가이드',
+  publicAccessDocsCloudRun: 'Cloud Run 배포 가이드',
+  publicAccessDocsGitHub: 'GitHub 문서',
   publicAccessMode: '배포 방식',
   publicAccessModeNone: '없음',
   publicAccessModeLocalTunnel: '로컬 터널',

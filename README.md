@@ -214,6 +214,22 @@ https://YOUR-NGROK-URL
 
 as the Cursor base URL.
 
+### Cloud Run Deployment
+
+If you deploy Ternion on Google Cloud Run, Cursor can connect directly to the
+service's public HTTPS origin instead of a local tunnel.
+
+General flow:
+
+1. Build and deploy the Ternion service to Cloud Run.
+2. Make sure the service allows HTTPS access from the internet.
+3. Copy the service origin, for example `https://your-service-xxxxx.run.app`.
+4. Paste that origin into Cursor's `Override OpenAI Base URL`.
+5. Do not append `/v1`.
+
+After deploying, open the Control Panel and complete the First-Time Setup before
+connecting from Cursor.
+
 ### Cursor Setup
 
 To enable Ternion in Cursor:

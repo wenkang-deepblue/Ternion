@@ -2,9 +2,10 @@
  * Ports and public access settings for the Ternion Control Panel.
  *
  * This component manages:
- * - advanced backend port configuration
+ * - advanced backend port configuration (disabled in Cloud Run environments)
  * - detection-first public access display for Cursor connectivity
  * - manual URL fallback when auto-detection is unavailable
+ * - documentation entry points for local tunnel and Cloud Run setup
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -39,6 +40,11 @@ const VALID_PUBLIC_ACCESS_MODES: readonly PublicAccessMode[] = [
   'cloud_run',
   'custom',
 ];
+
+const REPOSITORY_URL = 'https://github.com/ternion-ai/ternion';
+const LOCAL_TUNNEL_DOC_URL = `${REPOSITORY_URL}#public-url-options`;
+const CLOUD_RUN_DOC_URL = `${REPOSITORY_URL}#cloud-run-deployment`;
+const GITHUB_DOCS_URL = `${REPOSITORY_URL}/tree/main/docs`;
 
 function isPublicAccessMode(value: string): value is PublicAccessMode {
   return VALID_PUBLIC_ACCESS_MODES.includes(value as PublicAccessMode);
@@ -439,77 +445,105 @@ export function PortsSettings({
               </div>
 
               {showManualFallback && (
-                <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-5 dark:border-slate-700 dark:bg-slate-900/40">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div>
-                      <h3 className="text-base font-semibold text-slate-900 dark:text-white">
-                        {t.publicAccessManualFallbackTitle}
-                      </h3>
-                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                        {t.publicAccessManualFallbackDescription}
-                      </p>
-                    </div>
-                    {hasPublicAccessChanges && (
-                      <button
-                        style={{ minWidth: '100px', height: '46px', flexShrink: 0 }}
-                        className="btn btn-primary text-xs whitespace-nowrap"
-                        onClick={handlePublicAccessSave}
-                        disabled={savingPublicAccess}
-                      >
-                        {savingPublicAccess ? t.saving : t.saveChanges}
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="mt-5 grid grid-cols-1 gap-6 md:grid-cols-2">
-                    <div>
-                      <label className="label">{t.publicAccessMode}</label>
-                      <div className="input-rainbow-glow">
-                        <select
-                          className="input"
-                          value={publicAccessForm.mode}
-                          onChange={(event) => {
-                            const nextMode = event.target.value;
-                            if (!isPublicAccessMode(nextMode)) {
-                              return;
-                            }
-                            setPublicAccessForm(prev => ({
-                              ...prev,
-                              mode: nextMode,
-                            }));
-                          }}
+                <>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-5 dark:border-slate-700 dark:bg-slate-900/40">
+                    <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+                      {t.publicAccessDocsTitle}
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                      {t.publicAccessDocsDescription}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      {[
+                        { href: LOCAL_TUNNEL_DOC_URL, label: t.publicAccessDocsLocalTunnel },
+                        { href: CLOUD_RUN_DOC_URL, label: t.publicAccessDocsCloudRun },
+                        { href: GITHUB_DOCS_URL, label: t.publicAccessDocsGitHub },
+                      ].map(({ href, label }) => (
+                        <a
+                          key={href}
+                          href={href}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="btn btn-secondary text-xs whitespace-nowrap"
                         >
-                          <option value="none">{t.publicAccessModeNone}</option>
-                          <option value="local_tunnel">{t.publicAccessModeLocalTunnel}</option>
-                          <option value="cloud_run">{t.publicAccessModeCloudRun}</option>
-                          <option value="custom">{t.publicAccessModeCustom}</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="label">{t.publicAccessConfiguredUrl}</label>
-                      <div className="input-rainbow-glow">
-                        <input
-                          type="url"
-                          className="input"
-                          value={publicAccessForm.public_base_url}
-                          placeholder={t.publicAccessUrlPlaceholder}
-                          onChange={(event) => {
-                            setPublicAccessForm(prev => ({
-                              ...prev,
-                              public_base_url: event.target.value,
-                            }));
-                          }}
-                        />
-                      </div>
+                          {label}
+                        </a>
+                      ))}
                     </div>
                   </div>
 
-                  <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">
-                    {t.publicAccessManualFallbackHint}
-                  </p>
-                </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-5 dark:border-slate-700 dark:bg-slate-900/40">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div>
+                        <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+                          {t.publicAccessManualFallbackTitle}
+                        </h3>
+                        <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                          {t.publicAccessManualFallbackDescription}
+                        </p>
+                      </div>
+                      {hasPublicAccessChanges && (
+                        <button
+                          style={{ minWidth: '100px', height: '46px', flexShrink: 0 }}
+                          className="btn btn-primary text-xs whitespace-nowrap"
+                          onClick={handlePublicAccessSave}
+                          disabled={savingPublicAccess}
+                        >
+                          {savingPublicAccess ? t.saving : t.saveChanges}
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-1 gap-6 md:grid-cols-2">
+                      <div>
+                        <label className="label">{t.publicAccessMode}</label>
+                        <div className="input-rainbow-glow">
+                          <select
+                            className="input"
+                            value={publicAccessForm.mode}
+                            onChange={(event) => {
+                              const nextMode = event.target.value;
+                              if (!isPublicAccessMode(nextMode)) {
+                                return;
+                              }
+                              setPublicAccessForm(prev => ({
+                                ...prev,
+                                mode: nextMode,
+                              }));
+                            }}
+                          >
+                            <option value="none">{t.publicAccessModeNone}</option>
+                            <option value="local_tunnel">{t.publicAccessModeLocalTunnel}</option>
+                            <option value="cloud_run">{t.publicAccessModeCloudRun}</option>
+                            <option value="custom">{t.publicAccessModeCustom}</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="label">{t.publicAccessConfiguredUrl}</label>
+                        <div className="input-rainbow-glow">
+                          <input
+                            type="url"
+                            className="input"
+                            value={publicAccessForm.public_base_url}
+                            placeholder={t.publicAccessUrlPlaceholder}
+                            onChange={(event) => {
+                              setPublicAccessForm(prev => ({
+                                ...prev,
+                                public_base_url: event.target.value,
+                              }));
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">
+                      {t.publicAccessManualFallbackHint}
+                    </p>
+                  </div>
+                </>
               )}
             </>
           )}
