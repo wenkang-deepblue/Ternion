@@ -196,18 +196,21 @@ export interface Translations {
   portsInvalid: string;
   publicAccessTitle: string;
   publicAccessDescription: string;
-  publicAccessStatus: string;
-  publicAccessStatusConfigured: string;
-  publicAccessStatusMissing: string;
+  publicAccessDeploymentEnvironment: string;
+  publicAccessDeploymentEnvironmentLocal: string;
+  publicAccessDeploymentEnvironmentCloudRun: string;
+  publicAccessDetectedPublicUrl: string;
+  publicAccessDetectedPublicUrlUnavailable: string;
+  publicAccessManualFallbackTitle: string;
+  publicAccessManualFallbackDescription: string;
+  publicAccessManualFallbackHint: string;
   publicAccessMode: string;
   publicAccessModeNone: string;
   publicAccessModeLocalTunnel: string;
   publicAccessModeCloudRun: string;
   publicAccessModeCustom: string;
-  publicAccessUrlLabel: string;
   publicAccessUrlPlaceholder: string;
   publicAccessConfiguredUrl: string;
-  publicAccessEffectiveUrl: string;
   publicAccessCursorUrl: string;
   publicAccessSource: string;
   publicAccessSourceConfig: string;
@@ -451,19 +454,25 @@ const EN: Translations = {
   portsSaved: 'Port configuration saved',
   portsInvalid: 'Invalid port number (1024-65535)',
   publicAccessTitle: 'Public Access',
-  publicAccessDescription: 'Configure the public HTTPS URL that Cursor should use to reach Ternion.',
-  publicAccessStatus: 'Status',
-  publicAccessStatusConfigured: 'Configured',
-  publicAccessStatusMissing: 'Not configured',
+  publicAccessDescription:
+    'View the detected public URL, copy the Cursor base URL, and use a manual fallback only when auto-detection is unavailable.',
+  publicAccessDeploymentEnvironment: 'Deployment',
+  publicAccessDeploymentEnvironmentLocal: 'Local deployment',
+  publicAccessDeploymentEnvironmentCloudRun: 'Cloud Run',
+  publicAccessDetectedPublicUrl: 'Detected public URL',
+  publicAccessDetectedPublicUrlUnavailable: 'Not auto-detected',
+  publicAccessManualFallbackTitle: 'Manual fallback',
+  publicAccessManualFallbackDescription:
+    'If auto-detection is unavailable, you can store a public HTTPS URL here so it can still be displayed and copied on other devices.',
+  publicAccessManualFallbackHint:
+    'This does not start or configure any tunnel. It only saves a fallback value for display and copy.',
   publicAccessMode: 'Deployment mode',
   publicAccessModeNone: 'None',
   publicAccessModeLocalTunnel: 'Local tunnel',
   publicAccessModeCloudRun: 'Cloud Run',
   publicAccessModeCustom: 'Custom',
-  publicAccessUrlLabel: 'Public HTTPS URL',
   publicAccessUrlPlaceholder: 'https://example.com',
   publicAccessConfiguredUrl: 'Configured public URL',
-  publicAccessEffectiveUrl: 'Effective public URL',
   publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
   publicAccessSource: 'Effective URL source',
   publicAccessSourceConfig: 'Configured value',
@@ -776,19 +785,24 @@ const ZH: Translations = {
   portsSaved: '端口配置已保存',
   portsInvalid: '无效的端口号 (1024-65535)',
   publicAccessTitle: '公网接入',
-  publicAccessDescription: '配置供 Cursor 访问 Ternion 的公网 HTTPS URL。',
-  publicAccessStatus: '当前状态',
-  publicAccessStatusConfigured: '已配置',
-  publicAccessStatusMissing: '未配置',
+  publicAccessDescription: '查看当前检测到的公网 URL，复制 Cursor Base URL，并在自动检测失败时补充手工 fallback。',
+  publicAccessDeploymentEnvironment: '当前部署方式',
+  publicAccessDeploymentEnvironmentLocal: '本地部署',
+  publicAccessDeploymentEnvironmentCloudRun: 'Cloud Run',
+  publicAccessDetectedPublicUrl: '当前检测到的公网 URL',
+  publicAccessDetectedPublicUrlUnavailable: '尚未自动检测到',
+  publicAccessManualFallbackTitle: '手工 fallback',
+  publicAccessManualFallbackDescription:
+    '如果当前无法自动检测到公网 URL，你可以在这里补充一个公网 HTTPS URL，便于在其他设备上继续展示和复制。',
+  publicAccessManualFallbackHint:
+    '这不会自动启动或配置任何 tunnel，只会保存一个用于展示和复制的 fallback 值。',
   publicAccessMode: '部署方式',
   publicAccessModeNone: '未配置',
   publicAccessModeLocalTunnel: '本地隧道',
   publicAccessModeCloudRun: 'Cloud Run',
   publicAccessModeCustom: '自定义',
-  publicAccessUrlLabel: '公网 HTTPS URL',
   publicAccessUrlPlaceholder: 'https://example.com',
   publicAccessConfiguredUrl: '已配置公网 URL',
-  publicAccessEffectiveUrl: '当前生效公网 URL',
   publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
   publicAccessSource: '生效 URL 来源',
   publicAccessSourceConfig: '显式配置值',
@@ -1099,19 +1113,25 @@ const ES: Translations = {
   portsSaved: 'Configuración de puerto guardada',
   portsInvalid: 'Número de puerto inválido (1024-65535)',
   publicAccessTitle: 'Acceso Público',
-  publicAccessDescription: 'Configure la URL HTTPS pública que Cursor debe usar para llegar a Ternion.',
-  publicAccessStatus: 'Estado',
-  publicAccessStatusConfigured: 'Configurado',
-  publicAccessStatusMissing: 'Sin configurar',
+  publicAccessDescription:
+    'Vea la URL pública detectada, copie la URL base de Cursor y use un valor manual de respaldo solo cuando la detección automática no esté disponible.',
+  publicAccessDeploymentEnvironment: 'Despliegue',
+  publicAccessDeploymentEnvironmentLocal: 'Despliegue local',
+  publicAccessDeploymentEnvironmentCloudRun: 'Cloud Run',
+  publicAccessDetectedPublicUrl: 'URL pública detectada',
+  publicAccessDetectedPublicUrlUnavailable: 'No detectada automáticamente',
+  publicAccessManualFallbackTitle: 'Respaldo manual',
+  publicAccessManualFallbackDescription:
+    'Si la detección automática no está disponible, puede guardar aquí una URL HTTPS pública para seguir mostrándola y copiándola en otros dispositivos.',
+  publicAccessManualFallbackHint:
+    'Esto no inicia ni configura ningún túnel. Solo guarda un valor de respaldo para mostrarlo y copiarlo.',
   publicAccessMode: 'Modo de despliegue',
   publicAccessModeNone: 'Ninguno',
   publicAccessModeLocalTunnel: 'Túnel local',
   publicAccessModeCloudRun: 'Cloud Run',
   publicAccessModeCustom: 'Personalizado',
-  publicAccessUrlLabel: 'URL HTTPS pública',
   publicAccessUrlPlaceholder: 'https://example.com',
   publicAccessConfiguredUrl: 'URL pública configurada',
-  publicAccessEffectiveUrl: 'URL pública efectiva',
   publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
   publicAccessSource: 'Origen de la URL efectiva',
   publicAccessSourceConfig: 'Valor configurado',
@@ -1425,19 +1445,25 @@ const FR: Translations = {
   portsSaved: 'Configuration du port sauvegardée',
   portsInvalid: 'Numéro de port invalide (1024-65535)',
   publicAccessTitle: 'Accès Public',
-  publicAccessDescription: 'Configurez l’URL HTTPS publique que Cursor doit utiliser pour joindre Ternion.',
-  publicAccessStatus: 'Statut',
-  publicAccessStatusConfigured: 'Configuré',
-  publicAccessStatusMissing: 'Non configuré',
+  publicAccessDescription:
+    'Affichez l’URL publique détectée, copiez l’URL de base Cursor et utilisez un secours manuel uniquement lorsque la détection automatique est indisponible.',
+  publicAccessDeploymentEnvironment: 'Déploiement',
+  publicAccessDeploymentEnvironmentLocal: 'Déploiement local',
+  publicAccessDeploymentEnvironmentCloudRun: 'Cloud Run',
+  publicAccessDetectedPublicUrl: 'URL publique détectée',
+  publicAccessDetectedPublicUrlUnavailable: 'Non détectée automatiquement',
+  publicAccessManualFallbackTitle: 'Secours manuel',
+  publicAccessManualFallbackDescription:
+    'Si la détection automatique n’est pas disponible, vous pouvez enregistrer ici une URL HTTPS publique afin qu’elle puisse encore être affichée et copiée sur d’autres appareils.',
+  publicAccessManualFallbackHint:
+    'Cela ne démarre ni ne configure aucun tunnel. Cela enregistre seulement une valeur de secours pour l’affichage et la copie.',
   publicAccessMode: 'Mode de déploiement',
   publicAccessModeNone: 'Aucun',
   publicAccessModeLocalTunnel: 'Tunnel local',
   publicAccessModeCloudRun: 'Cloud Run',
   publicAccessModeCustom: 'Personnalisé',
-  publicAccessUrlLabel: 'URL HTTPS publique',
   publicAccessUrlPlaceholder: 'https://example.com',
   publicAccessConfiguredUrl: 'URL publique configurée',
-  publicAccessEffectiveUrl: 'URL publique effective',
   publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
   publicAccessSource: 'Source de l’URL effective',
   publicAccessSourceConfig: 'Valeur configurée',
@@ -1751,19 +1777,25 @@ const DE: Translations = {
   portsSaved: 'Port-Konfiguration gespeichert',
   portsInvalid: 'Ungültige Portnummer (1024-65535)',
   publicAccessTitle: 'Öffentlicher Zugriff',
-  publicAccessDescription: 'Konfigurieren Sie die öffentliche HTTPS-URL, über die Cursor Ternion erreichen soll.',
-  publicAccessStatus: 'Status',
-  publicAccessStatusConfigured: 'Konfiguriert',
-  publicAccessStatusMissing: 'Nicht konfiguriert',
+  publicAccessDescription:
+    'Zeigen Sie die erkannte öffentliche URL an, kopieren Sie die Cursor-Basis-URL und verwenden Sie einen manuellen Fallback nur dann, wenn keine automatische Erkennung verfügbar ist.',
+  publicAccessDeploymentEnvironment: 'Bereitstellung',
+  publicAccessDeploymentEnvironmentLocal: 'Lokale Bereitstellung',
+  publicAccessDeploymentEnvironmentCloudRun: 'Cloud Run',
+  publicAccessDetectedPublicUrl: 'Erkannte öffentliche URL',
+  publicAccessDetectedPublicUrlUnavailable: 'Nicht automatisch erkannt',
+  publicAccessManualFallbackTitle: 'Manueller Fallback',
+  publicAccessManualFallbackDescription:
+    'Wenn keine automatische Erkennung verfügbar ist, können Sie hier eine öffentliche HTTPS-URL speichern, damit sie auf anderen Geräten weiterhin angezeigt und kopiert werden kann.',
+  publicAccessManualFallbackHint:
+    'Dadurch wird kein Tunnel gestartet oder konfiguriert. Es speichert nur einen Fallback-Wert zum Anzeigen und Kopieren.',
   publicAccessMode: 'Bereitstellungsmodus',
   publicAccessModeNone: 'Keine',
   publicAccessModeLocalTunnel: 'Lokaler Tunnel',
   publicAccessModeCloudRun: 'Cloud Run',
   publicAccessModeCustom: 'Benutzerdefiniert',
-  publicAccessUrlLabel: 'Öffentliche HTTPS-URL',
   publicAccessUrlPlaceholder: 'https://example.com',
   publicAccessConfiguredUrl: 'Konfigurierte öffentliche URL',
-  publicAccessEffectiveUrl: 'Effektive öffentliche URL',
   publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
   publicAccessSource: 'Quelle der effektiven URL',
   publicAccessSourceConfig: 'Konfigurierter Wert',
@@ -2077,19 +2109,25 @@ const JA: Translations = {
   portsSaved: 'ポート設定を保存しました',
   portsInvalid: '無効なポート番号 (1024-65535)',
   publicAccessTitle: '公開アクセス',
-  publicAccessDescription: 'Cursor が Ternion に接続するための公開 HTTPS URL を設定します。',
-  publicAccessStatus: '状態',
-  publicAccessStatusConfigured: '設定済み',
-  publicAccessStatusMissing: '未設定',
+  publicAccessDescription:
+    '検出された公開 URL を確認し、Cursor Base URL をコピーし、自動検出できない場合にのみ手動 fallback を使います。',
+  publicAccessDeploymentEnvironment: '現在のデプロイ方式',
+  publicAccessDeploymentEnvironmentLocal: 'ローカルデプロイ',
+  publicAccessDeploymentEnvironmentCloudRun: 'Cloud Run',
+  publicAccessDetectedPublicUrl: '現在検出されている公開 URL',
+  publicAccessDetectedPublicUrlUnavailable: 'まだ自動検出されていません',
+  publicAccessManualFallbackTitle: '手動 fallback',
+  publicAccessManualFallbackDescription:
+    '現在公開 URL を自動検出できない場合は、他の端末でも表示・コピーできるように、ここで公開 HTTPS URL を補足できます。',
+  publicAccessManualFallbackHint:
+    'これは tunnel を自動起動または設定しません。表示とコピー用の fallback 値を保存するだけです。',
   publicAccessMode: 'デプロイ方式',
   publicAccessModeNone: 'なし',
   publicAccessModeLocalTunnel: 'ローカルトンネル',
   publicAccessModeCloudRun: 'Cloud Run',
   publicAccessModeCustom: 'カスタム',
-  publicAccessUrlLabel: '公開 HTTPS URL',
   publicAccessUrlPlaceholder: 'https://example.com',
   publicAccessConfiguredUrl: '設定済み公開 URL',
-  publicAccessEffectiveUrl: '現在有効な公開 URL',
   publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
   publicAccessSource: '有効 URL の取得元',
   publicAccessSourceConfig: '明示設定値',
@@ -2403,19 +2441,25 @@ const KO: Translations = {
   portsSaved: '포트 설정 저장됨',
   portsInvalid: '잘못된 포트 번호 (1024-65535)',
   publicAccessTitle: '공개 액세스',
-  publicAccessDescription: 'Cursor가 Ternion에 연결할 때 사용할 공개 HTTPS URL을 설정합니다.',
-  publicAccessStatus: '상태',
-  publicAccessStatusConfigured: '구성됨',
-  publicAccessStatusMissing: '미구성',
+  publicAccessDescription:
+    '감지된 공개 URL을 확인하고 Cursor Base URL을 복사하며, 자동 감지가 불가능할 때만 수동 fallback을 사용합니다.',
+  publicAccessDeploymentEnvironment: '현재 배포 방식',
+  publicAccessDeploymentEnvironmentLocal: '로컬 배포',
+  publicAccessDeploymentEnvironmentCloudRun: 'Cloud Run',
+  publicAccessDetectedPublicUrl: '현재 감지된 공개 URL',
+  publicAccessDetectedPublicUrlUnavailable: '아직 자동 감지되지 않음',
+  publicAccessManualFallbackTitle: '수동 fallback',
+  publicAccessManualFallbackDescription:
+    '현재 공개 URL을 자동으로 감지할 수 없다면, 다른 기기에서도 계속 표시하고 복사할 수 있도록 여기에서 공개 HTTPS URL을 보완할 수 있습니다.',
+  publicAccessManualFallbackHint:
+    '이 작업은 어떤 터널도 자동으로 시작하거나 구성하지 않습니다. 표시와 복사용 fallback 값만 저장합니다.',
   publicAccessMode: '배포 방식',
   publicAccessModeNone: '없음',
   publicAccessModeLocalTunnel: '로컬 터널',
   publicAccessModeCloudRun: 'Cloud Run',
   publicAccessModeCustom: '사용자 지정',
-  publicAccessUrlLabel: '공개 HTTPS URL',
   publicAccessUrlPlaceholder: 'https://example.com',
   publicAccessConfiguredUrl: '구성된 공개 URL',
-  publicAccessEffectiveUrl: '현재 유효한 공개 URL',
   publicAccessCursorUrl: 'Cursor Override OpenAI Base URL',
   publicAccessSource: '유효 URL 출처',
   publicAccessSourceConfig: '명시적 구성값',

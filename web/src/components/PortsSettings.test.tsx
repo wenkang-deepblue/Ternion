@@ -91,6 +91,22 @@ describe('PortsSettings', () => {
     expect(screen.queryByText('https://demo.ngrok.app/v1')).not.toBeInTheDocument();
   });
 
+  it('always shows deployment, detected URL, cursor URL, and source rows', async () => {
+    const { t } = renderPortsSettings();
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText(t.publicAccessDeploymentEnvironment)).toBeInTheDocument();
+    expect(screen.getByText(t.publicAccessDetectedPublicUrl)).toBeInTheDocument();
+    expect(screen.getByText(t.publicAccessCursorUrl)).toBeInTheDocument();
+    expect(screen.getByText(t.publicAccessSource)).toBeInTheDocument();
+    expect(screen.getByText(t.publicAccessDeploymentEnvironmentLocal)).toBeInTheDocument();
+    expect(screen.getAllByText('https://demo.ngrok.app')).not.toHaveLength(0);
+    expect(screen.getByText(t.publicAccessSourceConfig)).toBeInTheDocument();
+  });
+
   it('shows the auto-detected note for ngrok-discovered public URLs', async () => {
     const { t } = renderPortsSettings({
       publicAccess: buildPublicAccess({
@@ -107,6 +123,70 @@ describe('PortsSettings', () => {
     });
 
     expect(screen.getByText(t.publicAccessAutoDetectedNote)).toBeInTheDocument();
+  });
+
+  it('shows the Cloud Run deployment label when the backend reports cloud_run', async () => {
+    const { t } = renderPortsSettings({
+      publicAccess: buildPublicAccess({
+        deployment_environment: 'cloud_run',
+        detection_method: 'request_origin',
+        detected_public_base_url: 'https://ternion.run.app',
+        effective_public_base_url: 'https://ternion.run.app',
+        effective_source: 'request_origin',
+        cursor_override_base_url: 'https://ternion.run.app',
+      }),
+    });
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText(t.publicAccessDeploymentEnvironmentCloudRun)).toBeInTheDocument();
+    expect(screen.getAllByText('https://ternion.run.app')).not.toHaveLength(0);
+  });
+
+  it('hides the manual fallback form when an auto-detected URL is available', async () => {
+    const { t } = renderPortsSettings({
+      publicAccess: buildPublicAccess({
+        detection_method: 'request_origin',
+        detected_public_base_url: 'https://ternion.run.app',
+        effective_public_base_url: 'https://ternion.run.app',
+        effective_source: 'request_origin',
+        cursor_override_base_url: 'https://ternion.run.app',
+      }),
+    });
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.queryByText(t.publicAccessManualFallbackTitle)).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(t.publicAccessUrlPlaceholder)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: t.saveChanges })).not.toBeInTheDocument();
+  });
+
+  it('shows the manual fallback guidance when no auto-detected URL is available', async () => {
+    const { t } = renderPortsSettings({
+      publicAccess: buildPublicAccess({
+        detected_public_base_url: '',
+        effective_public_base_url: '',
+        effective_source: 'none',
+        cursor_override_base_url: '',
+        configured: false,
+      }),
+    });
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText(t.publicAccessManualFallbackTitle)).toBeInTheDocument();
+    expect(screen.getByText(t.publicAccessManualFallbackDescription)).toBeInTheDocument();
+    expect(screen.getByText(t.publicAccessManualFallbackHint)).toBeInTheDocument();
+    expect(screen.getByText(t.publicAccessDetectedPublicUrlUnavailable)).toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(t.publicAccessUrlPlaceholder)).toBeInTheDocument();
   });
 
   it('shows loading first and then renders an unavailable warning when port loading fails', async () => {
@@ -280,7 +360,7 @@ describe('PortsSettings', () => {
     expect(await screen.findByText(t.publicAccessUnavailable)).toBeInTheDocument();
   });
 
-  it('hides the copy button and shows a missing badge when no cursor URL is available', async () => {
+  it('hides the copy button and shows not configured when no cursor URL is available', async () => {
     const { t } = renderPortsSettings({
       publicAccess: buildPublicAccess({
         configured_public_base_url: '',
@@ -296,6 +376,6 @@ describe('PortsSettings', () => {
     });
 
     expect(screen.queryByRole('button', { name: t.publicAccessCopy })).not.toBeInTheDocument();
-    expect(screen.getAllByText(t.publicAccessStatusMissing)).not.toHaveLength(0);
+    expect(screen.getAllByText(t.notConfigured)).not.toHaveLength(0);
   });
 });
