@@ -2,7 +2,7 @@
  * Ports and public access settings for the Ternion Control Panel.
  *
  * This component manages:
- * - backend/web port configuration
+ * - advanced backend port configuration
  * - detection-first public access display for Cursor connectivity
  * - manual URL fallback when auto-detection is unavailable
  */
@@ -14,7 +14,6 @@ import { useToast } from './toastContext';
 import type { Language, Translations } from '../i18n';
 import { getErrorMessage } from '../i18n';
 
-// Port settings icons
 import portIconLight from '../assets/icons/port_light_mode_50dp.svg';
 import portIconDark from '../assets/icons/port_dark_mode_50dp.svg';
 import warningIconLight from '../assets/icons/warning_light_mode_50dp.svg';
@@ -131,6 +130,7 @@ export function PortsSettings({
   const [savingPublicAccess, setSavingPublicAccess] = useState(false);
   const [portsReady, setPortsReady] = useState(false);
   const [portsLoadErrorCode, setPortsLoadErrorCode] = useState<string | null>(null);
+  const [showAdvancedPorts, setShowAdvancedPorts] = useState(false);
 
   const loadPorts = useCallback(async (): Promise<void> => {
     setPortsReady(false);
@@ -162,10 +162,7 @@ export function PortsSettings({
     });
   }, [publicAccess]);
 
-  const hasPortChanges = useMemo(
-    () => ports.backend !== originalPorts.backend || ports.web !== originalPorts.web,
-    [originalPorts.backend, originalPorts.web, ports.backend, ports.web]
-  );
+  const hasPortChanges = ports.backend !== originalPorts.backend;
 
   const hasPublicAccessChanges = useMemo(() => {
     if (!originalPublicAccess) {
@@ -177,27 +174,28 @@ export function PortsSettings({
     );
   }, [originalPublicAccess, publicAccessForm.mode, publicAccessForm.public_base_url]);
 
-  const handlePortChange = (field: keyof PortsConfig, value: string) => {
+  const handlePortChange = (value: string) => {
     const numValue = parseInt(value, 10);
     if (!isNaN(numValue)) {
-      setPorts(prev => ({ ...prev, [field]: numValue }));
+      setPorts(prev => ({ ...prev, backend: numValue }));
     }
   };
 
   const handleSave = async () => {
-    if (!validatePort(ports.backend) || !validatePort(ports.web)) {
+    if (!validatePort(ports.backend)) {
       showToast(t.portsInvalid, 'error');
       return;
     }
 
     setSavingPorts(true);
     try {
-      const result = await api.updatePorts(ports);
+      const result = await api.updatePorts({ backend: ports.backend });
       setOriginalPorts(result.ports);
+      setPorts(result.ports);
 
       const restartNote = result.restart_required ? `\n${t.portsRestartNote}` : '';
       showToast(
-        `${t.portsSaved}${restartNote}\n${t.portsBackendLabel}: ${result.ports.backend} | ${t.portsWebLabel}: ${result.ports.web}`,
+        `${t.portsSaved}${restartNote}\n${t.portsBackendLabel}: ${result.ports.backend}`,
         'success'
       );
     } catch (error) {
@@ -253,6 +251,7 @@ export function PortsSettings({
   const detectedPublicUrl = publicAccess?.detected_public_base_url ?? '';
   const cursorBaseUrl = publicAccess?.cursor_override_base_url ?? '';
   const showManualFallback = Boolean(publicAccess && !detectedPublicUrl);
+  const isCloudRun = publicAccess?.deployment_environment === 'cloud_run';
   const showAutoDetectedNote = Boolean(
     publicAccess && isAutoDetectedSource(publicAccess.effective_source)
   );
@@ -260,7 +259,7 @@ export function PortsSettings({
   return (
     <div className="space-y-6">
       <div className="card">
-        <div className="card-header flex items-center justify-between">
+        <div className="card-header">
           <div>
             <h2 className="text-lg font-semibold flex items-center gap-2">
               <img src={isDarkMode ? portIconDark : portIconLight} alt="" className="w-6 h-6" />
@@ -270,16 +269,6 @@ export function PortsSettings({
               {t.portsDescription}
             </p>
           </div>
-          {portsReady && !portsLoadErrorCode && hasPortChanges && (
-            <button
-              style={{ minWidth: '100px', height: '46px', flexShrink: 0 }}
-              className="btn btn-primary text-xs whitespace-nowrap"
-              onClick={handleSave}
-              disabled={savingPorts}
-            >
-              {savingPorts ? t.saving : t.saveChanges}
-            </button>
-          )}
         </div>
 
         <div className="card-body">
@@ -295,62 +284,88 @@ export function PortsSettings({
 
           {portsReady && !portsLoadErrorCode && (
             <>
-              <div className="mt-6 mb-12 text-center">
-                <span className="text-lg font-medium text-slate-700 dark:text-slate-300">
-                  {t.portsCurrentBackend}:{' '}
-                  <span className="font-bold" style={{ color: '#4083f2' }}>{originalPorts.backend}</span>
-                </span>
-                <span className="mx-3 text-xl text-slate-400">|</span>
-                <span className="text-lg font-medium text-slate-700 dark:text-slate-300">
-                  {t.portsCurrentWeb}:{' '}
-                  <span className="font-bold" style={{ color: '#4083f2' }}>{originalPorts.web}</span>
-                </span>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-5 dark:border-slate-700 dark:bg-slate-900/40">
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                  {t.portsCurrentBackend}
+                </p>
+                <p className="mt-2 text-2xl font-bold" style={{ color: '#4083f2' }}>
+                  {originalPorts.backend}
+                </p>
+                <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
+                  http://localhost:{originalPorts.backend}
+                </p>
               </div>
 
-              <div className="mb-10 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+              <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
                 <p className="text-amber-800 dark:text-amber-200 text-sm font-medium flex items-center justify-center gap-2">
                   <img src={isDarkMode ? warningIconDark : warningIconLight} alt="" className="w-6 h-6" />
                   {t.portsWarning}
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-                <div>
-                  <label className="label">{t.portsBackend}</label>
-                  <div className="input-rainbow-glow">
-                    <input
-                      type="number"
-                      className="input"
-                      style={{ width: '100%' }}
-                      value={ports.backend}
-                      onChange={(e) => handlePortChange('backend', e.target.value)}
-                      min="1024"
-                      max="65535"
-                    />
-                  </div>
-                  <p className="text-sm text-slate-500 mt-1">
-                    http://localhost:{ports.backend}
+              {isCloudRun ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-5 dark:border-slate-700 dark:bg-slate-900/40">
+                  <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+                    {t.portsAdvancedSettings}
+                  </h3>
+                  <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">
+                    {t.portsCloudRunManaged}
                   </p>
                 </div>
+              ) : (
+                <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-5 dark:border-slate-700 dark:bg-slate-900/40">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+                        {t.portsAdvancedSettings}
+                      </h3>
+                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                        {t.portsAdvancedDescription}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-secondary text-xs whitespace-nowrap"
+                      onClick={() => setShowAdvancedPorts(prev => !prev)}
+                    >
+                      {showAdvancedPorts ? t.portsHideAdvancedSettings : t.portsShowAdvancedSettings}
+                    </button>
+                  </div>
 
-                <div>
-                  <label className="label">{t.portsWeb}</label>
-                  <div className="input-rainbow-glow">
-                    <input
-                      type="number"
-                      className="input"
-                      style={{ width: '100%' }}
-                      value={ports.web}
-                      onChange={(e) => handlePortChange('web', e.target.value)}
-                      min="1024"
-                      max="65535"
-                    />
-                  </div>
-                  <p className="text-sm text-slate-500 mt-1">
-                    http://localhost:{ports.web}
-                  </p>
+                  {showAdvancedPorts && (
+                    <div className="mt-5 space-y-4">
+                      <div>
+                        <label className="label">{t.portsBackend}</label>
+                        <div className="input-rainbow-glow">
+                          <input
+                            type="number"
+                            className="input"
+                            style={{ width: '100%' }}
+                            value={ports.backend}
+                            onChange={(e) => handlePortChange(e.target.value)}
+                            min="1024"
+                            max="65535"
+                          />
+                        </div>
+                        <p className="text-sm text-slate-500 mt-1">
+                          http://localhost:{ports.backend}
+                        </p>
+                      </div>
+
+                      {hasPortChanges && (
+                        <button
+                          style={{ minWidth: '100px', height: '46px' }}
+                          className="btn btn-primary text-xs whitespace-nowrap"
+                          onClick={handleSave}
+                          disabled={savingPorts}
+                        >
+                          {savingPorts ? t.saving : t.saveChanges}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
-              </div>
+              )}
             </>
           )}
         </div>

@@ -54,6 +54,8 @@ function renderPortsSettings(overrides?: {
   const t = getTranslations('zh');
   const showToast = vi.fn();
   const onPublicAccessUpdate = vi.fn();
+  const publicAccess =
+    overrides && 'publicAccess' in overrides ? overrides.publicAccess : buildPublicAccess();
 
   const utils = render(
     <ToastContext.Provider value={{ showToast }}>
@@ -61,7 +63,7 @@ function renderPortsSettings(overrides?: {
         t={t}
         isDarkMode={false}
         language="zh"
-        publicAccess={overrides?.publicAccess ?? buildPublicAccess()}
+        publicAccess={publicAccess}
         publicAccessReady={overrides?.publicAccessReady ?? true}
         onPublicAccessUpdate={onPublicAccessUpdate}
       />
@@ -203,6 +205,111 @@ describe('PortsSettings', () => {
     expect(screen.queryByRole('button', { name: t.saveChanges })).not.toBeInTheDocument();
   });
 
+  it('keeps backend port editing inside collapsed advanced settings by default', async () => {
+    const { t } = renderPortsSettings();
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText(t.portsCurrentBackend)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.portsShowAdvancedSettings })).toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(screen.queryByText('http://localhost:9120')).not.toBeInTheDocument();
+  });
+
+  it('toggles the advanced settings button label and backend input visibility', async () => {
+    const user = userEvent.setup();
+    const { t } = renderPortsSettings();
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    const toggleButton = screen.getByRole('button', { name: t.portsShowAdvancedSettings });
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+
+    await user.click(toggleButton);
+    expect(
+      screen.getByRole('button', { name: t.portsHideAdvancedSettings })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: t.portsHideAdvancedSettings }));
+    expect(
+      screen.getByRole('button', { name: t.portsShowAdvancedSettings })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+  });
+
+  it('preserves the edited backend port across advanced settings collapse and expand', async () => {
+    const user = userEvent.setup();
+    const { t } = renderPortsSettings();
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole('button', { name: t.portsShowAdvancedSettings }));
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '9111' } });
+
+    await user.click(screen.getByRole('button', { name: t.portsHideAdvancedSettings }));
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: t.portsShowAdvancedSettings }));
+    expect(screen.getByDisplayValue('9111')).toBeInTheDocument();
+  });
+
+  it('shows the port save button only after the backend port changes', async () => {
+    const user = userEvent.setup();
+    const { t } = renderPortsSettings();
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole('button', { name: t.portsShowAdvancedSettings }));
+    expect(screen.queryByRole('button', { name: t.saveChanges })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '9111' } });
+    expect(screen.getByRole('button', { name: t.saveChanges })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '9110' } });
+    expect(screen.queryByRole('button', { name: t.saveChanges })).not.toBeInTheDocument();
+  });
+
+  it('disables port editing in Cloud Run environments', async () => {
+    const { t } = renderPortsSettings({
+      publicAccess: buildPublicAccess({
+        deployment_environment: 'cloud_run',
+      }),
+    });
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText(t.portsCloudRunManaged)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: t.portsShowAdvancedSettings })).not.toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: t.saveChanges })).not.toBeInTheDocument();
+  });
+
+  it('keeps local advanced port settings available when public access is unavailable', async () => {
+    const { t } = renderPortsSettings({
+      publicAccess: null,
+      publicAccessReady: true,
+    });
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText(t.publicAccessUnavailable)).toBeInTheDocument();
+    expect(screen.getByText(t.portsCurrentBackend)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.portsShowAdvancedSettings })).toBeInTheDocument();
+  });
+
   it('saves the public access form and propagates the updated state', async () => {
     const user = userEvent.setup();
     const updatedState = buildPublicAccess({
@@ -327,13 +434,82 @@ describe('PortsSettings', () => {
       expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
     });
 
-    const backendInput = screen.getAllByRole('spinbutton')[0];
+    await user.click(screen.getByRole('button', { name: t.portsShowAdvancedSettings }));
+
+    const backendInput = screen.getByRole('spinbutton');
     fireEvent.change(backendInput, { target: { value: '9111' } });
     await user.click(screen.getByRole('button', { name: t.saveChanges }));
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(t.code_CONNECTION_ERROR, 'error');
     });
+  });
+
+  it('blocks saving invalid backend ports before calling the API', async () => {
+    const user = userEvent.setup();
+    const { t, showToast } = renderPortsSettings();
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole('button', { name: t.portsShowAdvancedSettings }));
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '80' } });
+    await user.click(screen.getByRole('button', { name: t.saveChanges }));
+
+    expect(mockApi.updatePorts).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(t.portsInvalid, 'error');
+  });
+
+  it('saves only the backend port from advanced settings', async () => {
+    const user = userEvent.setup();
+    mockApi.updatePorts.mockResolvedValue({
+      success: true,
+      ports: buildPorts({ backend: 9111 }),
+      restart_required: true,
+      message: 'saved',
+    });
+
+    const { t, showToast } = renderPortsSettings();
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole('button', { name: t.portsShowAdvancedSettings }));
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '9111' } });
+    await user.click(screen.getByRole('button', { name: t.saveChanges }));
+
+    expect(mockApi.updatePorts).toHaveBeenCalledWith({ backend: 9111 });
+    expect(showToast).toHaveBeenCalledWith(
+      `${t.portsSaved}\n${t.portsRestartNote}\n${t.portsBackendLabel}: 9111`,
+      'success'
+    );
+  });
+
+  it('omits the restart note when the backend port change does not require restart messaging', async () => {
+    const user = userEvent.setup();
+    mockApi.updatePorts.mockResolvedValue({
+      success: true,
+      ports: buildPorts({ backend: 9111 }),
+      restart_required: false,
+      message: 'saved',
+    });
+
+    const { t, showToast } = renderPortsSettings();
+
+    await waitFor(() => {
+      expect(mockApi.getPorts).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole('button', { name: t.portsShowAdvancedSettings }));
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '9111' } });
+    await user.click(screen.getByRole('button', { name: t.saveChanges }));
+
+    expect(showToast).toHaveBeenCalledWith(
+      `${t.portsSaved}\n${t.portsBackendLabel}: 9111`,
+      'success'
+    );
   });
 
   it('shows loading and unavailable states for public access', async () => {

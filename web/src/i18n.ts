@@ -185,11 +185,13 @@ export interface Translations {
   portsTitle: string;
   portsDescription: string;
   portsBackend: string;
-  portsWeb: string;
   portsBackendLabel: string;
-  portsWebLabel: string;
   portsCurrentBackend: string;
-  portsCurrentWeb: string;
+  portsAdvancedSettings: string;
+  portsAdvancedDescription: string;
+  portsShowAdvancedSettings: string;
+  portsHideAdvancedSettings: string;
+  portsCloudRunManaged: string;
   portsWarning: string;
   portsRestartNote: string;
   portsSaved: string;
@@ -442,13 +444,18 @@ const EN: Translations = {
 
   // Ports Settings
   portsTitle: 'Port Configuration',
-  portsDescription: 'View and modify server port numbers',
+  portsDescription:
+    'Public access information is shown above. Backend port changes are available only in advanced settings for local deployments.',
   portsBackend: 'Change Ternion Backend API Port',
-  portsWeb: 'Change Ternion Web Control Panel Port',
   portsBackendLabel: 'Backend',
-  portsWebLabel: 'Web',
-  portsCurrentBackend: 'Current Ternion Backend API Port',
-  portsCurrentWeb: 'Current Ternion Web Control Panel Port',
+  portsCurrentBackend: 'Current Ternion backend API port',
+  portsAdvancedSettings: 'Advanced port settings',
+  portsAdvancedDescription:
+    'Only advanced users should change the backend port, typically when resolving a local port conflict.',
+  portsShowAdvancedSettings: 'Show advanced settings',
+  portsHideAdvancedSettings: 'Hide advanced settings',
+  portsCloudRunManaged:
+    'This service is running on Cloud Run. Container ports are managed by the platform and cannot be changed here.',
   portsWarning: 'Port changes require manual server restart to take effect',
   portsRestartNote: 'After saving, restart the server with the new configuration',
   portsSaved: 'Port configuration saved',
@@ -773,13 +780,16 @@ const ZH: Translations = {
 
   // Ports Settings
   portsTitle: '端口配置',
-  portsDescription: '查看和修改服务器端口号',
+  portsDescription: '公网接入信息优先展示在上方。本地部署时，如确有需要，可在高级设置中修改后端端口。',
   portsBackend: '更改 Ternion 后端 API 端口',
-  portsWeb: '更改 Ternion Web 控制面板端口',
   portsBackendLabel: '后端',
-  portsWebLabel: 'Web',
   portsCurrentBackend: '当前 Ternion 后端 API 端口',
-  portsCurrentWeb: '当前 Ternion Web 控制面板端口',
+  portsAdvancedSettings: '高级端口设置',
+  portsAdvancedDescription: '通常只有在本地端口冲突时，才需要由高级用户修改后端端口。',
+  portsShowAdvancedSettings: '显示高级设置',
+  portsHideAdvancedSettings: '隐藏高级设置',
+  portsCloudRunManaged:
+    '当前服务运行在 Cloud Run 中，容器端口由平台管理，不能在这里修改。',
   portsWarning: '更改端口后需要手动重启服务才能生效',
   portsRestartNote: '保存后，请使用新配置重启服务器',
   portsSaved: '端口配置已保存',
@@ -1101,13 +1111,18 @@ const ES: Translations = {
 
   // Ports Settings
   portsTitle: 'Configuración de Puertos',
-  portsDescription: 'Ver y modificar números de puerto del servidor',
+  portsDescription:
+    'La información de acceso público se muestra arriba. En despliegues locales, el puerto del backend solo debe cambiarse desde la configuración avanzada cuando sea necesario.',
   portsBackend: 'Cambiar Puerto API Backend de Ternion',
-  portsWeb: 'Cambiar Puerto del Panel Web de Ternion',
   portsBackendLabel: 'Backend',
-  portsWebLabel: 'Web',
   portsCurrentBackend: 'Puerto API Backend Actual de Ternion',
-  portsCurrentWeb: 'Puerto del Panel Web Actual de Ternion',
+  portsAdvancedSettings: 'Configuración avanzada de puertos',
+  portsAdvancedDescription:
+    'Solo los usuarios avanzados deberían cambiar el puerto del backend, normalmente para resolver conflictos de puertos locales.',
+  portsShowAdvancedSettings: 'Mostrar configuración avanzada',
+  portsHideAdvancedSettings: 'Ocultar configuración avanzada',
+  portsCloudRunManaged:
+    'Este servicio se está ejecutando en Cloud Run. Los puertos del contenedor están gestionados por la plataforma y no pueden cambiarse aquí.',
   portsWarning: 'Los cambios de puerto requieren reinicio manual del servidor',
   portsRestartNote: 'Después de guardar, reinicie el servidor con la nueva configuración',
   portsSaved: 'Configuración de puerto guardada',
@@ -1433,13 +1448,18 @@ const FR: Translations = {
 
   // Ports Settings
   portsTitle: 'Configuration des Ports',
-  portsDescription: 'Afficher et modifier les numéros de port du serveur',
+  portsDescription:
+    'Les informations d’accès public sont affichées ci-dessus. En déploiement local, le port backend ne doit être modifié dans les paramètres avancés qu’en cas de besoin.',
   portsBackend: 'Modifier le Port API Backend Ternion',
-  portsWeb: 'Modifier le Port du Panneau Web Ternion',
   portsBackendLabel: 'Backend',
-  portsWebLabel: 'Web',
   portsCurrentBackend: 'Port API Backend Ternion Actuel',
-  portsCurrentWeb: 'Port du Panneau Web Ternion Actuel',
+  portsAdvancedSettings: 'Paramètres avancés des ports',
+  portsAdvancedDescription:
+    'Seuls les utilisateurs avancés devraient modifier le port backend, généralement pour résoudre un conflit de ports local.',
+  portsShowAdvancedSettings: 'Afficher les paramètres avancés',
+  portsHideAdvancedSettings: 'Masquer les paramètres avancés',
+  portsCloudRunManaged:
+    'Ce service s’exécute sur Cloud Run. Les ports du conteneur sont gérés par la plateforme et ne peuvent pas être modifiés ici.',
   portsWarning: 'Les modifications de port nécessitent un redémarrage manuel du serveur',
   portsRestartNote: 'Après la sauvegarde, redémarrez le serveur avec la nouvelle configuration',
   portsSaved: 'Configuration du port sauvegardée',
@@ -1765,13 +1785,18 @@ const DE: Translations = {
 
   // Ports Settings
   portsTitle: 'Port-Konfiguration',
-  portsDescription: 'Server-Portnummern anzeigen und ändern',
+  portsDescription:
+    'Die Informationen zum öffentlichen Zugriff werden oben angezeigt. Bei lokalen Deployments sollte der Backend-Port nur bei Bedarf in den erweiterten Einstellungen geändert werden.',
   portsBackend: 'Ternion Backend-API-Port ändern',
-  portsWeb: 'Ternion Web-Panel-Port ändern',
   portsBackendLabel: 'Backend',
-  portsWebLabel: 'Web',
   portsCurrentBackend: 'Aktueller Ternion Backend-API-Port',
-  portsCurrentWeb: 'Aktueller Ternion Web-Panel-Port',
+  portsAdvancedSettings: 'Erweiterte Porteinstellungen',
+  portsAdvancedDescription:
+    'Nur fortgeschrittene Nutzer sollten den Backend-Port ändern, typischerweise um lokale Portkonflikte zu lösen.',
+  portsShowAdvancedSettings: 'Erweiterte Einstellungen anzeigen',
+  portsHideAdvancedSettings: 'Erweiterte Einstellungen ausblenden',
+  portsCloudRunManaged:
+    'Dieser Dienst läuft auf Cloud Run. Container-Ports werden von der Plattform verwaltet und können hier nicht geändert werden.',
   portsWarning: 'Port-Änderungen erfordern manuellen Server-Neustart',
   portsRestartNote: 'Nach dem Speichern Server mit neuer Konfiguration neu starten',
   portsSaved: 'Port-Konfiguration gespeichert',
@@ -2097,13 +2122,18 @@ const JA: Translations = {
 
   // Ports Settings
   portsTitle: 'ポート設定',
-  portsDescription: 'サーバーポート番号の表示と変更',
+  portsDescription:
+    '公開アクセス情報は上部に優先表示されます。ローカルデプロイでは、必要な場合のみ高度な設定でバックエンドポートを変更してください。',
   portsBackend: 'Ternionバックエンドポート変更',
-  portsWeb: 'TernionウェブPanelポート変更',
   portsBackendLabel: 'バックエンド',
-  portsWebLabel: 'ウェブ',
-  portsCurrentBackend: '現在のTernionバックエンドポート',
-  portsCurrentWeb: '現在のTernionウェブPanelポート',
+  portsCurrentBackend: '現在のTernionバックエンドAPIポート',
+  portsAdvancedSettings: '高度なポート設定',
+  portsAdvancedDescription:
+    '通常、バックエンドポートを変更するのはローカルのポート競合を解消するときだけです。',
+  portsShowAdvancedSettings: '高度な設定を表示',
+  portsHideAdvancedSettings: '高度な設定を隠す',
+  portsCloudRunManaged:
+    'このサービスは Cloud Run 上で動作しています。コンテナポートはプラットフォームによって管理されており、ここでは変更できません。',
   portsWarning: 'ポート変更はサーバー再起動が必要です',
   portsRestartNote: '保存後、新しい設定でサーバーを再起動してください',
   portsSaved: 'ポート設定を保存しました',
@@ -2429,13 +2459,18 @@ const KO: Translations = {
 
   // Ports Settings
   portsTitle: '포트 설정',
-  portsDescription: '서버 포트 번호 보기 및 변경',
+  portsDescription:
+    '공개 액세스 정보가 위에 우선 표시됩니다. 로컬 배포에서는 필요한 경우에만 고급 설정에서 백엔드 포트를 변경하세요.',
   portsBackend: 'Ternion 백엔드 포트 변경',
-  portsWeb: 'Ternion 웹 패널 포트 변경',
   portsBackendLabel: '백엔드',
-  portsWebLabel: '웹',
-  portsCurrentBackend: '현재 Ternion 백엔드 포트',
-  portsCurrentWeb: '현재 Ternion 웹 패널 포트',
+  portsCurrentBackend: '현재 Ternion 백엔드 API 포트',
+  portsAdvancedSettings: '고급 포트 설정',
+  portsAdvancedDescription:
+    '보통 로컬 포트 충돌을 해결해야 할 때만 고급 사용자가 백엔드 포트를 변경하면 됩니다.',
+  portsShowAdvancedSettings: '고급 설정 표시',
+  portsHideAdvancedSettings: '고급 설정 숨기기',
+  portsCloudRunManaged:
+    '이 서비스는 Cloud Run에서 실행 중입니다. 컨테이너 포트는 플랫폼에서 관리되므로 여기서 변경할 수 없습니다.',
   portsWarning: '포트 변경은 서버 재시작이 필요합니다',
   portsRestartNote: '저장 후 새 구성으로 서버를 다시 시작하세요',
   portsSaved: '포트 설정 저장됨',
