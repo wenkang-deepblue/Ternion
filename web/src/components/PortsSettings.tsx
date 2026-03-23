@@ -2,13 +2,13 @@
  * Ports and public access settings for the Ternion Control Panel.
  *
  * This component manages:
- * - advanced backend port configuration (disabled in Cloud Run environments)
+ * - advanced backend and Web UI port configuration (disabled in Cloud Run environments)
  * - detection-first public access display for Cursor connectivity
  * - manual URL fallback when auto-detection is unavailable
  * - documentation entry points for local tunnel and Cloud Run setup
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api, { isApiError } from '../api/client';
 import type { PortsConfig, PublicAccessMode, PublicAccessStatus } from '../api/client';
 import { useToast } from './toastContext';
@@ -42,10 +42,9 @@ const VALID_PUBLIC_ACCESS_MODES: readonly PublicAccessMode[] = [
   'custom',
 ];
 
-const REPOSITORY_URL = 'https://github.com/ternion-ai/ternion';
-const LOCAL_TUNNEL_DOC_URL = `${REPOSITORY_URL}#public-url-options`;
-const CLOUD_RUN_DOC_URL = `${REPOSITORY_URL}#cloud-run-deployment`;
-const GITHUB_DOCS_URL = `${REPOSITORY_URL}/tree/main/docs`;
+const REPOSITORY_BLOB_URL = 'https://github.com/wenkang-deepblue/Ternion/blob/main';
+const LOCAL_TUNNEL_DOC_URL = `${REPOSITORY_BLOB_URL}/public_tunnel_configuration.md`;
+const GITHUB_DOCS_URL = `${REPOSITORY_BLOB_URL}/README.md`;
 
 function isPublicAccessMode(value: string): value is PublicAccessMode {
   return VALID_PUBLIC_ACCESS_MODES.includes(value as PublicAccessMode);
@@ -138,6 +137,10 @@ export function PortsSettings({
   const [portsReady, setPortsReady] = useState(false);
   const [portsLoadErrorCode, setPortsLoadErrorCode] = useState<string | null>(null);
   const [showAdvancedPorts, setShowAdvancedPorts] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const previousFocusedElementRef = useRef<HTMLElement | null>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const loadPorts = useCallback(async (): Promise<void> => {
     setPortsReady(false);
@@ -169,7 +172,8 @@ export function PortsSettings({
     });
   }, [publicAccess]);
 
-  const hasPortChanges = ports.backend !== originalPorts.backend;
+  const hasPortChanges =
+    ports.backend !== originalPorts.backend || ports.web !== originalPorts.web;
 
   const hasPublicAccessChanges = useMemo(() => {
     if (!originalPublicAccess) {
@@ -181,30 +185,43 @@ export function PortsSettings({
     );
   }, [originalPublicAccess, publicAccessForm.mode, publicAccessForm.public_base_url]);
 
-  const handlePortChange = (value: string) => {
-    const numValue = parseInt(value, 10);
-    if (!isNaN(numValue)) {
-      setPorts(prev => ({ ...prev, backend: numValue }));
+  const handlePortChange = (field: keyof PortsConfig, value: string) => {
+    const trimmedValue = value.trim();
+    if (!/^-?\d+$/.test(trimmedValue)) {
+      return;
     }
+    const numValue = Number(trimmedValue);
+    setPorts(prev => ({ ...prev, [field]: numValue }));
   };
 
-  const handleSave = async () => {
-    if (!validatePort(ports.backend)) {
+  const handleSave = () => {
+    if (!validatePort(ports.backend) || !validatePort(ports.web)) {
       showToast(t.portsInvalid, 'error');
       return;
     }
+    if (ports.backend === ports.web) {
+      showToast(t.portsDuplicate, 'error');
+      return;
+    }
+    setShowConfirm(true);
+  };
 
+  const confirmSave = async () => {
+    setShowConfirm(false);
     setSavingPorts(true);
     try {
-      const result = await api.updatePorts({ backend: ports.backend });
+      const result = await api.updatePorts({
+        backend: ports.backend,
+        web: ports.web,
+      });
       setOriginalPorts(result.ports);
       setPorts(result.ports);
 
-      const restartNote = result.restart_required ? `\n${t.portsRestartNote}` : '';
-      showToast(
-        `${t.portsSaved}${restartNote}\n${t.portsBackendLabel}: ${result.ports.backend}`,
-        'success'
-      );
+      const toastMessage = t.portsChangedToast
+        .replace('{backend}', result.ports.backend.toString())
+        .replace('{web}', result.ports.web.toString());
+      const message = result.restart_required ? `${t.portsSaved}\n${toastMessage}` : t.portsSaved;
+      showToast(message, 'success');
     } catch (error) {
       console.error('Failed to save ports:', error);
       const errorCode = extractErrorCode(error);
@@ -213,6 +230,54 @@ export function PortsSettings({
       setSavingPorts(false);
     }
   };
+
+  const cancelSave = useCallback(() => {
+    setShowConfirm(false);
+    setPorts(originalPorts);
+  }, [originalPorts]);
+
+  useEffect(() => {
+    if (!showConfirm) {
+      return undefined;
+    }
+
+    previousFocusedElementRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    const focusableElements = [cancelButtonRef.current, confirmButtonRef.current].filter(
+      (element): element is HTMLButtonElement => element !== null
+    );
+    focusableElements[0]?.focus();
+
+    const handleDialogKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelSave();
+        return;
+      }
+
+      if (event.key !== 'Tab' || focusableElements.length === 0) {
+        return;
+      }
+
+      const currentIndex = focusableElements.findIndex(element => element === document.activeElement);
+      const fallbackIndex = event.shiftKey ? focusableElements.length - 1 : 0;
+      const activeIndex = currentIndex === -1 ? fallbackIndex : currentIndex;
+      const nextIndex = event.shiftKey
+        ? (activeIndex - 1 + focusableElements.length) % focusableElements.length
+        : (activeIndex + 1) % focusableElements.length;
+
+      event.preventDefault();
+      focusableElements[nextIndex]?.focus();
+    };
+
+    document.addEventListener('keydown', handleDialogKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleDialogKeyDown);
+      previousFocusedElementRef.current?.focus();
+    };
+  }, [cancelSave, showConfirm]);
 
   const handlePublicAccessSave = async () => {
     setSavingPublicAccess(true);
@@ -292,24 +357,39 @@ export function PortsSettings({
           {portsReady && !portsLoadErrorCode && (
             <>
               <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-5 dark:border-slate-700 dark:bg-slate-900/40">
-                <div>
-                  <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                    {t.portsCurrentBackend}
-                  </p>
-                  <p className="mt-2 text-2xl font-bold" style={{ color: '#4083f2' }}>
-                    {originalPorts.backend}
-                  </p>
-                  <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
-                    http://localhost:{originalPorts.backend}
-                  </p>
+                <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                  <div>
+                    <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                      {t.portsCurrentBackend}
+                    </p>
+                    <p className="mt-2 text-2xl font-bold" style={{ color: '#4083f2' }}>
+                      {originalPorts.backend}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                      {t.portsCurrentWeb}
+                    </p>
+                    <p className="mt-2 text-2xl font-bold" style={{ color: '#4083f2' }}>
+                      {originalPorts.web}
+                    </p>
+                    <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
+                      http://localhost:{originalPorts.web}
+                    </p>
+                  </div>
+                </div>
 
-                  <div className="mx-auto mt-4 w-2/3 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                {hasPortChanges && (
+                  <div
+                    className="mx-auto mt-5 w-full rounded-lg border border-amber-200 bg-amber-50 p-4 motion-safe:animate-pulse motion-reduce:animate-none dark:border-amber-800 dark:bg-amber-900/20"
+                    style={{ animationIterationCount: 3 }}
+                  >
                     <p className="text-amber-800 dark:text-amber-200 text-sm font-medium flex items-center justify-center gap-2">
                       <img src={isDarkMode ? warningIconDark : warningIconLight} alt="" className="w-6 h-6 shrink-0" />
                       {t.portsWarning}
                     </p>
                   </div>
-                </div>
+                )}
 
                 {isCloudRun ? (
                   <div className="mt-6">
@@ -326,6 +406,9 @@ export function PortsSettings({
                       type="button"
                       className="flex items-start text-left w-full group focus:outline-none -ml-[17px]"
                       onClick={() => setShowAdvancedPorts(prev => !prev)}
+                      aria-label={
+                        showAdvancedPorts ? t.portsHideAdvancedSettings : t.portsShowAdvancedSettings
+                      }
                     >
                       <div className="mt-1 shrink-0 pt-[2px] w-[14px] flex justify-center">
                         {showAdvancedPorts ? (
@@ -350,33 +433,52 @@ export function PortsSettings({
 
                     {showAdvancedPorts && (
                       <div className="mt-5 space-y-4">
-                        <div>
-                          <label className="label">{t.portsBackend}</label>
-                          <div className="input-rainbow-glow">
-                            <input
-                              type="number"
-                              className="input"
-                              style={{ width: '100%' }}
-                              value={ports.backend}
-                              onChange={(e) => handlePortChange(e.target.value)}
-                              min="1024"
-                              max="65535"
-                            />
+                        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                          <div>
+                            <label className="label">{t.portsBackend}</label>
+                            <div className="input-rainbow-glow">
+                              <input
+                                type="number"
+                                className="input"
+                                style={{ width: '100%' }}
+                                value={ports.backend}
+                                onChange={(e) => handlePortChange('backend', e.target.value)}
+                                min="1024"
+                                max="65535"
+                              />
+                            </div>
                           </div>
-                          <p className="text-sm text-slate-500 mt-1">
-                            http://localhost:{ports.backend}
-                          </p>
+
+                          <div>
+                            <label className="label">{t.portsWeb}</label>
+                            <div className="input-rainbow-glow">
+                              <input
+                                type="number"
+                                className="input"
+                                style={{ width: '100%' }}
+                                value={ports.web}
+                                onChange={(e) => handlePortChange('web', e.target.value)}
+                                min="1024"
+                                max="65535"
+                              />
+                            </div>
+                            <p className="text-sm text-slate-500 mt-1">
+                              http://localhost:{ports.web}
+                            </p>
+                          </div>
                         </div>
 
                         {hasPortChanges && (
-                          <button
-                            style={{ minWidth: '100px', height: '46px' }}
-                            className="btn btn-primary text-xs whitespace-nowrap"
-                            onClick={handleSave}
-                            disabled={savingPorts}
-                          >
-                            {savingPorts ? t.saving : t.saveChanges}
-                          </button>
+                          <div className="mt-2 flex justify-center w-full">
+                            <button
+                              style={{ minWidth: '100px', height: '36px' }}
+                              className="btn btn-primary text-xs whitespace-nowrap"
+                              onClick={handleSave}
+                              disabled={savingPorts}
+                            >
+                              {savingPorts ? t.saving : t.saveChanges}
+                            </button>
+                          </div>
                         )}
                       </div>
                     )}
@@ -436,8 +538,9 @@ export function PortsSettings({
                         className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 transition-colors"
                         onClick={handleCopyCursorUrl}
                         title={t.publicAccessCopy}
+                        aria-label={t.publicAccessCopy}
                       >
-                        <img src={copyIcon} alt="Copy" className="w-4 h-4 dark:invert opacity-70 hover:opacity-100" />
+                        <img src={copyIcon} alt="" className="w-4 h-4 dark:invert opacity-70 hover:opacity-100" />
                       </button>
                     )}
                   </div>
@@ -469,7 +572,6 @@ export function PortsSettings({
                     <div className="mt-4 flex flex-wrap gap-3">
                       {[
                         { href: LOCAL_TUNNEL_DOC_URL, label: t.publicAccessDocsLocalTunnel },
-                        { href: CLOUD_RUN_DOC_URL, label: t.publicAccessDocsCloudRun },
                         { href: GITHUB_DOCS_URL, label: t.publicAccessDocsGitHub },
                       ].map(({ href, label }) => (
                         <a
@@ -495,16 +597,6 @@ export function PortsSettings({
                           {t.publicAccessManualFallbackDescription}
                         </p>
                       </div>
-                      {hasPublicAccessChanges && (
-                        <button
-                          style={{ minWidth: '100px', height: '46px', flexShrink: 0 }}
-                          className="btn btn-primary text-xs whitespace-nowrap"
-                          onClick={handlePublicAccessSave}
-                          disabled={savingPublicAccess}
-                        >
-                          {savingPublicAccess ? t.saving : t.saveChanges}
-                        </button>
-                      )}
                     </div>
 
                     <div className="mt-5 grid grid-cols-1 gap-6 md:grid-cols-2">
@@ -555,6 +647,18 @@ export function PortsSettings({
                     <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">
                       {t.publicAccessManualFallbackHint}
                     </p>
+                    {hasPublicAccessChanges && (
+                      <div className="mt-6 flex justify-center w-full">
+                        <button
+                          style={{ minWidth: '100px', height: '36px', flexShrink: 0 }}
+                          className="btn btn-primary text-xs whitespace-nowrap"
+                          onClick={handlePublicAccessSave}
+                          disabled={savingPublicAccess}
+                        >
+                          {savingPublicAccess ? t.saving : t.saveChanges}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </>
               )}
@@ -562,6 +666,43 @@ export function PortsSettings({
           )}
         </div>
       </div>
+
+      {showConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4 py-6 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-900/5 dark:bg-slate-900 dark:ring-white/10 text-center">
+            <div className="p-6">
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
+                {t.portsConfirmChangeTitle}
+              </h3>
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                {t.portsConfirmChangeDesc}
+              </p>
+              <div className="mt-6 flex justify-center gap-3">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={cancelSave}
+                  ref={cancelButtonRef}
+                >
+                  {t.portsCancelBtn}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={confirmSave}
+                  ref={confirmButtonRef}
+                >
+                  {t.portsConfirmBtn}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

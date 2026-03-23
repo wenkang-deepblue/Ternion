@@ -132,7 +132,7 @@ function PublicAccessModal({
         aria-labelledby="public-access-modal-title"
         aria-describedby="public-access-modal-body"
         tabIndex={-1}
-        className="w-full max-w-xl rounded-xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-800"
+        className="w-full max-w-lg transform overflow-hidden rounded-2xl bg-white text-center align-middle shadow-xl transition-all dark:bg-slate-900"
       >
         <h2
           id="public-access-modal-title"
@@ -146,7 +146,7 @@ function PublicAccessModal({
         >
           {body}
         </p>
-        <div className="mt-6 flex flex-wrap justify-end gap-3">
+        <div className="mt-6 flex flex-wrap justify-center gap-3">
           {secondaryLabel && onSecondary && (
             <button type="button" className="btn btn-secondary" onClick={onSecondary}>
               {secondaryLabel}

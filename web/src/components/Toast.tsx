@@ -75,7 +75,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           {toast.type === 'success' && <img src={checkIcon} alt="" className="w-5 h-5" />}
           {toast.type === 'error' && <img src={errorIcon} alt="" className="w-5 h-5" />}
           {toast.type === 'info' && <img src={infoIcon} alt="" className="w-5 h-5" />}
-          <span className="font-medium whitespace-pre-line text-left">{toast.message}</span>
+          <span className="font-medium whitespace-pre-line text-center">{toast.message}</span>
         </div>
       ))}
     </ToastContext.Provider>

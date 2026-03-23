@@ -185,8 +185,10 @@ export interface Translations {
   portsTitle: string;
   portsDescription: string;
   portsBackend: string;
+  portsWeb: string;
   portsBackendLabel: string;
   portsCurrentBackend: string;
+  portsCurrentWeb: string;
   portsAdvancedSettings: string;
   portsAdvancedDescription: string;
   portsShowAdvancedSettings: string;
@@ -196,6 +198,12 @@ export interface Translations {
   portsRestartNote: string;
   portsSaved: string;
   portsInvalid: string;
+  portsDuplicate: string;
+  portsConfirmChangeTitle: string;
+  portsConfirmChangeDesc: string;
+  portsConfirmBtn: string;
+  portsCancelBtn: string;
+  portsChangedToast: string;
   publicAccessTitle: string;
   publicAccessDescription: string;
   publicAccessDeploymentEnvironment: string;
@@ -451,13 +459,15 @@ const EN: Translations = {
   // Ports Settings
   portsTitle: 'Port Configuration',
   portsDescription:
-    'Public access information is shown above. Backend port changes are available only in advanced settings for local deployments.',
+    'Public access information is shown above. Local deployments can change backend and Web UI ports from advanced settings when needed.',
   portsBackend: 'Change Ternion Backend API Port',
+  portsWeb: 'Change Web UI Control Panel Port',
   portsBackendLabel: 'Backend',
   portsCurrentBackend: 'Current Ternion backend API port',
+  portsCurrentWeb: 'Current Web UI control panel port',
   portsAdvancedSettings: 'Advanced port settings',
   portsAdvancedDescription:
-    'Only advanced users should change the backend port, typically when resolving a local port conflict.',
+    'Only advanced users should change backend or Web UI ports, typically when resolving local port conflicts.',
   portsShowAdvancedSettings: 'Show advanced settings',
   portsHideAdvancedSettings: 'Hide advanced settings',
   portsCloudRunManaged:
@@ -466,6 +476,13 @@ const EN: Translations = {
   portsRestartNote: 'After saving, restart the server with the new configuration',
   portsSaved: 'Port configuration saved',
   portsInvalid: 'Invalid port number (1024-65535)',
+  portsDuplicate: 'Backend and Web UI ports must be different.',
+  portsConfirmChangeTitle: 'Confirm Port Change?',
+  portsConfirmChangeDesc: 'Port changes take effect after manual restart. Save changes?',
+  portsConfirmBtn: 'Confirm',
+  portsCancelBtn: 'Cancel',
+  portsChangedToast:
+    'Ports updated. Backend: {backend}, Web UI: {web}. Please restart the ternion service manually.',
   publicAccessTitle: 'Public Access',
   publicAccessDescription:
     'View the detected public URL, copy the Cursor base URL, and use a manual fallback only when auto-detection is unavailable.',
@@ -481,7 +498,7 @@ const EN: Translations = {
     'This does not start or configure any tunnel. It only saves a fallback value for display and copy.',
   publicAccessDocsTitle: 'Public access guides',
   publicAccessDocsDescription:
-    'If no public URL is detected yet, use these guides to set up a local tunnel, deploy on Cloud Run, or review the repository documentation.',
+    'If no public URL is detected yet, use these guides to set up a local tunnel or review the GitHub documentation.',
   publicAccessDocsLocalTunnel: 'Local tunnel guide',
   publicAccessDocsCloudRun: 'Cloud Run deployment guide',
   publicAccessDocsGitHub: 'GitHub documentation',
@@ -794,12 +811,14 @@ const ZH: Translations = {
 
   // Ports Settings
   portsTitle: '端口配置',
-  portsDescription: '公网接入信息优先展示在上方。本地部署时，如确有需要，可在高级设置中修改后端端口。',
+  portsDescription: '公网接入信息优先展示在上方。本地部署时，如确有需要，可在高级设置中修改后端端口和 Web UI 端口。',
   portsBackend: '更改 Ternion 后端 API 端口',
+  portsWeb: '更改 Web UI 控制台端口',
   portsBackendLabel: '后端',
   portsCurrentBackend: '当前 Ternion 后端 API 端口',
+  portsCurrentWeb: '当前 Web UI 控制台端口',
   portsAdvancedSettings: '高级端口设置',
-  portsAdvancedDescription: '通常只有在本地端口冲突时，才需要由高级用户修改后端端口。',
+  portsAdvancedDescription: '通常只有在本地端口冲突时，才需要由高级用户修改后端端口和 Web UI 端口。',
   portsShowAdvancedSettings: '显示高级设置',
   portsHideAdvancedSettings: '隐藏高级设置',
   portsCloudRunManaged:
@@ -808,21 +827,27 @@ const ZH: Translations = {
   portsRestartNote: '保存后，请使用新配置重启服务器',
   portsSaved: '端口配置已保存',
   portsInvalid: '无效的端口号 (1024-65535)',
+  portsDuplicate: '后端端口和 Web UI 端口不能相同。',
+  portsConfirmChangeTitle: '是否确认更改端口？',
+  portsConfirmChangeDesc: '端口重启后生效。是否保存更改？',
+  portsConfirmBtn: '确认',
+  portsCancelBtn: '取消',
+  portsChangedToast: '端口已更新。后端：{backend}，Web UI：{web}。请手动重启 ternion 服务。',
   publicAccessTitle: '公网接入',
-  publicAccessDescription: '查看当前检测到的公网 URL，复制 Cursor Base URL，并在自动检测失败时补充手工 fallback。',
+  publicAccessDescription: '查看当前检测到的公网 URL，复制 Cursor Base URL，并在自动检测失败时补充手动输入。',
   publicAccessDeploymentEnvironment: '当前部署方式',
   publicAccessDeploymentEnvironmentLocal: '本地部署',
   publicAccessDeploymentEnvironmentCloudRun: 'Cloud Run',
   publicAccessDetectedPublicUrl: '当前检测到的公网 URL',
   publicAccessDetectedPublicUrlUnavailable: '尚未自动检测到',
-  publicAccessManualFallbackTitle: '手工 fallback',
+  publicAccessManualFallbackTitle: '手动输入',
   publicAccessManualFallbackDescription:
     '如果当前无法自动检测到公网 URL，你可以在这里补充一个公网 HTTPS URL，便于在其他设备上继续展示和复制。',
   publicAccessManualFallbackHint:
-    '这不会自动启动或配置任何 tunnel，只会保存一个用于展示和复制的 fallback 值。',
+    '这不会自动启动或配置任何 tunnel，只会保存一个用于展示和复制的文本。',
   publicAccessDocsTitle: '公网接入文档入口',
   publicAccessDocsDescription:
-    '如果当前还没有检测到公网 URL，可以通过下面的入口查看本地隧道、Cloud Run 部署方式，以及仓库文档。',
+    '如果当前还没有检测到公网 URL，可以通过下面的入口查看本地隧道配置文档或 GitHub 文档。',
   publicAccessDocsLocalTunnel: '本地隧道配置文档',
   publicAccessDocsCloudRun: 'Cloud Run 部署文档',
   publicAccessDocsGitHub: 'GitHub 文档',
@@ -1134,13 +1159,15 @@ const ES: Translations = {
   // Ports Settings
   portsTitle: 'Configuración de Puertos',
   portsDescription:
-    'La información de acceso público se muestra arriba. En despliegues locales, el puerto del backend solo debe cambiarse desde la configuración avanzada cuando sea necesario.',
+    'La información de acceso público se muestra arriba. En despliegues locales, los puertos del backend y de la Web UI pueden cambiarse desde la configuración avanzada cuando sea necesario.',
   portsBackend: 'Cambiar Puerto API Backend de Ternion',
+  portsWeb: 'Cambiar Puerto del Panel Web UI',
   portsBackendLabel: 'Backend',
   portsCurrentBackend: 'Puerto API Backend Actual de Ternion',
+  portsCurrentWeb: 'Puerto actual del panel Web UI',
   portsAdvancedSettings: 'Configuración avanzada de puertos',
   portsAdvancedDescription:
-    'Solo los usuarios avanzados deberían cambiar el puerto del backend, normalmente para resolver conflictos de puertos locales.',
+    'Solo los usuarios avanzados deberían cambiar los puertos del backend o de la Web UI, normalmente para resolver conflictos de puertos locales.',
   portsShowAdvancedSettings: 'Mostrar configuración avanzada',
   portsHideAdvancedSettings: 'Ocultar configuración avanzada',
   portsCloudRunManaged:
@@ -1149,6 +1176,13 @@ const ES: Translations = {
   portsRestartNote: 'Después de guardar, reinicie el servidor con la nueva configuración',
   portsSaved: 'Configuración de puerto guardada',
   portsInvalid: 'Número de puerto inválido (1024-65535)',
+  portsDuplicate: 'Los puertos del backend y de la Web UI deben ser diferentes.',
+  portsConfirmChangeTitle: '¿Confirmar cambio de puerto?',
+  portsConfirmChangeDesc: 'Los cambios de puerto surten efecto después del reinicio manual. ¿Guardar cambios?',
+  portsConfirmBtn: 'Confirmar',
+  portsCancelBtn: 'Cancelar',
+  portsChangedToast:
+    'Puertos actualizados. Backend: {backend}, Web UI: {web}. Reinicie el servicio ternion manualmente.',
   publicAccessTitle: 'Acceso Público',
   publicAccessDescription:
     'Vea la URL pública detectada, copie la URL base de Cursor y use un valor manual de respaldo solo cuando la detección automática no esté disponible.',
@@ -1164,7 +1198,7 @@ const ES: Translations = {
     'Esto no inicia ni configura ningún túnel. Solo guarda un valor de respaldo para mostrarlo y copiarlo.',
   publicAccessDocsTitle: 'Guías de acceso público',
   publicAccessDocsDescription:
-    'Si todavía no se detecta ninguna URL pública, use estas guías para configurar un túnel local, desplegar en Cloud Run o revisar la documentación del repositorio.',
+    'Si todavía no se detecta ninguna URL pública, use estas guías para configurar un túnel local o revisar la documentación de GitHub.',
   publicAccessDocsLocalTunnel: 'Guía de túnel local',
   publicAccessDocsCloudRun: 'Guía de despliegue en Cloud Run',
   publicAccessDocsGitHub: 'Documentación de GitHub',
@@ -1479,13 +1513,15 @@ const FR: Translations = {
   // Ports Settings
   portsTitle: 'Configuration des Ports',
   portsDescription:
-    'Les informations d’accès public sont affichées ci-dessus. En déploiement local, le port backend ne doit être modifié dans les paramètres avancés qu’en cas de besoin.',
+    'Les informations d’accès public sont affichées ci-dessus. En déploiement local, les ports backend et Web UI peuvent être modifiés dans les paramètres avancés en cas de besoin.',
   portsBackend: 'Modifier le Port API Backend Ternion',
+  portsWeb: 'Modifier le Port du panneau Web UI',
   portsBackendLabel: 'Backend',
   portsCurrentBackend: 'Port API Backend Ternion Actuel',
+  portsCurrentWeb: 'Port actuel du panneau Web UI',
   portsAdvancedSettings: 'Paramètres avancés des ports',
   portsAdvancedDescription:
-    'Seuls les utilisateurs avancés devraient modifier le port backend, généralement pour résoudre un conflit de ports local.',
+    'Seuls les utilisateurs avancés devraient modifier les ports backend ou Web UI, généralement pour résoudre un conflit de ports local.',
   portsShowAdvancedSettings: 'Afficher les paramètres avancés',
   portsHideAdvancedSettings: 'Masquer les paramètres avancés',
   portsCloudRunManaged:
@@ -1494,6 +1530,13 @@ const FR: Translations = {
   portsRestartNote: 'Après la sauvegarde, redémarrez le serveur avec la nouvelle configuration',
   portsSaved: 'Configuration du port sauvegardée',
   portsInvalid: 'Numéro de port invalide (1024-65535)',
+  portsDuplicate: 'Les ports backend et Web UI doivent être différents.',
+  portsConfirmChangeTitle: 'Confirmer le changement de port ?',
+  portsConfirmChangeDesc: 'Les changements de port prennent effet après un redémarrage manuel. Enregistrer les modifications ?',
+  portsConfirmBtn: 'Confirmer',
+  portsCancelBtn: 'Annuler',
+  portsChangedToast:
+    'Ports mis à jour. Backend : {backend}, Web UI : {web}. Veuillez redémarrer le service ternion manuellement.',
   publicAccessTitle: 'Accès Public',
   publicAccessDescription:
     'Affichez l’URL publique détectée, copiez l’URL de base Cursor et utilisez un secours manuel uniquement lorsque la détection automatique est indisponible.',
@@ -1509,7 +1552,7 @@ const FR: Translations = {
     'Cela ne démarre ni ne configure aucun tunnel. Cela enregistre seulement une valeur de secours pour l’affichage et la copie.',
   publicAccessDocsTitle: 'Guides d’accès public',
   publicAccessDocsDescription:
-    'Si aucune URL publique n’est encore détectée, utilisez ces guides pour configurer un tunnel local, déployer sur Cloud Run ou consulter la documentation du dépôt.',
+    'Si aucune URL publique n’est encore détectée, utilisez ces guides pour configurer un tunnel local ou consulter la documentation GitHub.',
   publicAccessDocsLocalTunnel: 'Guide du tunnel local',
   publicAccessDocsCloudRun: 'Guide de déploiement Cloud Run',
   publicAccessDocsGitHub: 'Documentation GitHub',
@@ -1824,13 +1867,15 @@ const DE: Translations = {
   // Ports Settings
   portsTitle: 'Port-Konfiguration',
   portsDescription:
-    'Die Informationen zum öffentlichen Zugriff werden oben angezeigt. Bei lokalen Deployments sollte der Backend-Port nur bei Bedarf in den erweiterten Einstellungen geändert werden.',
+    'Die Informationen zum öffentlichen Zugriff werden oben angezeigt. Bei lokalen Deployments können Backend- und Web-UI-Ports bei Bedarf in den erweiterten Einstellungen geändert werden.',
   portsBackend: 'Ternion Backend-API-Port ändern',
+  portsWeb: 'Web-UI-Konsolenport ändern',
   portsBackendLabel: 'Backend',
   portsCurrentBackend: 'Aktueller Ternion Backend-API-Port',
+  portsCurrentWeb: 'Aktueller Web-UI-Konsolenport',
   portsAdvancedSettings: 'Erweiterte Porteinstellungen',
   portsAdvancedDescription:
-    'Nur fortgeschrittene Nutzer sollten den Backend-Port ändern, typischerweise um lokale Portkonflikte zu lösen.',
+    'Nur fortgeschrittene Nutzer sollten Backend- oder Web-UI-Ports ändern, typischerweise um lokale Portkonflikte zu lösen.',
   portsShowAdvancedSettings: 'Erweiterte Einstellungen anzeigen',
   portsHideAdvancedSettings: 'Erweiterte Einstellungen ausblenden',
   portsCloudRunManaged:
@@ -1839,6 +1884,13 @@ const DE: Translations = {
   portsRestartNote: 'Nach dem Speichern Server mit neuer Konfiguration neu starten',
   portsSaved: 'Port-Konfiguration gespeichert',
   portsInvalid: 'Ungültige Portnummer (1024-65535)',
+  portsDuplicate: 'Backend- und Web-UI-Port müssen unterschiedlich sein.',
+  portsConfirmChangeTitle: 'Portänderung bestätigen?',
+  portsConfirmChangeDesc: 'Portänderungen werden nach einem manuellen Neustart wirksam. Änderungen speichern?',
+  portsConfirmBtn: 'Bestätigen',
+  portsCancelBtn: 'Abbrechen',
+  portsChangedToast:
+    'Ports aktualisiert. Backend: {backend}, Web UI: {web}. Bitte starten Sie den ternion-Dienst manuell neu.',
   publicAccessTitle: 'Öffentlicher Zugriff',
   publicAccessDescription:
     'Zeigen Sie die erkannte öffentliche URL an, kopieren Sie die Cursor-Basis-URL und verwenden Sie einen manuellen Fallback nur dann, wenn keine automatische Erkennung verfügbar ist.',
@@ -1854,7 +1906,7 @@ const DE: Translations = {
     'Dadurch wird kein Tunnel gestartet oder konfiguriert. Es speichert nur einen Fallback-Wert zum Anzeigen und Kopieren.',
   publicAccessDocsTitle: 'Anleitungen für öffentlichen Zugriff',
   publicAccessDocsDescription:
-    'Wenn noch keine öffentliche URL erkannt wurde, verwenden Sie diese Anleitungen, um einen lokalen Tunnel einzurichten, auf Cloud Run bereitzustellen oder die Repository-Dokumentation zu lesen.',
+    'Wenn noch keine öffentliche URL erkannt wurde, verwenden Sie diese Anleitungen, um einen lokalen Tunnel einzurichten oder die GitHub-Dokumentation zu lesen.',
   publicAccessDocsLocalTunnel: 'Anleitung für lokalen Tunnel',
   publicAccessDocsCloudRun: 'Cloud Run-Bereitstellungsanleitung',
   publicAccessDocsGitHub: 'GitHub-Dokumentation',
@@ -2169,13 +2221,15 @@ const JA: Translations = {
   // Ports Settings
   portsTitle: 'ポート設定',
   portsDescription:
-    '公開アクセス情報は上部に優先表示されます。ローカルデプロイでは、必要な場合のみ高度な設定でバックエンドポートを変更してください。',
+    '公開アクセス情報は上部に優先表示されます。ローカルデプロイでは、必要な場合のみ高度な設定でバックエンドポートと Web UI ポートを変更してください。',
   portsBackend: 'Ternionバックエンドポート変更',
+  portsWeb: 'Web UI コントロールパネルポート変更',
   portsBackendLabel: 'バックエンド',
   portsCurrentBackend: '現在のTernionバックエンドAPIポート',
+  portsCurrentWeb: '現在の Web UI コントロールパネルポート',
   portsAdvancedSettings: '高度なポート設定',
   portsAdvancedDescription:
-    '通常、バックエンドポートを変更するのはローカルのポート競合を解消するときだけです。',
+    '通常、バックエンドポートまたは Web UI ポートを変更するのは、ローカルのポート競合を解消するときだけです。',
   portsShowAdvancedSettings: '高度な設定を表示',
   portsHideAdvancedSettings: '高度な設定を隠す',
   portsCloudRunManaged:
@@ -2184,6 +2238,13 @@ const JA: Translations = {
   portsRestartNote: '保存後、新しい設定でサーバーを再起動してください',
   portsSaved: 'ポート設定を保存しました',
   portsInvalid: '無効なポート番号 (1024-65535)',
+  portsDuplicate: 'バックエンドポートと Web UI ポートは同じにできません。',
+  portsConfirmChangeTitle: 'ポート変更を確認しますか？',
+  portsConfirmChangeDesc: 'ポートの変更は手動再起動後に有効になります。変更を保存しますか？',
+  portsConfirmBtn: '確認',
+  portsCancelBtn: 'キャンセル',
+  portsChangedToast:
+    'ポートを更新しました。バックエンド: {backend}、Web UI: {web}。ternion サービスを手動で再起動してください。',
   publicAccessTitle: '公開アクセス',
   publicAccessDescription:
     '検出された公開 URL を確認し、Cursor Base URL をコピーし、自動検出できない場合にのみ手動 fallback を使います。',
@@ -2199,7 +2260,7 @@ const JA: Translations = {
     'これは tunnel を自動起動または設定しません。表示とコピー用の fallback 値を保存するだけです。',
   publicAccessDocsTitle: '公開アクセスのガイド',
   publicAccessDocsDescription:
-    'まだ公開 URL が検出されていない場合は、これらのガイドからローカルトンネル設定、Cloud Run へのデプロイ、またはリポジトリ文書を確認できます。',
+    'まだ公開 URL が検出されていない場合は、これらのガイドからローカルトンネル設定または GitHub ドキュメントを確認できます。',
   publicAccessDocsLocalTunnel: 'ローカルトンネル設定ガイド',
   publicAccessDocsCloudRun: 'Cloud Run デプロイガイド',
   publicAccessDocsGitHub: 'GitHub ドキュメント',
@@ -2514,13 +2575,15 @@ const KO: Translations = {
   // Ports Settings
   portsTitle: '포트 설정',
   portsDescription:
-    '공개 액세스 정보가 위에 우선 표시됩니다. 로컬 배포에서는 필요한 경우에만 고급 설정에서 백엔드 포트를 변경하세요.',
+    '공개 액세스 정보가 위에 우선 표시됩니다. 로컬 배포에서는 필요한 경우에만 고급 설정에서 백엔드와 Web UI 포트를 변경하세요.',
   portsBackend: 'Ternion 백엔드 포트 변경',
+  portsWeb: 'Web UI 제어판 포트 변경',
   portsBackendLabel: '백엔드',
   portsCurrentBackend: '현재 Ternion 백엔드 API 포트',
+  portsCurrentWeb: '현재 Web UI 제어판 포트',
   portsAdvancedSettings: '고급 포트 설정',
   portsAdvancedDescription:
-    '보통 로컬 포트 충돌을 해결해야 할 때만 고급 사용자가 백엔드 포트를 변경하면 됩니다.',
+    '보통 로컬 포트 충돌을 해결해야 할 때만 고급 사용자가 백엔드 또는 Web UI 포트를 변경하면 됩니다.',
   portsShowAdvancedSettings: '고급 설정 표시',
   portsHideAdvancedSettings: '고급 설정 숨기기',
   portsCloudRunManaged:
@@ -2529,6 +2592,13 @@ const KO: Translations = {
   portsRestartNote: '저장 후 새 구성으로 서버를 다시 시작하세요',
   portsSaved: '포트 설정 저장됨',
   portsInvalid: '잘못된 포트 번호 (1024-65535)',
+  portsDuplicate: '백엔드 포트와 Web UI 포트는 서로 달라야 합니다.',
+  portsConfirmChangeTitle: '포트 변경을 확인하시겠습니까?',
+  portsConfirmChangeDesc: '포트 변경 사항은 수동 재시작 후 적용됩니다. 변경 사항을 저장하시겠습니까?',
+  portsConfirmBtn: '확인',
+  portsCancelBtn: '취소',
+  portsChangedToast:
+    '포트가 업데이트되었습니다. 백엔드: {backend}, Web UI: {web}. ternion 서비스를 수동으로 재시작하십시오.',
   publicAccessTitle: '공개 액세스',
   publicAccessDescription:
     '감지된 공개 URL을 확인하고 Cursor Base URL을 복사하며, 자동 감지가 불가능할 때만 수동 fallback을 사용합니다.',
@@ -2544,7 +2614,7 @@ const KO: Translations = {
     '이 작업은 어떤 터널도 자동으로 시작하거나 구성하지 않습니다. 표시와 복사용 fallback 값만 저장합니다.',
   publicAccessDocsTitle: '공개 액세스 가이드',
   publicAccessDocsDescription:
-    '아직 공개 URL이 감지되지 않았다면 이 가이드를 통해 로컬 터널 설정, Cloud Run 배포, 또는 저장소 문서를 확인할 수 있습니다.',
+    '아직 공개 URL이 감지되지 않았다면 이 가이드를 통해 로컬 터널 설정 또는 GitHub 문서를 확인할 수 있습니다.',
   publicAccessDocsLocalTunnel: '로컬 터널 가이드',
   publicAccessDocsCloudRun: 'Cloud Run 배포 가이드',
   publicAccessDocsGitHub: 'GitHub 문서',

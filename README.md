@@ -163,10 +163,14 @@ Start Ternion:
 ternion
 ```
 
+On the first run after installation, Ternion will automatically ask whether you want
+to customize the released backend port before it starts the service. Later runs start
+the service directly with the saved configuration.
+
 Then open:
 
-- Control Panel: `http://127.0.0.1:9110/panel`
-- API Docs: `http://127.0.0.1:9110/docs`
+- Control Panel: `http://127.0.0.1:<backend-port>/panel`
+- API Docs: `http://127.0.0.1:<backend-port>/docs`
 
 The released package is designed so end users do not need Node.js.
 
@@ -203,7 +207,7 @@ These are third-party services with their own terms, pricing, and availability. 
 ### Example: ngrok
 
 ```bash
-ngrok http 9110
+ngrok http <backend-port>
 ```
 
 Then use:
@@ -332,7 +336,7 @@ Check the following:
 
 Check:
 
-- `http://127.0.0.1:9110/panel`
+- `http://127.0.0.1:<backend-port>/panel`
 - whether the packaged web assets were included correctly in your installation
 
 ### Ternion returns configuration errors

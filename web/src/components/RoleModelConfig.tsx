@@ -620,7 +620,7 @@ export function RoleModelConfig({
                   </div>
                 </div>
                 {showProModelWarning && (
-                  <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-[11px] dark:border-amber-700 dark:bg-amber-950/40 md:max-w-[44rem]">
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-[11px] dark:border-amber-700 dark:bg-amber-950/40 md:max-w-176">
                     <div className="flex items-start gap-3">
                       <p className={`flex-1 text-amber-800 dark:text-amber-200 ${proWarningTextClass}`}>
                         {t.roleConfigProModelWarningPrefix}
