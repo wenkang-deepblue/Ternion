@@ -147,7 +147,7 @@ async def test_execution_followup_streaming_pending_tool_calls_does_not_crash() 
                 "type": "function",
                 "function": {
                     "name": "Write",
-                    "arguments": '{"path":"/Users/apple/Desktop/Ternion/docs/tmp.md","contents":"x"}',
+                    "arguments": '{"path":"/Users/example/Desktop/sample-repo/docs/tmp.md","contents":"x"}',
                 },
             }
         ],

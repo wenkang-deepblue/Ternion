@@ -23,13 +23,22 @@ function buildPublicAccess(overrides?: Partial<PublicAccessStatus>): PublicAcces
   };
 }
 
-function renderNotice(publicAccess: PublicAccessStatus | null, ready = true) {
+function renderNotice(
+  publicAccess: PublicAccessStatus | null,
+  ready = true,
+  previewModal: 'intro' | 'guide' | null = null
+) {
   const t = getTranslations('zh');
   const showToast = vi.fn();
 
   const utils = render(
     <ToastContext.Provider value={{ showToast }}>
-      <PublicAccessNotice publicAccess={publicAccess} ready={ready} t={t} />
+      <PublicAccessNotice
+        publicAccess={publicAccess}
+        ready={ready}
+        t={t}
+        previewModal={previewModal}
+      />
     </ToastContext.Provider>
   );
 
@@ -125,5 +134,22 @@ describe('PublicAccessNotice', () => {
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
+  });
+
+  it('renders the intro modal directly in preview mode', async () => {
+    const { t, showToast } = renderNotice(null, false, 'intro');
+
+    expect(await screen.findByText(t.publicAccessIntroTitle)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.publicAccessIntroGuide })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.publicAccessIntroOk })).toBeInTheDocument();
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('renders the guide modal directly in preview mode', async () => {
+    const { t, showToast } = renderNotice(null, false, 'guide');
+
+    expect(await screen.findByText(t.publicAccessGuideTitle)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t.publicAccessGuideClose })).toBeInTheDocument();
+    expect(showToast).not.toHaveBeenCalled();
   });
 });

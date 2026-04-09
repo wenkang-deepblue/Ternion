@@ -1548,7 +1548,7 @@ class TestChatCompletions:
         """Explicit workspace metadata should survive even when absent on the server."""
         from ternion.server.routes import _extract_workspace_boundary_from_request_messages
 
-        remote_workspace = "/Users/apple/Desktop/translay-test"
+        remote_workspace = "/Users/example/Desktop/sample-workspace"
         messages = [
             ChatMessage(
                 role=MessageRole.USER,
@@ -1634,7 +1634,7 @@ class TestChatCompletions:
         """Client-relative paths should work without a matching local directory."""
         from ternion.server.routes import _workspace_relative_path
 
-        remote_workspace = "/Users/apple/Desktop/translay-test"
+        remote_workspace = "/Users/example/Desktop/sample-workspace"
 
         assert (
             _workspace_relative_path(
@@ -1645,14 +1645,14 @@ class TestChatCompletions:
         )
         assert (
             _workspace_relative_path(
-                "/Users/apple/Desktop/translay-test/docs/spec.md",
+                "/Users/example/Desktop/sample-workspace/docs/spec.md",
                 workspace_root=remote_workspace,
             )
             == "docs/spec.md"
         )
         assert (
             _workspace_relative_path(
-                "/Users/apple/Desktop/other/outside.md",
+                "/Users/example/Desktop/other/outside.md",
                 workspace_root=remote_workspace,
             )
             is None
@@ -1733,7 +1733,7 @@ class TestChatCompletions:
             tool_calls=tool_calls,
             conversation_history=[{"role": "user", "content": "please update code"}],
             ternion_report="Fix Plan: update code.",
-            workspace_root="/Users/apple/Desktop/translay-test",
+            workspace_root="/Users/example/Desktop/sample-workspace",
             workspace_root_source="explicit_workspace_path",
         )
 
@@ -1762,7 +1762,7 @@ class TestChatCompletions:
             tool_calls=tool_calls,
             conversation_history=[{"role": "user", "content": "please update code"}],
             ternion_report="Fix Plan: update code.",
-            workspace_root="/Users/apple/Desktop/Ternion",
+            workspace_root="/Users/example/Desktop/sample-repo",
             workspace_root_source="fallback_project_root",
         )
 
@@ -1793,7 +1793,7 @@ class TestChatCompletions:
             tool_calls=tool_calls,
             conversation_history=[{"role": "user", "content": "please inspect the code"}],
             ternion_report="Fix Plan: update code.",
-            workspace_root="/Users/apple/Desktop/Ternion",
+            workspace_root="/Users/example/Desktop/sample-repo",
             workspace_root_source="fallback_project_root",
         )
 

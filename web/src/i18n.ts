@@ -842,7 +842,7 @@ const ZH: Translations = {
   publicAccessDetectedPublicUrlUnavailable: '尚未自动检测到',
   publicAccessManualFallbackTitle: '手动输入',
   publicAccessManualFallbackDescription:
-    '如果当前无法自动检测到公网 URL，你可以在这里补充一个公网 HTTPS URL，便于在其他设备上继续展示和复制。',
+    '如果当前无法自动检测到公网 URL，您可以在这里补充一个公网 HTTPS URL，便于在其他设备上继续展示和复制。',
   publicAccessManualFallbackHint:
     '这不会自动启动或配置任何 tunnel，只会保存一个用于展示和复制的文本。',
   publicAccessDocsTitle: '公网接入文档入口',
@@ -877,12 +877,12 @@ const ZH: Translations = {
   publicAccessConfiguredToast: '已检测到可用公网接入。请打开“端口”页复制 Cursor Base URL。',
   publicAccessIntroTitle: '需要公网 HTTPS URL',
   publicAccessIntroBody:
-    'Cursor 的 Override OpenAI Base URL 不接受 localhost 或其他仅本地可访问的地址。\n如果你希望在 Cursor 中连接 Ternion，需要先为该服务提供一个可公网访问的 HTTPS URL。',
+    'Cursor 的 Override OpenAI Base URL 不接受 localhost 或其他仅本地可访问的地址。\n如果您希望在 Cursor 中连接 Ternion，需要先为该服务提供一个可公网访问的 HTTPS URL。',
   publicAccessIntroOk: '确定',
   publicAccessIntroGuide: '配置方法',
   publicAccessGuideTitle: '公网接入配置指南',
   publicAccessGuideBody:
-    '以 ngrok 为例：\n1. 安装 ngrok，并完成账号登录。\n2. 在运行 Ternion 的机器上执行 `ngrok http 9110`。\n3. 复制生成的公网 HTTPS 根 URL。\n4. 将该根 URL 填入 Cursor 的 Override OpenAI Base URL。\n5. 不要在末尾追加 `/v1`。\n\n如果你将 Ternion 部署在 Cloud Run 上，也可以直接使用服务自身的公网 HTTPS 域名。',
+    '以 ngrok 为例：\n1. 安装 ngrok，并完成账号登录。\n2. 在运行 Ternion 的机器上执行 `ngrok http 9110`。\n3. 复制生成的公网 HTTPS 根 URL。\n4. 将该根 URL 填入 Cursor 的 Override OpenAI Base URL。\n5. 不要在末尾追加 `/v1`。\n\n如果您将 Ternion 部署在 Cloud Run 上，也可以直接使用服务自身的公网 HTTPS 域名。',
   publicAccessGuideClose: '关闭',
 
   // Usage Dashboard

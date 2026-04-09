@@ -41,6 +41,13 @@ import logIconLight from './assets/icons/log_light_mode_dp50.svg';
 import logIconDark from './assets/icons/log_dark_mode_dp50.svg';
 
 function AppContent() {
+  const publicAccessPreviewMode =
+    typeof window !== 'undefined'
+      ? (() => {
+          const value = new URLSearchParams(window.location.search).get('previewPublicAccess');
+          return value === 'intro' || value === 'guide' ? value : null;
+        })()
+      : null;
   const [config, setConfig] = useState<Config | null>(null);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
@@ -209,7 +216,12 @@ function AppContent() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors duration-200">
-      <PublicAccessNotice publicAccess={publicAccess} ready={publicAccessReady} t={t} />
+      <PublicAccessNotice
+        publicAccess={publicAccess}
+        ready={publicAccessReady}
+        t={t}
+        previewModal={publicAccessPreviewMode}
+      />
       {/* Header */}
       <header className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 py-4">

@@ -1,6 +1,6 @@
 [project]
 name = "ternion"
-version = "0.1.0"
+version = "1.0.0"
 description = "A local LLM proxy gateway that orchestrates multi-model technical discussions"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
