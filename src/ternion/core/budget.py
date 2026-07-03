@@ -52,6 +52,8 @@ class UsageEntry(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     thoughts_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     input_cost: float = 0.0
     output_cost: float = 0.0
     thoughts_cost: float = 0.0
@@ -63,6 +65,8 @@ class ProviderDayUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     thoughts_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     cost: float = 0.0
 
 
@@ -253,6 +257,8 @@ class BudgetManager:
                     "input_tokens": 0,
                     "output_tokens": 0,
                     "thoughts_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
                     "input_cost": 0.0,
                     "output_cost": 0.0,
                     "thoughts_cost": 0.0,
@@ -261,6 +267,8 @@ class BudgetManager:
             pt["input_tokens"] += record.get("input_tokens", 0)
             pt["output_tokens"] += record.get("output_tokens", 0)
             pt["thoughts_tokens"] += record.get("thoughts_tokens", 0)
+            pt["cache_read_tokens"] += record.get("cache_read_tokens", 0)
+            pt["cache_write_tokens"] += record.get("cache_write_tokens", 0)
             pt["input_cost"] += record.get("input_cost", 0)
             pt["output_cost"] += record.get("output_cost", 0)
             pt["thoughts_cost"] += record.get("thoughts_cost", 0)
@@ -314,18 +322,24 @@ class BudgetManager:
         thoughts_tokens: int = 0,
         context_length: int = 0,
         audio_input_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> float:
         """
         Calculate cost for a request using LiteLLM catalog pricing.
 
         Args:
             model: Model ID
-            input_tokens: Number of text/image/video input tokens
+            input_tokens: Total prompt tokens including any cached subsets
             output_tokens: Number of output tokens
             thoughts_tokens: Number of reasoning/thought tokens already included
                 in output_tokens
             context_length: Total context length for 200K+ tiered pricing
             audio_input_tokens: Number of audio input tokens
+            cache_read_tokens: Prompt tokens served from provider cache (subset
+                of input_tokens)
+            cache_write_tokens: Prompt tokens written to provider cache (subset
+                of input_tokens)
 
         Returns:
             Estimated cost in USD
@@ -338,6 +352,8 @@ class BudgetManager:
                 thoughts_tokens=thoughts_tokens,
                 context_length=context_length,
                 audio_input_tokens=audio_input_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
             )
         )
         return breakdown.total_cost
@@ -350,13 +366,17 @@ class BudgetManager:
         thoughts_tokens: int = 0,
         context_length: int = 0,
         audio_input_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> CostBreakdown:
         """
         Calculate a structured cost breakdown using catalog pricing.
 
         Invalid token counts are clamped to safe ranges before cost calculation.
         When a model has no dedicated reasoning token rate, the standard output
-        token rate is used for thoughts tokens.
+        token rate is used for thoughts tokens. Cached prompt tokens (read and
+        write subsets of input_tokens) are priced with the catalog cache rates
+        when available, falling back to the standard input rate otherwise.
         """
         model_info = self.catalog_service.get_model_cached(model)
         if model_info is None:
@@ -368,12 +388,18 @@ class BudgetManager:
         safe_context_length = max(context_length, 0)
         safe_thoughts_tokens = max(0, min(thoughts_tokens, safe_output_tokens))
         safe_audio_tokens = max(0, min(audio_input_tokens, safe_input_tokens))
+        safe_cache_read_tokens = max(0, min(cache_read_tokens, safe_input_tokens))
+        safe_cache_write_tokens = max(
+            0, min(cache_write_tokens, safe_input_tokens - safe_cache_read_tokens)
+        )
         if (
             safe_input_tokens != input_tokens
             or safe_output_tokens != output_tokens
             or safe_context_length != context_length
             or safe_thoughts_tokens != thoughts_tokens
             or safe_audio_tokens != audio_input_tokens
+            or safe_cache_read_tokens != cache_read_tokens
+            or safe_cache_write_tokens != cache_write_tokens
         ):
             logger.warning(
                 "budget_tokens_clamped",
@@ -388,6 +414,8 @@ class BudgetManager:
                 clamped_thoughts_tokens=safe_thoughts_tokens,
                 clamped_context_length=safe_context_length,
                 clamped_audio_input_tokens=safe_audio_tokens,
+                clamped_cache_read_tokens=safe_cache_read_tokens,
+                clamped_cache_write_tokens=safe_cache_write_tokens,
             )
 
         visible_output_tokens = max(safe_output_tokens - safe_thoughts_tokens, 0)
@@ -416,14 +444,33 @@ class BudgetManager:
             )
 
         effective_reasoning_rate = reasoning_rate if reasoning_rate is not None else output_rate
+        cache_read_rate = (
+            model_info.cache_read_input_token_cost
+            if model_info.cache_read_input_token_cost is not None
+            else input_rate
+        )
+        cache_write_rate = (
+            model_info.cache_creation_input_token_cost
+            if model_info.cache_creation_input_token_cost is not None
+            else input_rate
+        )
 
         if safe_audio_tokens > 0 and model_info.input_cost_per_audio_token is not None:
+            # Audio-priced requests keep the legacy formula; cache discounts are
+            # not combined with audio tiering (Ternion never sends audio input).
             input_cost = (
                 text_input_tokens * input_rate
                 + safe_audio_tokens * model_info.input_cost_per_audio_token
             )
         else:
-            input_cost = safe_input_tokens * input_rate
+            uncached_input_tokens = max(
+                safe_input_tokens - safe_cache_read_tokens - safe_cache_write_tokens, 0
+            )
+            input_cost = (
+                uncached_input_tokens * input_rate
+                + safe_cache_read_tokens * cache_read_rate
+                + safe_cache_write_tokens * cache_write_rate
+            )
 
         output_cost = visible_output_tokens * output_rate
         thoughts_cost = safe_thoughts_tokens * effective_reasoning_rate
@@ -502,6 +549,8 @@ class BudgetManager:
         thoughts_tokens: int = 0,
         context_length: int = 0,
         audio_input_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> float:
         """
         Record usage for a completed API request.
@@ -509,11 +558,15 @@ class BudgetManager:
         Args:
             provider: Provider name (google, openai, anthropic)
             model: Model ID for pricing lookup
-            input_tokens: Number of input tokens
+            input_tokens: Total prompt tokens including any cached subsets
             output_tokens: Number of output tokens
             thoughts_tokens: Number of reasoning tokens included in output_tokens
             context_length: Total context length for 200K+ tiered pricing
             audio_input_tokens: Number of audio input tokens
+            cache_read_tokens: Prompt tokens served from provider cache (subset
+                of input_tokens)
+            cache_write_tokens: Prompt tokens written to provider cache (subset
+                of input_tokens)
 
         Returns:
             Total cost of this request in USD
@@ -536,6 +589,8 @@ class BudgetManager:
                 thoughts_tokens=clamped_thoughts_tokens,
                 context_length=context_length,
                 audio_input_tokens=audio_input_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
             )
         )
         total_cost = breakdown.total_cost
@@ -547,6 +602,8 @@ class BudgetManager:
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "thoughts_tokens": clamped_thoughts_tokens,
+            "cache_read_tokens": max(cache_read_tokens, 0),
+            "cache_write_tokens": max(cache_write_tokens, 0),
             "input_cost": round(breakdown.input_cost, 8),
             "output_cost": round(breakdown.output_cost, 8),
             "thoughts_cost": round(breakdown.thoughts_cost, 8),
@@ -569,6 +626,8 @@ class BudgetManager:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             thoughts_tokens=clamped_thoughts_tokens,
+            cache_read_tokens=max(cache_read_tokens, 0),
+            cache_write_tokens=max(cache_write_tokens, 0),
             cost=round(total_cost, 6),
         )
 

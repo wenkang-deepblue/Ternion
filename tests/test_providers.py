@@ -642,9 +642,13 @@ class TestAnthropicProviderModelNormalization:
                 "create",
                 AsyncMock(return_value=response),
             ) as mock_create,
+            patch("ternion.providers.anthropic.model_catalog_service") as mock_catalog,
             patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
             patch("ternion.providers.anthropic.budget_manager.record_usage"),
         ):
+            # Hermetic: no catalog entry, so the naming-rule fallback is exercised
+            # regardless of the developer machine's real ~/.ternion catalog cache.
+            mock_catalog.get_model_cached.return_value = None
             await provider.chat_completion(
                 messages=messages,
                 model="claude-opus-4-6-20260205",
@@ -748,9 +752,13 @@ class TestAnthropicProviderModelNormalization:
                 "stream",
                 return_value=MockStreamContext(),
             ) as mock_stream,
+            patch("ternion.providers.anthropic.model_catalog_service") as mock_catalog,
             patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
             patch("ternion.providers.anthropic.budget_manager.record_usage"),
         ):
+            # Hermetic: no catalog entry, so the naming-rule fallback is exercised
+            # regardless of the developer machine's real ~/.ternion catalog cache.
+            mock_catalog.get_model_cached.return_value = None
             chunks = [
                 chunk
                 async for chunk in provider.chat_completion_stream(
@@ -834,3 +842,333 @@ class TestAnthropicProviderModelNormalization:
 
         assert chunks == ["ok"]
         assert mock_stream.call_args.kwargs["model"] == "claude-sonnet-4-8"
+
+
+class TestAnthropicPromptCaching:
+    """Tests for Anthropic prompt caching, output clamping, and cache metering."""
+
+    @staticmethod
+    def _build_response(
+        input_tokens: int = 10,
+        output_tokens: int = 5,
+        **usage_extra: int,
+    ) -> Any:
+        usage_attrs = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+        usage_attrs.update(usage_extra)
+        return type(
+            "MockAnthropicResponse",
+            (),
+            {
+                "content": [type("TextBlock", (), {"type": "text", "text": "ok"})()],
+                "usage": type("MockUsage", (), usage_attrs)(),
+                "stop_reason": "end_turn",
+            },
+        )()
+
+    @pytest.mark.asyncio
+    async def test_cache_breakpoints_applied_by_default(self) -> None:
+        """System and final message should carry cache_control breakpoints."""
+        from ternion.providers.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(api_key="test-key")
+        messages = [
+            ChatMessage(role=MessageRole.SYSTEM, content="System rules"),
+            ChatMessage(role=MessageRole.USER, content="First question"),
+            ChatMessage(role=MessageRole.USER, content="Second question"),
+        ]
+
+        with (
+            patch.object(
+                provider._client.messages,
+                "create",
+                AsyncMock(return_value=self._build_response()),
+            ) as mock_create,
+            patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
+            patch("ternion.providers.anthropic.budget_manager.record_usage"),
+        ):
+            await provider.chat_completion(messages=messages, model="claude-sonnet-4-6")
+
+        kwargs = mock_create.await_args.kwargs
+        system_param = kwargs["system"]
+        assert isinstance(system_param, list)
+        assert system_param[0]["cache_control"] == {"type": "ephemeral"}
+        assert system_param[0]["text"] == "System rules"
+
+        sent_messages = kwargs["messages"]
+        assert isinstance(sent_messages[-1]["content"], list)
+        assert sent_messages[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+        # Earlier messages keep their original plain-string content.
+        assert sent_messages[0]["content"] == "First question"
+
+    @pytest.mark.asyncio
+    async def test_cache_prompt_false_keeps_plain_payload(self) -> None:
+        """Disabling cache_prompt must leave system and messages untouched."""
+        from ternion.providers.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(api_key="test-key")
+        messages = [
+            ChatMessage(role=MessageRole.SYSTEM, content="System rules"),
+            ChatMessage(role=MessageRole.USER, content="Question"),
+        ]
+
+        with (
+            patch.object(
+                provider._client.messages,
+                "create",
+                AsyncMock(return_value=self._build_response()),
+            ) as mock_create,
+            patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
+            patch("ternion.providers.anthropic.budget_manager.record_usage"),
+        ):
+            await provider.chat_completion(
+                messages=messages,
+                model="claude-sonnet-4-6",
+                cache_prompt=False,
+            )
+
+        kwargs = mock_create.await_args.kwargs
+        assert kwargs["system"] == "System rules"
+        assert kwargs["messages"][-1]["content"] == "Question"
+
+    @pytest.mark.asyncio
+    async def test_max_tokens_clamped_to_catalog_limit(self) -> None:
+        """Requested max_tokens above the model limit must be clamped."""
+        from ternion.providers.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+        catalog_model = type(
+            "MockCatalogModel",
+            (),
+            {
+                "provider": "anthropic",
+                "id": "claude-opus-4-1-20250805",
+                "api_model_id": "claude-opus-4-1-20250805",
+                "max_output_tokens": 32000,
+            },
+        )()
+
+        with (
+            patch.object(
+                provider._client.messages,
+                "create",
+                AsyncMock(return_value=self._build_response()),
+            ) as mock_create,
+            patch("ternion.providers.anthropic.model_catalog_service") as mock_catalog,
+            patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
+            patch("ternion.providers.anthropic.budget_manager.record_usage"),
+        ):
+            mock_catalog.get_model_cached.return_value = catalog_model
+            await provider.chat_completion(
+                messages=messages,
+                model="claude-opus-4-1-20250805",
+                max_tokens=65536,
+            )
+
+        assert mock_create.await_args.kwargs["max_tokens"] == 32000
+
+    @pytest.mark.asyncio
+    async def test_cache_tokens_normalized_into_usage(self) -> None:
+        """Cache read/write counts should be added to total input tokens."""
+        from ternion.providers.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+        response = self._build_response(
+            input_tokens=10,
+            output_tokens=5,
+            cache_read_input_tokens=100,
+            cache_creation_input_tokens=20,
+        )
+
+        with (
+            patch.object(
+                provider._client.messages,
+                "create",
+                AsyncMock(return_value=response),
+            ),
+            patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
+            patch("ternion.providers.anthropic.budget_manager.record_usage") as mock_record,
+        ):
+            result = await provider.chat_completion(
+                messages=messages,
+                model="claude-sonnet-4-6",
+            )
+
+        record_kwargs = mock_record.call_args.kwargs
+        assert record_kwargs["input_tokens"] == 130
+        assert record_kwargs["cache_read_tokens"] == 100
+        assert record_kwargs["cache_write_tokens"] == 20
+        assert result.usage["prompt_tokens"] == 130
+        assert result.usage["cache_read_tokens"] == 100
+        assert result.usage["cache_write_tokens"] == 20
+
+    @pytest.mark.asyncio
+    async def test_retries_on_rate_limit_then_succeeds(self) -> None:
+        """Transient 429 errors should be retried at the provider layer."""
+        from ternion.providers.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+
+        rate_limit_error = Exception("rate limited")
+        rate_limit_error.status_code = 429  # type: ignore[attr-defined]
+
+        with (
+            patch.object(
+                provider._client.messages,
+                "create",
+                AsyncMock(side_effect=[rate_limit_error, self._build_response()]),
+            ) as mock_create,
+            patch("ternion.providers.resilience.asyncio.sleep", new=AsyncMock()),
+            patch("ternion.providers.anthropic.log_manager.emit_token_usage"),
+            patch("ternion.providers.anthropic.budget_manager.record_usage"),
+        ):
+            result = await provider.chat_completion(
+                messages=messages,
+                model="claude-sonnet-4-6",
+            )
+
+        assert mock_create.await_count == 2
+        assert result.content == "ok"
+
+
+class TestOpenAICacheMetering:
+    """Tests for OpenAI cached-token capture and output token parameter mapping."""
+
+    @staticmethod
+    def _build_chat_response(cached_tokens: int = 0) -> Any:
+        from types import SimpleNamespace
+
+        usage = SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            total_tokens=110,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=2),
+            prompt_tokens_details=SimpleNamespace(cached_tokens=cached_tokens),
+        )
+        choice = SimpleNamespace(
+            message=SimpleNamespace(content="ok", tool_calls=None),
+            finish_reason="stop",
+        )
+        return SimpleNamespace(choices=[choice], usage=usage)
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_records_usage_with_cached_tokens(self) -> None:
+        """Non-streaming chat completions must record usage including cache reads."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                AsyncMock(return_value=self._build_chat_response(cached_tokens=60)),
+            ),
+            patch("ternion.providers.openai.log_manager.emit_token_usage"),
+            patch("ternion.providers.openai.budget_manager.record_usage") as mock_record,
+        ):
+            result = await provider.chat_completion(messages=messages, model="gpt-4o")
+
+        record_kwargs = mock_record.call_args.kwargs
+        assert record_kwargs["input_tokens"] == 100
+        assert record_kwargs["output_tokens"] == 10
+        assert record_kwargs["cache_read_tokens"] == 60
+        assert result.usage["cache_read_tokens"] == 60
+
+    @pytest.mark.asyncio
+    async def test_gpt5_chat_uses_max_completion_tokens(self) -> None:
+        """gpt-5 chat models must receive max_completion_tokens, not max_tokens."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                AsyncMock(return_value=self._build_chat_response()),
+            ) as mock_create,
+            patch("ternion.providers.openai.log_manager.emit_token_usage"),
+            patch("ternion.providers.openai.budget_manager.record_usage"),
+        ):
+            await provider.chat_completion(
+                messages=messages,
+                model="gpt-5.4",
+                max_tokens=1234,
+            )
+
+        kwargs = mock_create.await_args.kwargs
+        assert kwargs["max_completion_tokens"] == 1234
+        assert "max_tokens" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_legacy_chat_model_uses_max_tokens(self) -> None:
+        """Non gpt-5 chat models keep the legacy max_tokens parameter."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                AsyncMock(return_value=self._build_chat_response()),
+            ) as mock_create,
+            patch("ternion.providers.openai.log_manager.emit_token_usage"),
+            patch("ternion.providers.openai.budget_manager.record_usage"),
+        ):
+            await provider.chat_completion(
+                messages=messages,
+                model="gpt-4o",
+                max_tokens=1234,
+            )
+
+        kwargs = mock_create.await_args.kwargs
+        assert kwargs["max_tokens"] == 1234
+        assert "max_completion_tokens" not in kwargs
+
+
+class TestGoogleCacheMetering:
+    """Tests for Gemini cached-content token capture."""
+
+    @pytest.mark.asyncio
+    async def test_records_cached_content_tokens(self) -> None:
+        """cached_content_token_count should be reported as cache_read_tokens."""
+        from types import SimpleNamespace
+
+        from ternion.providers.google import GoogleProvider
+
+        provider = GoogleProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+        usage_metadata = SimpleNamespace(
+            prompt_token_count=100,
+            candidates_token_count=8,
+            thoughts_token_count=0,
+            cached_content_token_count=40,
+            total_token_count=108,
+        )
+        response = SimpleNamespace(usage_metadata=usage_metadata, text="ok")
+
+        with (
+            patch.object(
+                provider._client.aio.models,
+                "generate_content",
+                AsyncMock(return_value=response),
+            ),
+            patch("ternion.providers.google.log_manager.emit_token_usage"),
+            patch("ternion.providers.google.budget_manager.record_usage") as mock_record,
+        ):
+            result = await provider.chat_completion(
+                messages=messages,
+                model="gemini-3-pro-preview",
+            )
+
+        record_kwargs = mock_record.call_args.kwargs
+        assert record_kwargs["input_tokens"] == 100
+        assert record_kwargs["cache_read_tokens"] == 40
+        assert result.usage["cache_read_tokens"] == 40

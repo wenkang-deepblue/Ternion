@@ -17,7 +17,6 @@ from typing import Any
 
 import structlog
 
-from ternion.core.budget import budget_manager
 from ternion.core.config import settings
 from ternion.core.config_store import config_store
 from ternion.core.deliverable_policy import (
@@ -137,6 +136,15 @@ DEFAULT_TIMEOUT_SECONDS = settings.discussion.timeout_seconds
 WRITER_TIMEOUT_SECONDS = max(DEFAULT_TIMEOUT_SECONDS, settings.discussion.writer_timeout_seconds)
 
 _MAX_EVIDENCE_TOPUP_ROUNDS = 2
+
+# Per-phase output token budgets. Generous ceilings that stop runaway
+# generations without constraining normal deliverables; evidence phases get
+# extra headroom because verbatim excerpts must never be truncated.
+# Providers clamp these to the model's own max output limit when needed.
+MAX_OUTPUT_TOKENS_ANALYSIS = 8192
+MAX_OUTPUT_TOKENS_REPORT = 16384
+MAX_OUTPUT_TOKENS_EVIDENCE = 32768
+MAX_OUTPUT_TOKENS_DELIVERABLE = 65536
 
 
 def _coerce_json_object(text: str) -> dict[str, Any]:
@@ -1479,6 +1487,56 @@ def _format_evidence_section(
     return "\n".join([header, *lines]).rstrip()
 
 
+def _serialize_evidence_chain_index_for_prompt(
+    evidence_chain_index: list[dict[str, object]],
+) -> str:
+    """
+    Serialize the evidence chain index for prompt injection in compact form.
+
+    Satisfied entries are reduced to their request text (enough for the Writer
+    to avoid re-requesting them); unsatisfied entries keep full detail except
+    internal excerpt hashes. The full index remains intact in state/session for
+    traceability - only the prompt copy is slimmed.
+
+    Args:
+        evidence_chain_index: Reconciled evidence chain index entries.
+
+    Returns:
+        Compact JSON array string; "[]" when the index is empty or invalid.
+    """
+    slim_entries: list[dict[str, object]] = []
+    for entry in evidence_chain_index or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("satisfied"):
+            slim_entries.append(
+                {
+                    "request": entry.get("request", ""),
+                    "satisfied": True,
+                }
+            )
+            continue
+        slim: dict[str, object] = {
+            key: value for key, value in entry.items() if key != "evidence_refs"
+        }
+        refs = entry.get("evidence_refs")
+        if isinstance(refs, list):
+            slim["evidence_refs"] = [
+                {
+                    key: value
+                    for key, value in ref.items()
+                    if key not in ("excerpt_hash", "excerpt_hash_raw")
+                }
+                for ref in refs
+                if isinstance(ref, dict)
+            ]
+        slim_entries.append(slim)
+    try:
+        return json.dumps(slim_entries, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return "[]"
+
+
 def _build_execution_policy_context(
     *,
     ternion_report: str,
@@ -1491,10 +1549,7 @@ def _build_execution_policy_context(
     report_for_policy = _extract_report_scope_for_policy(ternion_report)
     deliverable_policy = resolve_deliverable_policy(latest_user_message, report_for_policy)
     deliverable_policy_text = format_deliverable_policy_for_prompt(deliverable_policy)
-    try:
-        evidence_index_json = json.dumps(evidence_chain_index, ensure_ascii=False, indent=2)
-    except Exception:
-        evidence_index_json = "[]"
+    evidence_index_json = _serialize_evidence_chain_index_for_prompt(evidence_chain_index)
     evidence_chain_lines = [
         "\n\n[REPORT_EVIDENCE_CHAIN - VERBATIM]\n\n",
         evidence_bundle,
@@ -1781,6 +1836,7 @@ async def evidence_node(state: TernionState) -> TernionState:
             messages=messages,
             model=model,
             temperature=0.2,
+            max_tokens=MAX_OUTPUT_TOKENS_EVIDENCE,
             **extra_kwargs,
         )
         tool_calls = response.tool_calls if isinstance(response.tool_calls, list) else None
@@ -1797,14 +1853,6 @@ async def evidence_node(state: TernionState) -> TernionState:
         thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
         output_for_cost = (
             completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
-        )
-        budget_manager.record_usage(
-            provider=provider.name,
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_for_cost,
-            thoughts_tokens=thoughts_tokens,
-            context_length=usage.get("total_tokens", 0),
         )
         if input_tokens or output_for_cost or thoughts_tokens:
             log_manager.emit(
@@ -2139,41 +2187,17 @@ async def divergence_node(state: TernionState) -> TernionState:
                         provider=provider_name,
                     ),
                 }
-            response = None
-            max_attempts = 3 if provider.name == "google" else 1
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    response = await _call_with_timeout(
-                        provider=provider,
-                        messages=ternion_messages,
-                        model=model,
-                        temperature=0.7,
-                    )
-                    break
-                except Exception as e:
-                    is_last = attempt >= max_attempts
-                    error_text = str(e)
-                    retryable = provider.name == "google" and (
-                        "503" in error_text
-                        or "UNAVAILABLE" in error_text
-                        or "overloaded" in error_text.lower()
-                    )
-                    if is_last or not retryable:
-                        raise
-                    wait_seconds = 1.5 * attempt
-                    logger.warning(
-                        "ternion_analysis_retry",
-                        ternion_id=ternion_id,
-                        provider=provider_name,
-                        model=model,
-                        attempt=attempt,
-                        wait_seconds=wait_seconds,
-                        error=error_text[:200],
-                    )
-                    await asyncio.sleep(wait_seconds)
-
-            if response is None:
-                raise RuntimeError("divergence_provider_response_missing")
+            # Transient failures are retried by the provider-level resilience layer.
+            # cache_prompt is disabled: each council member issues a single call,
+            # so a cache write would only add cost without a follow-up read.
+            response = await _call_with_timeout(
+                provider=provider,
+                messages=ternion_messages,
+                model=model,
+                temperature=0.7,
+                max_tokens=MAX_OUTPUT_TOKENS_ANALYSIS,
+                cache_prompt=False,
+            )
             usage = response.usage or {}
             input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
             completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
@@ -2182,14 +2206,6 @@ async def divergence_node(state: TernionState) -> TernionState:
                 completion_tokens
                 if provider.name != "google"
                 else completion_tokens + thoughts_tokens
-            )
-            budget_manager.record_usage(
-                provider=provider.name,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_for_cost,
-                thoughts_tokens=thoughts_tokens,
-                context_length=usage.get("total_tokens", 0),
             )
             if input_tokens or output_for_cost or thoughts_tokens:
                 log_manager.emit(
@@ -2969,6 +2985,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             messages=messages,
             model=model,
             temperature=0.2,
+            max_tokens=MAX_OUTPUT_TOKENS_EVIDENCE,
             **extra_kwargs,
         )
         response_tool_calls: list[dict[str, Any]] | None = (
@@ -2987,14 +3004,6 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         thoughts_tokens = usage.get("thoughts_tokens") or usage.get("reasoning_tokens") or 0
         output_for_cost = (
             completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
-        )
-        budget_manager.record_usage(
-            provider=provider.name,
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_for_cost,
-            thoughts_tokens=thoughts_tokens,
-            context_length=usage.get("total_tokens", 0),
         )
         if input_tokens or output_for_cost or thoughts_tokens:
             log_manager.emit(
@@ -3186,15 +3195,17 @@ async def convergence_node(state: TernionState) -> TernionState:
         )
     ]
 
-    history = state.get("conversation_history", [])
+    # Defensive filtering: history is normally cleaned at the evidence->divergence
+    # transition, but the arbiter must never receive raw tool artifacts even if an
+    # upstream code path regresses. Evidence reaches this phase only via the
+    # evidence_bundle/evidence_gaps blocks in synthesis_content.
+    history = _filter_conversation_history_for_analysis(state.get("conversation_history", []))
     for msg in history:
         messages.append(
             ChatMessage(
                 role=MessageRole(msg["role"]),
                 content=msg.get("content"),
                 name=msg.get("name"),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id"),
             )
         )
 
@@ -3226,6 +3237,8 @@ async def convergence_node(state: TernionState) -> TernionState:
             messages=messages,
             model=model,
             temperature=0.5,  # Lower temperature for synthesis
+            max_tokens=MAX_OUTPUT_TOKENS_REPORT,
+            cache_prompt=False,
             stream_queue=stream_queue,
             phase="convergence",
             message_id=session_id,
@@ -3238,14 +3251,6 @@ async def convergence_node(state: TernionState) -> TernionState:
             completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
         )
         if input_tokens or output_for_cost or thoughts_tokens:
-            budget_manager.record_usage(
-                provider=provider.name,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_for_cost,
-                thoughts_tokens=thoughts_tokens,
-                context_length=usage.get("total_tokens", 0),
-            )
             log_manager.emit(
                 level="INFO",
                 category="WORKFLOW",
@@ -3458,6 +3463,8 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     messages=messages,
                     model=fallback_cfg["model"],
                     temperature=0.5,
+                    max_tokens=MAX_OUTPUT_TOKENS_REPORT,
+                    cache_prompt=False,
                 )
                 fallback_provider_name = fallback_provider.name
                 fallback_model = fallback_cfg["model"]
@@ -3472,14 +3479,6 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     completion_tokens
                     if fallback_provider.name != "google"
                     else completion_tokens + thoughts_tokens
-                )
-                budget_manager.record_usage(
-                    provider=fallback_provider.name,
-                    model=fallback_cfg["model"],
-                    input_tokens=input_tokens,
-                    output_tokens=output_for_cost,
-                    thoughts_tokens=thoughts_tokens,
-                    context_length=usage.get("total_tokens", 0),
                 )
                 if input_tokens or output_for_cost or thoughts_tokens:
                     log_manager.emit(
@@ -4056,6 +4055,7 @@ async def execution_node(state: TernionState) -> TernionState:
                 messages=messages,
                 model=model,
                 temperature=0.3,
+                max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                 timeout_seconds=writer_timeout,
                 **(extra_kwargs or {}),
             )
@@ -4139,6 +4139,7 @@ async def execution_node(state: TernionState) -> TernionState:
                 messages=messages,
                 model=model,
                 temperature=0.3,
+                max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                 timeout_seconds=writer_timeout,
                 **(extra_kwargs or {}),
             )
@@ -4192,6 +4193,7 @@ async def execution_node(state: TernionState) -> TernionState:
                     messages=messages,
                     model=model,
                     temperature=0.3,
+                    max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                     stream_queue=stream_queue,
                     phase="execution",
                     message_id=session_id,
@@ -4205,6 +4207,7 @@ async def execution_node(state: TernionState) -> TernionState:
                     messages=messages,
                     model=model,
                     temperature=0.3,
+                    max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                     timeout_seconds=writer_timeout,
                     **extra_kwargs,
                 )
@@ -4233,14 +4236,6 @@ async def execution_node(state: TernionState) -> TernionState:
                 completion_tokens
                 if provider.name != "google"
                 else completion_tokens + thoughts_tokens
-            )
-            budget_manager.record_usage(
-                provider=provider.name,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_for_cost,
-                thoughts_tokens=thoughts_tokens,
-                context_length=usage.get("total_tokens", 0),
             )
             if input_tokens or output_for_cost or thoughts_tokens:
                 log_manager.emit(
@@ -4317,6 +4312,7 @@ async def execution_node(state: TernionState) -> TernionState:
                         messages=messages,
                         model=model,
                         temperature=0.3,
+                        max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                         timeout_seconds=writer_timeout,
                         **extra_kwargs,
                     )
@@ -4377,6 +4373,7 @@ async def execution_node(state: TernionState) -> TernionState:
                             messages=messages,
                             model=model,
                             temperature=0.3,
+                            max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                             timeout_seconds=writer_timeout,
                             **extra_kwargs,
                         )
@@ -4481,6 +4478,7 @@ async def execution_node(state: TernionState) -> TernionState:
                         messages=messages,
                         model=model,
                         temperature=0.3,
+                        max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                         stream_queue=stream_queue,
                         phase="execution",
                         message_id=session_id,
@@ -4566,6 +4564,7 @@ async def execution_node(state: TernionState) -> TernionState:
             messages=messages,
             model=model,
             temperature=0.3,  # Lower temperature for deterministic output
+            max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
             stream_queue=stream_queue,
             phase="execution",
             message_id=session_id,
@@ -4603,6 +4602,7 @@ async def execution_node(state: TernionState) -> TernionState:
                     messages=messages,
                     model=model,
                     temperature=0.3,
+                    max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                     stream_queue=stream_queue,
                     phase="execution",
                     message_id=session_id,
@@ -4658,14 +4658,6 @@ async def execution_node(state: TernionState) -> TernionState:
             completion_tokens if provider.name != "google" else completion_tokens + thoughts_tokens
         )
         if input_tokens or output_for_cost or thoughts_tokens:
-            budget_manager.record_usage(
-                provider=provider.name,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_for_cost,
-                thoughts_tokens=thoughts_tokens,
-                context_length=usage.get("total_tokens", 0),
-            )
             log_manager.emit(
                 level="INFO",
                 category="WORKFLOW",
@@ -4974,6 +4966,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
                 messages=messages,
                 model=model,
                 temperature=0.2,
+                max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                 stream_queue=stream_queue,
                 phase="optimizer",
                 message_id=session_id,
@@ -4987,6 +4980,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
                 messages=messages,
                 model=model,
                 temperature=0.2,
+                max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                 timeout_seconds=optimizer_timeout,
                 **extra_kwargs,
             )
@@ -5088,6 +5082,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
                             messages=messages,
                             model=model,
                             temperature=0.2,
+                            max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                             timeout_seconds=optimizer_timeout,
                             **extra_kwargs,
                         )
@@ -5150,6 +5145,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
                         messages=messages,
                         model=model,
                         temperature=0.2,
+                        max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                         timeout_seconds=optimizer_timeout,
                         **extra_kwargs,
                     )
@@ -5205,6 +5201,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
                             messages=messages,
                             model=model,
                             temperature=0.2,
+                            max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                             stream_queue=stream_queue,
                             phase="optimizer",
                             message_id=session_id,
@@ -5218,6 +5215,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
                             messages=messages,
                             model=model,
                             temperature=0.2,
+                            max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                             timeout_seconds=optimizer_timeout,
                             **extra_kwargs,
                         )
@@ -5343,6 +5341,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
                     messages=messages,
                     model=model,
                     temperature=0.2,
+                    max_tokens=MAX_OUTPUT_TOKENS_DELIVERABLE,
                     timeout_seconds=optimizer_timeout,
                     **extra_kwargs,
                 )

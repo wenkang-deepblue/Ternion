@@ -4,6 +4,7 @@ Anthropic provider adapter.
 Implements chat completion using the Anthropic API with full multimodal support.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -15,10 +16,25 @@ from ternion.core.budget import budget_manager
 from ternion.core.model_catalog import model_catalog_service
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
 from ternion.providers.base import BaseProvider, ProviderResponse
+from ternion.providers.resilience import (
+    RETRY_MAX_ATTEMPTS,
+    compute_backoff_delay,
+    get_provider_semaphore,
+    get_retry_after_seconds,
+    is_retryable_provider_error,
+    run_with_provider_resilience,
+)
 from ternion.utils.log_manager import log_manager
 from ternion.utils.model_ids import normalize_anthropic_model_id_for_api
 
 logger = structlog.get_logger(__name__)
+
+# Default output budget when callers do not request one.
+_DEFAULT_MAX_OUTPUT_TOKENS = 4096
+
+# Smallest max-output limit across supported Anthropic models (Claude Opus 4.1);
+# used to clamp requests when the catalog has no entry for the model.
+_FALLBACK_MAX_OUTPUT_TOKENS = 32000
 
 
 class AnthropicProvider(BaseProvider):
@@ -60,6 +76,7 @@ class AnthropicProvider(BaseProvider):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        cache_prompt: bool = True,
         **kwargs: Any,
     ) -> ProviderResponse:
         """
@@ -69,7 +86,10 @@ class AnthropicProvider(BaseProvider):
             messages: List of chat messages
             model: Model to use
             temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
+            max_tokens: Maximum tokens to generate (clamped to the model's
+                catalog max_output_tokens)
+            cache_prompt: Mark stable prefixes (system + conversation tail) with
+                cache_control breakpoints for Anthropic prompt caching
             **kwargs: Additional parameters
 
         Returns:
@@ -78,21 +98,29 @@ class AnthropicProvider(BaseProvider):
         model = model or self._default_model
         api_model = self._resolve_api_model_id(model)
         system_prompt, converted = self._convert_messages(messages)
+        system_param, converted = self._apply_prompt_caching(system_prompt, converted, cache_prompt)
+        effective_max_tokens = self._clamp_max_tokens(model, max_tokens)
 
         logger.debug(
             "anthropic_chat_completion",
             model=model,
             api_model=api_model,
             message_count=len(messages),
+            cache_prompt=cache_prompt,
+            max_tokens=effective_max_tokens,
         )
 
-        response = await self._client.messages.create(
-            model=api_model,
-            messages=converted,
-            system=system_prompt,
-            temperature=temperature,
-            max_tokens=max_tokens or 4096,
-            **kwargs,
+        response = await run_with_provider_resilience(
+            self.name,
+            lambda: self._client.messages.create(
+                model=api_model,
+                messages=converted,
+                system=system_param,
+                temperature=temperature,
+                max_tokens=effective_max_tokens,
+                **kwargs,
+            ),
+            operation_name="chat_completion",
         )
 
         content = ""
@@ -106,7 +134,10 @@ class AnthropicProvider(BaseProvider):
             elif hasattr(block, "text"):
                 content += block.text
 
-        input_tokens = response.usage.input_tokens
+        cache_read_tokens, cache_write_tokens = self._extract_cache_usage(response.usage)
+        # Anthropic reports cached prompt tokens separately from input_tokens;
+        # normalize to a total that includes both cache subsets.
+        input_tokens = response.usage.input_tokens + cache_read_tokens + cache_write_tokens
         output_tokens = response.usage.output_tokens
         total_tokens = input_tokens + output_tokens
 
@@ -120,6 +151,8 @@ class AnthropicProvider(BaseProvider):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             thinking_tokens=thinking_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
             total_tokens=total_tokens,
         )
 
@@ -139,6 +172,8 @@ class AnthropicProvider(BaseProvider):
             output_tokens=output_tokens,
             thoughts_tokens=thinking_tokens,
             context_length=total_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
 
         return ProviderResponse(
@@ -148,6 +183,8 @@ class AnthropicProvider(BaseProvider):
                 "prompt_tokens": input_tokens,
                 "completion_tokens": output_tokens,
                 "thoughts_tokens": thinking_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
                 "total_tokens": total_tokens,
             },
             raw_response=response,
@@ -159,16 +196,22 @@ class AnthropicProvider(BaseProvider):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        cache_prompt: bool = True,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
         """
         Generate a streaming chat completion.
 
+        Transient open failures (rate limit, overload) are retried with backoff
+        as long as no chunk has been yielded yet.
+
         Args:
             messages: List of chat messages
             model: Model to use
             temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
+            max_tokens: Maximum tokens to generate (clamped to the model's
+                catalog max_output_tokens)
+            cache_prompt: Mark stable prefixes with cache_control breakpoints
             **kwargs: Additional parameters
 
         Yields:
@@ -177,21 +220,74 @@ class AnthropicProvider(BaseProvider):
         model = model or self._default_model
         api_model = self._resolve_api_model_id(model)
         system_prompt, converted = self._convert_messages(messages)
+        system_param, converted = self._apply_prompt_caching(system_prompt, converted, cache_prompt)
+        effective_max_tokens = self._clamp_max_tokens(model, max_tokens)
 
         logger.debug(
             "anthropic_chat_completion_stream",
             model=model,
             api_model=api_model,
             message_count=len(messages),
+            cache_prompt=cache_prompt,
+            max_tokens=effective_max_tokens,
         )
 
+        async with get_provider_semaphore(self.name):
+            attempt = 0
+            while True:
+                attempt += 1
+                yielded_any = False
+                try:
+                    async for text in self._stream_and_record(
+                        model=model,
+                        api_model=api_model,
+                        converted=converted,
+                        system_param=system_param,
+                        temperature=temperature,
+                        max_tokens=effective_max_tokens,
+                        extra_kwargs=kwargs,
+                    ):
+                        yielded_any = True
+                        yield text
+                    return
+                except Exception as exc:
+                    if (
+                        yielded_any
+                        or attempt >= RETRY_MAX_ATTEMPTS
+                        or not is_retryable_provider_error(exc)
+                    ):
+                        raise
+                    delay = compute_backoff_delay(attempt, get_retry_after_seconds(exc))
+                    logger.warning(
+                        "provider_call_retry",
+                        provider=self.name,
+                        operation="chat_completion_stream",
+                        attempt=attempt,
+                        max_attempts=RETRY_MAX_ATTEMPTS,
+                        delay_seconds=round(delay, 2),
+                        error=str(exc)[:200],
+                    )
+                    await asyncio.sleep(delay)
+
+    async def _stream_and_record(
+        self,
+        *,
+        model: str,
+        api_model: str,
+        converted: list[dict[str, Any]],
+        system_param: str | list[dict[str, Any]],
+        temperature: float,
+        max_tokens: int,
+        extra_kwargs: dict[str, Any],
+    ) -> AsyncGenerator[str, None]:
+        """Open one streaming request, yield text chunks, and record final usage."""
         async with self._client.messages.stream(
             model=api_model,
             messages=converted,
-            system=system_prompt,
+            system=system_param,
             temperature=temperature,
-            max_tokens=max_tokens or 4096,
-            **kwargs,
+            max_tokens=max_tokens,
+            **extra_kwargs,
         ) as stream:
             received_text = ""
             async for text in stream.text_stream:
@@ -200,7 +296,12 @@ class AnthropicProvider(BaseProvider):
 
             final_message = await stream.get_final_message()
             if final_message and final_message.usage:
-                input_tokens = final_message.usage.input_tokens
+                cache_read_tokens, cache_write_tokens = self._extract_cache_usage(
+                    final_message.usage
+                )
+                input_tokens = (
+                    final_message.usage.input_tokens + cache_read_tokens + cache_write_tokens
+                )
                 output_tokens = final_message.usage.output_tokens
                 total_tokens = input_tokens + output_tokens
 
@@ -220,6 +321,8 @@ class AnthropicProvider(BaseProvider):
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     thinking_tokens=thinking_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
                     total_tokens=total_tokens,
                 )
 
@@ -239,6 +342,8 @@ class AnthropicProvider(BaseProvider):
                     output_tokens=output_tokens,
                     thoughts_tokens=thinking_tokens,
                     context_length=total_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
                 )
             elif received_text:
                 # Usage metadata unavailable; estimate token count from received text length as fallback.
@@ -301,6 +406,116 @@ class AnthropicProvider(BaseProvider):
                 return catalog_model.api_model_id
             return catalog_model.id
         return normalize_anthropic_model_id_for_api(model)
+
+    @staticmethod
+    def _clamp_max_tokens(model: str, max_tokens: int | None) -> int:
+        """
+        Clamp the requested output budget to the model's catalog max_output_tokens.
+
+        Anthropic rejects requests whose max_tokens exceeds the model limit, so
+        oversized phase budgets are reduced instead of failing the call.
+
+        Args:
+            model: Configured model ID used for catalog lookup.
+            max_tokens: Requested output budget, or None for the default.
+
+        Returns:
+            Effective max_tokens value safe to send to the API.
+        """
+        requested = (
+            max_tokens
+            if isinstance(max_tokens, int) and max_tokens > 0
+            else _DEFAULT_MAX_OUTPUT_TOKENS
+        )
+        limit: int | None = None
+        try:
+            catalog_model = model_catalog_service.get_model_cached(model)
+        except Exception:
+            catalog_model = None
+        if catalog_model is not None:
+            raw_limit = getattr(catalog_model, "max_output_tokens", None)
+            if isinstance(raw_limit, int) and raw_limit > 0:
+                limit = raw_limit
+        if limit is None:
+            limit = _FALLBACK_MAX_OUTPUT_TOKENS
+        return min(requested, limit)
+
+    @staticmethod
+    def _apply_prompt_caching(
+        system_prompt: str,
+        converted: list[dict[str, Any]],
+        cache_prompt: bool,
+    ) -> tuple[str | list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Attach Anthropic cache_control breakpoints to stable prompt prefixes.
+
+        Places at most two breakpoints: one on the system block and one on the
+        final content block of the last message, enabling incremental prefix
+        caching across multi-round tool loops (previous rounds become cache
+        reads on the next call).
+
+        Args:
+            system_prompt: Extracted system prompt string (may be empty).
+            converted: Anthropic-format message list.
+            cache_prompt: When False, return inputs unchanged.
+
+        Returns:
+            Tuple of (system parameter, message list) ready for messages.create.
+        """
+        if not cache_prompt:
+            return system_prompt, converted
+
+        cache_control = {"type": "ephemeral"}
+
+        system_param: str | list[dict[str, Any]] = system_prompt
+        if system_prompt:
+            system_param = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": cache_control,
+                }
+            ]
+
+        if not converted:
+            return system_param, converted
+
+        messages = list(converted)
+        last_message = dict(messages[-1])
+        content = last_message.get("content")
+        if isinstance(content, str):
+            if content:
+                last_message["content"] = [
+                    {
+                        "type": "text",
+                        "text": content,
+                        "cache_control": cache_control,
+                    }
+                ]
+                messages[-1] = last_message
+        elif isinstance(content, list) and content:
+            blocks = list(content)
+            last_block = blocks[-1]
+            if isinstance(last_block, dict):
+                blocks[-1] = {**last_block, "cache_control": cache_control}
+                last_message["content"] = blocks
+                messages[-1] = last_message
+        return system_param, messages
+
+    @staticmethod
+    def _extract_cache_usage(usage: Any) -> tuple[int, int]:
+        """
+        Extract prompt-cache token counts from an Anthropic usage object.
+
+        Args:
+            usage: Usage object from an Anthropic response.
+
+        Returns:
+            Tuple of (cache_read_tokens, cache_write_tokens); zeros when absent.
+        """
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        return int(cache_read), int(cache_write)
 
     def _convert_messages(self, messages: list[ChatMessage]) -> tuple[str, list[dict[str, Any]]]:
         """

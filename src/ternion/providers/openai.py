@@ -16,6 +16,11 @@ from ternion.core.budget import budget_manager
 from ternion.core.config import settings
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
 from ternion.providers.base import BaseProvider, ProviderResponse
+from ternion.providers.resilience import (
+    get_provider_semaphore,
+    run_with_provider_resilience,
+    run_with_retry,
+)
 from ternion.utils.log_manager import log_manager
 from ternion.utils.token_estimator import estimate_tokens_from_text
 from ternion.utils.tool_calls_parser import encode_stream_tool_calls
@@ -252,6 +257,7 @@ class OpenAIProvider(BaseProvider):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        cache_prompt: bool = True,
         **kwargs: Any,
     ) -> ProviderResponse:
         """
@@ -262,11 +268,14 @@ class OpenAIProvider(BaseProvider):
             model: Model to use (defaults to gpt-4-turbo)
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            cache_prompt: Accepted for interface parity; OpenAI applies prompt
+                caching automatically on stable prefixes
             **kwargs: Additional parameters
 
         Returns:
             ProviderResponse with the generated content
         """
+        del cache_prompt  # OpenAI prefix caching is automatic; no request flag exists.
         model = model or self._default_model
         api_mode = kwargs.pop("api_mode", None)
         converted = self._convert_messages(messages)
@@ -297,9 +306,13 @@ class OpenAIProvider(BaseProvider):
         if self._supports_temperature(model):
             api_params["temperature"] = temperature
         if max_tokens is not None:
-            api_params["max_tokens"] = max_tokens
+            api_params[self._max_output_tokens_param(model)] = max_tokens
         try:
-            response = await self._client.chat.completions.create(**api_params)  # type: ignore
+            response = await run_with_provider_resilience(
+                self.name,
+                lambda: self._client.chat.completions.create(**api_params),  # type: ignore
+                operation_name="chat_completion",
+            )
         except Exception as e:
             if self._is_json_body_parse_error(e):
                 self._log_chat_payload_diagnostics(
@@ -329,7 +342,11 @@ class OpenAIProvider(BaseProvider):
                     }
                     if max_tokens is not None:
                         completion_params["max_tokens"] = max_tokens
-                    completion = await self._client.completions.create(**completion_params)  # type: ignore
+                    completion = await run_with_provider_resilience(
+                        self.name,
+                        lambda: self._client.completions.create(**completion_params),  # type: ignore
+                        operation_name="legacy_completion",
+                    )
                     choice = completion.choices[0]
                     usage = completion.usage
 
@@ -353,6 +370,15 @@ class OpenAIProvider(BaseProvider):
                         completion_tokens=completion_tokens,
                         thoughts_tokens=0,
                         total_tokens=total_tokens,
+                    )
+
+                    budget_manager.record_usage(
+                        provider="openai",
+                        model=model,
+                        input_tokens=prompt_tokens,
+                        output_tokens=completion_tokens,
+                        thoughts_tokens=0,
+                        context_length=total_tokens,
                     )
 
                     return ProviderResponse(
@@ -404,12 +430,16 @@ class OpenAIProvider(BaseProvider):
         ):
             reasoning_tokens = getattr(usage.completion_tokens_details, "reasoning_tokens", 0) or 0
 
+        # cached_tokens is the prompt subset served from OpenAI's automatic prefix cache.
+        cache_read_tokens = self._extract_cached_prompt_tokens(usage)
+
         logger.info(
             "openai_token_usage",
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             reasoning_tokens=reasoning_tokens,
+            cache_read_tokens=cache_read_tokens,
             total_tokens=total_tokens,
         )
 
@@ -420,6 +450,16 @@ class OpenAIProvider(BaseProvider):
             completion_tokens=completion_tokens,
             thoughts_tokens=reasoning_tokens,
             total_tokens=total_tokens,
+        )
+
+        budget_manager.record_usage(
+            provider="openai",
+            model=model,
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+            thoughts_tokens=reasoning_tokens,
+            context_length=total_tokens,
+            cache_read_tokens=cache_read_tokens,
         )
 
         return ProviderResponse(
@@ -433,6 +473,7 @@ class OpenAIProvider(BaseProvider):
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "reasoning_tokens": reasoning_tokens,
+                "cache_read_tokens": cache_read_tokens,
                 "total_tokens": total_tokens,
             },
             raw_response=response,
@@ -444,6 +485,7 @@ class OpenAIProvider(BaseProvider):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        cache_prompt: bool = True,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
         """
@@ -454,11 +496,14 @@ class OpenAIProvider(BaseProvider):
             model: Model to use
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            cache_prompt: Accepted for interface parity; OpenAI applies prompt
+                caching automatically on stable prefixes
             **kwargs: Additional parameters
 
         Yields:
             Content chunks as they are generated
         """
+        del cache_prompt  # OpenAI prefix caching is automatic; no request flag exists.
         model = model or self._default_model
         api_mode = kwargs.pop("api_mode", None)
         converted = self._convert_messages(messages)
@@ -492,13 +537,18 @@ class OpenAIProvider(BaseProvider):
         if self._supports_temperature(model):
             api_params["temperature"] = temperature
         if max_tokens is not None:
-            api_params["max_tokens"] = max_tokens
+            api_params[self._max_output_tokens_param(model)] = max_tokens
 
         try:
-            stream = await self._client.chat.completions.create(**api_params)  # type: ignore
-            async for chunk in self._consume_chat_stream(stream, model=model):
-                yield chunk
-            return
+            async with get_provider_semaphore(self.name):
+                stream = await run_with_retry(
+                    self.name,
+                    lambda: self._client.chat.completions.create(**api_params),  # type: ignore
+                    operation_name="chat_completion_stream",
+                )
+                async for chunk in self._consume_chat_stream(stream, model=model):
+                    yield chunk
+                return
         except Exception as e:
             if self._is_json_body_parse_error(e):
                 self._log_chat_payload_diagnostics(
@@ -632,7 +682,11 @@ class OpenAIProvider(BaseProvider):
             previous_response_id=previous_response_id,
         )
 
-        response = await self._client.responses.create(**params)  # type: ignore
+        response = await run_with_provider_resilience(
+            self.name,
+            lambda: self._client.responses.create(**params),  # type: ignore
+            operation_name="responses_completion",
+        )
 
         content = getattr(response, "output_text", "") or ""
         tool_calls = self._extract_tool_calls_from_responses(response)
@@ -645,6 +699,7 @@ class OpenAIProvider(BaseProvider):
             prompt_tokens=usage_dict.get("prompt_tokens", 0),
             completion_tokens=usage_dict.get("completion_tokens", 0),
             reasoning_tokens=usage_dict.get("reasoning_tokens", 0),
+            cache_read_tokens=usage_dict.get("cache_read_tokens", 0),
             total_tokens=usage_dict.get("total_tokens", 0),
         )
 
@@ -656,6 +711,17 @@ class OpenAIProvider(BaseProvider):
             thoughts_tokens=usage_dict.get("reasoning_tokens", 0),
             total_tokens=usage_dict.get("total_tokens", 0),
         )
+
+        if usage_dict:
+            budget_manager.record_usage(
+                provider="openai",
+                model=model,
+                input_tokens=usage_dict.get("prompt_tokens", 0),
+                output_tokens=usage_dict.get("completion_tokens", 0),
+                thoughts_tokens=usage_dict.get("reasoning_tokens", 0),
+                context_length=usage_dict.get("total_tokens", 0),
+                cache_read_tokens=usage_dict.get("cache_read_tokens", 0),
+            )
 
         return ProviderResponse(
             content=content,
@@ -701,27 +767,34 @@ class OpenAIProvider(BaseProvider):
             previous_response_id=previous_response_id,
         )
 
-        stream = await self._client.responses.create(**params)  # type: ignore
+        async with get_provider_semaphore(self.name):
+            stream = await run_with_retry(
+                self.name,
+                lambda: self._client.responses.create(**params),  # type: ignore
+                operation_name="responses_stream",
+            )
 
-        received_text = ""
-        usage_dict: dict[str, int] | None = None
-        final_response: Any = None
+            received_text = ""
+            usage_dict: dict[str, int] | None = None
+            final_response: Any = None
 
-        async for event in stream:
-            etype = getattr(event, "type", None)
-            if etype == "response.output_text.delta":
-                delta = getattr(event, "delta", "") or ""
-                if delta:
-                    received_text += delta
-                    yield delta
-                continue
+            async for event in stream:
+                etype = getattr(event, "type", None)
+                if etype == "response.output_text.delta":
+                    delta = getattr(event, "delta", "") or ""
+                    if delta:
+                        received_text += delta
+                        yield delta
+                    continue
 
-            if etype == "response.completed":
-                final_response = getattr(event, "response", None)
-                usage = (
-                    getattr(final_response, "usage", None) if final_response is not None else None
-                )
-                usage_dict = self._usage_dict_from_responses_usage(usage)
+                if etype == "response.completed":
+                    final_response = getattr(event, "response", None)
+                    usage = (
+                        getattr(final_response, "usage", None)
+                        if final_response is not None
+                        else None
+                    )
+                    usage_dict = self._usage_dict_from_responses_usage(usage)
 
         if usage_dict is not None:
             logger.info(
@@ -730,6 +803,7 @@ class OpenAIProvider(BaseProvider):
                 prompt_tokens=usage_dict.get("prompt_tokens", 0),
                 completion_tokens=usage_dict.get("completion_tokens", 0),
                 reasoning_tokens=usage_dict.get("reasoning_tokens", 0),
+                cache_read_tokens=usage_dict.get("cache_read_tokens", 0),
                 total_tokens=usage_dict.get("total_tokens", 0),
             )
 
@@ -748,6 +822,7 @@ class OpenAIProvider(BaseProvider):
                 input_tokens=usage_dict.get("prompt_tokens", 0),
                 output_tokens=usage_dict.get("completion_tokens", 0),
                 thoughts_tokens=usage_dict.get("reasoning_tokens", 0),
+                cache_read_tokens=usage_dict.get("cache_read_tokens", 0),
             )
         elif received_text:
             estimated_output = estimate_tokens_from_text(received_text)
@@ -888,12 +963,15 @@ class OpenAIProvider(BaseProvider):
                     getattr(usage_data.completion_tokens_details, "reasoning_tokens", 0) or 0
                 )
 
+            cache_read_tokens = self._extract_cached_prompt_tokens(usage_data)
+
             logger.info(
                 "openai_token_usage",
                 model=model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 reasoning_tokens=reasoning_tokens,
+                cache_read_tokens=cache_read_tokens,
                 total_tokens=total_tokens,
             )
 
@@ -912,6 +990,7 @@ class OpenAIProvider(BaseProvider):
                 input_tokens=prompt_tokens,
                 output_tokens=completion_tokens,
                 thoughts_tokens=reasoning_tokens,
+                cache_read_tokens=cache_read_tokens,
             )
         if saw_tool_calls and tool_calls_by_index:
             ordered = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index.keys())]
@@ -1043,6 +1122,36 @@ class OpenAIProvider(BaseProvider):
         """Return whether the target model accepts the temperature parameter."""
         normalized = cls._normalize_model_name(model)
         return not normalized.startswith("gpt-5")
+
+    @classmethod
+    def _max_output_tokens_param(cls, model: str) -> str:
+        """
+        Return the Chat Completions parameter name for the output token budget.
+
+        Reasoning models (gpt-5 family) reject the legacy max_tokens parameter
+        and require max_completion_tokens instead.
+        """
+        normalized = cls._normalize_model_name(model)
+        if normalized.startswith("gpt-5"):
+            return "max_completion_tokens"
+        return "max_tokens"
+
+    @staticmethod
+    def _extract_cached_prompt_tokens(usage: Any) -> int:
+        """
+        Extract the cached prompt token count from a Chat Completions usage object.
+
+        Args:
+            usage: Usage object from a chat.completions response or stream chunk.
+
+        Returns:
+            Number of prompt tokens served from the automatic prefix cache.
+        """
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is None:
+            return 0
+        cached = getattr(details, "cached_tokens", 0) or 0
+        return int(cached)
 
     @classmethod
     def _build_responses_request_params(
@@ -1306,8 +1415,9 @@ class OpenAIProvider(BaseProvider):
             usage: Usage object from /v1/responses response, or None.
 
         Returns:
-            Dict with keys: prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
-            input_tokens, output_tokens. Empty dict if usage is None.
+            Dict with keys: prompt_tokens, completion_tokens, reasoning_tokens,
+            cache_read_tokens, total_tokens, input_tokens, output_tokens.
+            Empty dict if usage is None.
         """
         if not usage:
             return {}
@@ -1320,10 +1430,16 @@ class OpenAIProvider(BaseProvider):
         if details is not None:
             reasoning_tokens = getattr(details, "reasoning_tokens", 0) or 0
 
+        cache_read_tokens = 0
+        input_details = getattr(usage, "input_tokens_details", None)
+        if input_details is not None:
+            cache_read_tokens = getattr(input_details, "cached_tokens", 0) or 0
+
         return {
             "prompt_tokens": int(input_tokens),
             "completion_tokens": int(output_tokens),
             "reasoning_tokens": int(reasoning_tokens),
+            "cache_read_tokens": int(cache_read_tokens),
             "total_tokens": int(total_tokens),
             "input_tokens": int(input_tokens),
             "output_tokens": int(output_tokens),

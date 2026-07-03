@@ -77,6 +77,8 @@ class CatalogModel(BaseModel):
     input_cost_per_audio_token: float | None = None
     input_cost_per_token_above_200k_tokens: float | None = None
     output_cost_per_token_above_200k_tokens: float | None = None
+    cache_read_input_token_cost: float | None = None
+    cache_creation_input_token_cost: float | None = None
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
     stale: bool = False
@@ -283,10 +285,10 @@ class LiteLLMModelCatalogService:
 
     async def list_models(self, force_refresh: bool = False) -> dict[str, list[CatalogModel]]:
         """List normalized models grouped by provider.
-        
+
         Args:
             force_refresh: Whether to bypass freshness checks and revalidate.
-            
+
         Returns:
             A dictionary mapping provider names to lists of normalized CatalogModels.
         """
@@ -299,11 +301,11 @@ class LiteLLMModelCatalogService:
         force_refresh: bool = False,
     ) -> CatalogModel | None:
         """Get a normalized model entry by model ID.
-        
+
         Args:
             model_id: The ID of the model to retrieve.
             force_refresh: Whether to bypass cache freshness checks.
-            
+
         Returns:
             The normalized CatalogModel if found, otherwise None.
         """
@@ -312,10 +314,10 @@ class LiteLLMModelCatalogService:
 
     def get_model_cached(self, model_id: str) -> CatalogModel | None:
         """Get a model from memory or disk cache without network access.
-        
+
         Args:
             model_id: The ID of the model to retrieve.
-            
+
         Returns:
             The normalized CatalogModel if found in cache, otherwise None.
         """
@@ -335,7 +337,7 @@ class LiteLLMModelCatalogService:
 
     def get_anomaly_report(self) -> CatalogAnomalyReport | None:
         """Return the latest anomaly report from memory or disk, if any.
-        
+
         Returns:
             The latest CatalogAnomalyReport, or None if no report exists.
         """
@@ -349,7 +351,7 @@ class LiteLLMModelCatalogService:
 
     def get_anomaly_report_markdown(self) -> str | None:
         """Render the latest anomaly report as Markdown.
-        
+
         Returns:
             A Markdown string representing the latest anomaly report, or None if no report exists.
         """
@@ -408,11 +410,11 @@ class LiteLLMModelCatalogService:
 
     async def is_model_available(self, provider: str, model_id: str) -> bool:
         """Check whether a model exists in the current catalog for a provider.
-        
+
         Args:
             provider: The name of the LLM provider.
             model_id: The ID of the model to check.
-            
+
         Returns:
             True if the model is found and belongs to the specified provider, otherwise False.
         """
@@ -426,12 +428,12 @@ class LiteLLMModelCatalogService:
         current_models: list[CatalogModel],
     ) -> list[CatalogModel]:
         """Return the current models unchanged.
-        
+
         Args:
             provider: The name of the LLM provider.
             model_id: The ID of the model to ensure visibility for.
             current_models: The current list of visible models.
-            
+
         Returns:
             The original list of models.
         """
@@ -625,6 +627,10 @@ class LiteLLMModelCatalogService:
             ),
             output_cost_per_token_above_200k_tokens=self._coerce_float(
                 meta.get("output_cost_per_token_above_200k_tokens")
+            ),
+            cache_read_input_token_cost=self._coerce_float(meta.get("cache_read_input_token_cost")),
+            cache_creation_input_token_cost=self._coerce_float(
+                meta.get("cache_creation_input_token_cost")
             ),
             max_input_tokens=self._coerce_int(meta.get("max_input_tokens")),
             max_output_tokens=self._coerce_int(meta.get("max_output_tokens")),
@@ -1031,6 +1037,14 @@ class LiteLLMModelCatalogService:
                 preferred.output_cost_per_token_above_200k_tokens,
                 secondary.output_cost_per_token_above_200k_tokens,
             ),
+            "cache_read_input_token_cost": self._coalesce_field(
+                preferred.cache_read_input_token_cost,
+                secondary.cache_read_input_token_cost,
+            ),
+            "cache_creation_input_token_cost": self._coalesce_field(
+                preferred.cache_creation_input_token_cost,
+                secondary.cache_creation_input_token_cost,
+            ),
             "max_input_tokens": self._coalesce_field(
                 preferred.max_input_tokens,
                 secondary.max_input_tokens,
@@ -1072,6 +1086,8 @@ class LiteLLMModelCatalogService:
                 model.input_cost_per_audio_token,
                 model.input_cost_per_token_above_200k_tokens,
                 model.output_cost_per_token_above_200k_tokens,
+                model.cache_read_input_token_cost,
+                model.cache_creation_input_token_cost,
                 model.max_input_tokens,
                 model.max_output_tokens,
             )

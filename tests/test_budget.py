@@ -73,6 +73,8 @@ def catalog_service(tmp_path: Path) -> LiteLLMModelCatalogService:
                 raw_key="claude-opus-4-5-20251101",
                 input_cost_per_token=5.0 / 1_000_000,
                 output_cost_per_token=25.0 / 1_000_000,
+                cache_read_input_token_cost=0.5 / 1_000_000,
+                cache_creation_input_token_cost=6.25 / 1_000_000,
             ),
             CatalogModel(
                 id="claude-sonnet-4-5-20250929",
@@ -718,3 +720,83 @@ class TestUsagePersistence:
         backup_path = temp_usage_file.with_suffix(f"{temp_usage_file.suffix}.corrupt")
         assert backup_path.exists()
         assert manager.get_usage_summary()["total_cost_usd"] == 0.0
+
+
+class TestCachePricing:
+    """Tests for prompt-cache token pricing."""
+
+    def test_cache_read_and_write_rates_applied(self, budget_manager: BudgetManager) -> None:
+        """Cached prompt subsets use the catalog cache rates."""
+        cost = budget_manager.calculate_cost(
+            model="claude-opus-4-5-20251101",
+            input_tokens=1000,
+            output_tokens=100,
+            cache_read_tokens=600,
+            cache_write_tokens=200,
+        )
+        expected = (
+            200 * (5.0 / 1_000_000)  # uncached input
+            + 600 * (0.5 / 1_000_000)  # cache reads
+            + 200 * (6.25 / 1_000_000)  # cache writes
+            + 100 * (25.0 / 1_000_000)  # output
+        )
+        assert cost == pytest.approx(expected, rel=1e-9)
+
+    def test_cache_rates_fall_back_to_input_rate(self, budget_manager: BudgetManager) -> None:
+        """Models without cache pricing charge cached tokens at the input rate."""
+        with_cache = budget_manager.calculate_cost(
+            model="claude-sonnet-4-5-20250929",
+            input_tokens=1000,
+            output_tokens=100,
+            cache_read_tokens=600,
+        )
+        without_cache = budget_manager.calculate_cost(
+            model="claude-sonnet-4-5-20250929",
+            input_tokens=1000,
+            output_tokens=100,
+        )
+        assert with_cache == pytest.approx(without_cache, rel=1e-9)
+
+    def test_cache_tokens_clamped_to_input_total(self, budget_manager: BudgetManager) -> None:
+        """Cache subsets larger than input_tokens must be clamped, not negative-priced."""
+        cost = budget_manager.calculate_cost(
+            model="claude-opus-4-5-20251101",
+            input_tokens=100,
+            output_tokens=0,
+            cache_read_tokens=500,
+        )
+        expected = 100 * (0.5 / 1_000_000)
+        assert cost == pytest.approx(expected, rel=1e-9)
+
+    def test_record_usage_persists_cache_tokens(self, budget_manager: BudgetManager) -> None:
+        """Recorded usage entries carry cache token counts."""
+        budget_manager.record_usage(
+            provider="anthropic",
+            model="claude-opus-4-5-20251101",
+            input_tokens=1000,
+            output_tokens=100,
+            cache_read_tokens=600,
+            cache_write_tokens=200,
+        )
+        record = budget_manager._store.today_records[-1]
+        assert record["cache_read_tokens"] == 600
+        assert record["cache_write_tokens"] == 200
+
+    def test_record_usage_matches_calculate_cost(self, budget_manager: BudgetManager) -> None:
+        """record_usage and calculate_cost must agree for identical inputs."""
+        recorded = budget_manager.record_usage(
+            provider="anthropic",
+            model="claude-opus-4-5-20251101",
+            input_tokens=5000,
+            output_tokens=250,
+            cache_read_tokens=3000,
+            cache_write_tokens=1000,
+        )
+        calculated = budget_manager.calculate_cost(
+            model="claude-opus-4-5-20251101",
+            input_tokens=5000,
+            output_tokens=250,
+            cache_read_tokens=3000,
+            cache_write_tokens=1000,
+        )
+        assert recorded == pytest.approx(calculated, rel=1e-9)

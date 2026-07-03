@@ -87,6 +87,7 @@ class BaseProvider(ABC):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        cache_prompt: bool = True,
         **kwargs: Any,
     ) -> ProviderResponse:
         """
@@ -97,6 +98,8 @@ class BaseProvider(ABC):
             model: Model to use (defaults to provider's default)
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            cache_prompt: Allow provider-side prompt caching for stable prefixes.
+                Providers without explicit cache support accept and ignore it.
             **kwargs: Additional provider-specific parameters
 
         Returns:
@@ -111,6 +114,7 @@ class BaseProvider(ABC):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        cache_prompt: bool = True,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
         """
@@ -124,6 +128,8 @@ class BaseProvider(ABC):
             model: Model to use (defaults to provider's default)
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            cache_prompt: Allow provider-side prompt caching for stable prefixes.
+                Providers without explicit cache support accept and ignore it.
             **kwargs: Additional provider-specific parameters
 
         Yields:

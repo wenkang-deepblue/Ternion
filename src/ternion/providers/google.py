@@ -20,6 +20,11 @@ except ImportError:  # pragma: no cover
 from ternion.core.budget import budget_manager
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
 from ternion.providers.base import BaseProvider, ProviderResponse
+from ternion.providers.resilience import (
+    get_provider_semaphore,
+    run_with_provider_resilience,
+    run_with_retry,
+)
 from ternion.utils.log_manager import log_manager
 from ternion.utils.token_estimator import estimate_tokens_from_text
 
@@ -71,6 +76,7 @@ class GoogleProvider(BaseProvider):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        cache_prompt: bool = True,
         **kwargs: Any,
     ) -> ProviderResponse:
         """
@@ -81,11 +87,14 @@ class GoogleProvider(BaseProvider):
             model: Model to use (defaults to gemini-2.0-flash)
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            cache_prompt: Accepted for interface parity; Gemini applies implicit
+                context caching automatically on stable prefixes
             **kwargs: Additional parameters
 
         Returns:
             ProviderResponse with the generated content
         """
+        del cache_prompt  # Gemini implicit caching is automatic; no request flag exists.
         model_name = model or self._default_model
         system_instruction, contents = self._convert_messages(messages)
 
@@ -101,10 +110,14 @@ class GoogleProvider(BaseProvider):
             max_output_tokens=max_tokens,
         )
 
-        response = await self._client.aio.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=config,
+        response = await run_with_provider_resilience(
+            self.name,
+            lambda: self._client.aio.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config,
+            ),
+            operation_name="chat_completion",
         )
 
         usage_metadata = response.usage_metadata
@@ -112,9 +125,13 @@ class GoogleProvider(BaseProvider):
         candidates_tokens = (usage_metadata.candidates_token_count or 0) if usage_metadata else 0
 
         thoughts_tokens = 0
+        cache_read_tokens = 0
         if usage_metadata:
             # thoughts_token_count is model-dependent; absent on standard models.
             thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
+            # cached_content_token_count is the prompt subset served from Gemini's
+            # implicit/explicit context cache; it is included in prompt_token_count.
+            cache_read_tokens = getattr(usage_metadata, "cached_content_token_count", 0) or 0
 
         total_tokens = (usage_metadata.total_token_count or 0) if usage_metadata else 0
         output_tokens = candidates_tokens + thoughts_tokens
@@ -125,6 +142,7 @@ class GoogleProvider(BaseProvider):
             prompt_tokens=prompt_tokens,
             candidates_tokens=candidates_tokens,
             thoughts_tokens=thoughts_tokens,
+            cache_read_tokens=cache_read_tokens,
             total_tokens=total_tokens,
         )
 
@@ -144,6 +162,7 @@ class GoogleProvider(BaseProvider):
             output_tokens=output_tokens,
             thoughts_tokens=thoughts_tokens,
             context_length=total_tokens,
+            cache_read_tokens=cache_read_tokens,
         )
 
         text_content = response.text or ""
@@ -155,6 +174,7 @@ class GoogleProvider(BaseProvider):
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": candidates_tokens,
                 "thoughts_tokens": thoughts_tokens,
+                "cache_read_tokens": cache_read_tokens,
                 "total_tokens": total_tokens,
             },
             raw_response=response,
@@ -166,6 +186,7 @@ class GoogleProvider(BaseProvider):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        cache_prompt: bool = True,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
         """
@@ -176,11 +197,14 @@ class GoogleProvider(BaseProvider):
             model: Model to use
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            cache_prompt: Accepted for interface parity; Gemini applies implicit
+                context caching automatically on stable prefixes
             **kwargs: Additional parameters
 
         Yields:
             Content chunks as they are generated
         """
+        del cache_prompt  # Gemini implicit caching is automatic; no request flag exists.
         model_name = model or self._default_model
         system_instruction, contents = self._convert_messages(messages)
 
@@ -196,20 +220,25 @@ class GoogleProvider(BaseProvider):
             max_output_tokens=max_tokens,
         )
 
-        response_stream = await self._client.aio.models.generate_content_stream(
-            model=model_name,
-            contents=contents,
-            config=config,
-        )
-
         last_chunk = None
         received_text = ""
 
-        async for chunk in response_stream:
-            last_chunk = chunk
-            if chunk.text:
-                received_text += chunk.text
-                yield chunk.text
+        async with get_provider_semaphore(self.name):
+            response_stream = await run_with_retry(
+                self.name,
+                lambda: self._client.aio.models.generate_content_stream(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                ),
+                operation_name="chat_completion_stream",
+            )
+
+            async for chunk in response_stream:
+                last_chunk = chunk
+                if chunk.text:
+                    received_text += chunk.text
+                    yield chunk.text
 
         # Google SDK only populates usage_metadata on the final streaming chunk; track last_chunk to capture it.
         if last_chunk and hasattr(last_chunk, "usage_metadata") and last_chunk.usage_metadata:
@@ -219,6 +248,7 @@ class GoogleProvider(BaseProvider):
                 (usage_metadata.candidates_token_count or 0) if usage_metadata else 0
             )
             thoughts_tokens = getattr(usage_metadata, "thoughts_token_count", 0) or 0
+            cache_read_tokens = getattr(usage_metadata, "cached_content_token_count", 0) or 0
             total_tokens = (usage_metadata.total_token_count or 0) if usage_metadata else 0
             output_tokens = candidates_tokens + thoughts_tokens
 
@@ -228,6 +258,7 @@ class GoogleProvider(BaseProvider):
                 prompt_tokens=prompt_tokens,
                 candidates_tokens=candidates_tokens,
                 thoughts_tokens=thoughts_tokens,
+                cache_read_tokens=cache_read_tokens,
                 total_tokens=total_tokens,
             )
 
@@ -247,6 +278,7 @@ class GoogleProvider(BaseProvider):
                 output_tokens=output_tokens,
                 thoughts_tokens=thoughts_tokens,
                 context_length=total_tokens,
+                cache_read_tokens=cache_read_tokens,
             )
         elif received_text:
             estimated_output = estimate_tokens_from_text(received_text)

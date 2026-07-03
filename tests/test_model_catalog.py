@@ -112,6 +112,9 @@ def sample_catalog_payload() -> dict[str, dict[str, object]]:
             "input_cost_per_token": 0.003,
             "output_cost_per_token": 0.015,
             "output_cost_per_reasoning_token": 0.02,
+            "cache_read_input_token_cost": 0.0003,
+            "cache_creation_input_token_cost": 0.00375,
+            "max_output_tokens": 64000,
         },
         "claude-opus-4-1-20250805": {
             "litellm_provider": "anthropic",
@@ -1327,10 +1330,7 @@ async def test_anthropic_truth_filters_candidate_when_neither_raw_nor_canonical_
     snapshot = await service.get_snapshot()
 
     assert snapshot.models_by_provider["anthropic"] == []
-    assert (
-        "claude-opus-4-8-20260405"
-        not in snapshot.index_by_source_key
-    )
+    assert "claude-opus-4-8-20260405" not in snapshot.index_by_source_key
 
 
 @pytest.mark.asyncio
@@ -1397,3 +1397,32 @@ async def test_get_snapshot_returns_empty_snapshot_without_cache(
         "google": [],
         "anthropic": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_snapshot_normalizes_cache_pricing_fields(
+    tmp_path: Path,
+    sample_catalog_payload: dict[str, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cache read/write pricing fields should survive normalization."""
+    service = LiteLLMModelCatalogService(cache_path=tmp_path / "catalog.json")
+
+    async def fake_download(
+        etag: str | None = None,
+    ) -> tuple[dict[str, dict[str, object]] | None, str | None, bool]:
+        return sample_catalog_payload, "test-etag", False
+
+    monkeypatch.setattr(service, "_download_catalog_json", fake_download)
+
+    snapshot = await service.get_snapshot()
+
+    sonnet = snapshot.index_by_id["claude-sonnet-4-5-20250929"]
+    assert sonnet.cache_read_input_token_cost == pytest.approx(0.0003)
+    assert sonnet.cache_creation_input_token_cost == pytest.approx(0.00375)
+    assert sonnet.max_output_tokens == 64000
+
+    # Models without cache pricing keep None so budget falls back to input rate.
+    opus = snapshot.index_by_id["claude-opus-4-1-20250805"]
+    assert opus.cache_read_input_token_cost is None
+    assert opus.cache_creation_input_token_cost is None
