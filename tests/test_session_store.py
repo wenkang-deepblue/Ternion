@@ -226,9 +226,87 @@ class TestSessionStore:
         )
 
         assert session.evidence_requests == (
-            "- [P0] path=src/app.py:1-2\n"
-            "PURPOSE: Verify entrypoint."
+            "- [P0] path=src/app.py:1-2\nPURPOSE: Verify entrypoint."
         )
+
+    def test_create_session_derives_evidence_items_from_bundle(self, store: SessionStore) -> None:
+        """Structured evidence records should mirror the persisted bundle."""
+        bundle = (
+            "EVIDENCE_BUNDLE:\n"
+            "- [FILE_EXCERPT] path=src/app.py | lines=1-2\n"
+            "  PURPOSE: Verify entrypoint.\n"
+            "  EXCERPT_BEGIN\n"
+            "  def main():\n"
+            "      pass\n"
+            "  EXCERPT_END"
+        )
+        session = store.create_session(
+            ternion_report="Test",
+            execution_mode=ExecutionMode.TERNION_FULL,
+            evidence_bundle=bundle,
+        )
+
+        assert len(session.evidence_items) == 1
+        record = session.evidence_items[0]
+        assert record["kind"] == "excerpt"
+        assert record["path"] == "src/app.py"
+        assert record["line_range"] == [1, 2]
+        assert record["purpose"] == "Verify entrypoint."
+
+        loaded = store.load_session(session.session_id)
+        assert loaded is not None
+        assert loaded.evidence_items == session.evidence_items
+
+    def test_update_session_rederives_evidence_items_with_bundle(self, store: SessionStore) -> None:
+        """Bundle updates without explicit records re-derive the structured view."""
+        session = store.create_session(
+            ternion_report="Test",
+            execution_mode=ExecutionMode.TERNION_FULL,
+        )
+        assert session.evidence_items == []
+
+        bundle = (
+            "EVIDENCE_BUNDLE:\n"
+            "- [FILE_EXCERPT] path=src/a.py | lines=3-3\n"
+            "  PURPOSE: Check constant.\n"
+            "  EXCERPT_BEGIN\n"
+            "  X = 1\n"
+            "  EXCERPT_END"
+        )
+        updated = store.update_session(session.session_id, evidence_bundle=bundle)
+        assert updated is not None
+        assert len(updated.evidence_items) == 1
+        assert updated.evidence_items[0]["path"] == "src/a.py"
+
+    def test_update_session_explicit_evidence_items_win(self, store: SessionStore) -> None:
+        """Explicit structured records take precedence over derivation."""
+        session = store.create_session(
+            ternion_report="Test",
+            execution_mode=ExecutionMode.TERNION_FULL,
+        )
+        explicit = [{"kind": "excerpt", "path": "src/x.py", "lines": "", "excerpt": "pass"}]
+        updated = store.update_session(
+            session.session_id,
+            evidence_bundle="EVIDENCE_BUNDLE:\n- None",
+            evidence_items=explicit,
+        )
+        assert updated is not None
+        assert updated.evidence_items == explicit
+
+    def test_from_dict_defaults_evidence_items(self) -> None:
+        """Legacy session payloads without records load with an empty list."""
+        data = {
+            "session_id": "legacy1234567",
+            "stage": "rca_complete",
+            "execution_mode": "ternion_full",
+            "ternion_report_raw": "Report",
+            "ternion_report_safe": "Report",
+            "report_hash": compute_report_hash("Report"),
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        session = Session.from_dict(data)
+        assert session.evidence_items == []
 
     def test_load_session(self, store: SessionStore) -> None:
         """Should load a previously created session."""
@@ -274,18 +352,13 @@ class TestSessionStore:
 
         updated = store.update_session(
             session.session_id,
-            evidence_requests=(
-                "junk\n"
-                "- [P0] path=docs/spec.md\n"
-                "PURPOSE: Verify docs scope.\n"
-            ),
+            evidence_requests=("junk\n- [P0] path=docs/spec.md\nPURPOSE: Verify docs scope.\n"),
             stabilized_document_paths=["/tmp/doc.md"],
         )
 
         assert updated is not None
         assert updated.evidence_requests == (
-            "- [P0] path=docs/spec.md\n"
-            "PURPOSE: Verify docs scope."
+            "- [P0] path=docs/spec.md\nPURPOSE: Verify docs scope."
         )
         assert updated.stabilized_document_paths == ["/tmp/doc.md"]
 
@@ -293,8 +366,7 @@ class TestSessionStore:
         reloaded = store.load_session(session.session_id)
         assert reloaded is not None
         assert reloaded.evidence_requests == (
-            "- [P0] path=docs/spec.md\n"
-            "PURPOSE: Verify docs scope."
+            "- [P0] path=docs/spec.md\nPURPOSE: Verify docs scope."
         )
         assert reloaded.stabilized_document_paths == ["/tmp/doc.md"]
 

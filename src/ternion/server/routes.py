@@ -4802,6 +4802,7 @@ async def handle_report_evidence_followup(
                         evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
                         evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
                         ternion_analyses=list(getattr(session, "ternion_analyses", []) or []),
+                        evidence_items=list(getattr(session, "evidence_items", []) or []),
                         evidence_chain_index=list(
                             getattr(session, "evidence_chain_index", []) or []
                         ),
@@ -5463,6 +5464,7 @@ async def handle_report_evidence_followup(
         evidence_gaps=str(getattr(session, "evidence_gaps", "") or ""),
         evidence_requests=str(getattr(session, "evidence_requests", "") or ""),
         ternion_analyses=list(getattr(session, "ternion_analyses", []) or []),
+        evidence_items=list(getattr(session, "evidence_items", []) or []),
         evidence_chain_index=list(getattr(session, "evidence_chain_index", []) or []),
         evidence_topup_round=int(getattr(session, "evidence_topup_round", 0) or 0),
         report_evidence_resume_phase=str(
@@ -7411,6 +7413,7 @@ async def handle_execution_followup(
         "evidence_bundle": str(getattr(session, "evidence_bundle", "") or ""),
         "evidence_gaps": str(getattr(session, "evidence_gaps", "") or ""),
         "evidence_requests": str(getattr(session, "evidence_requests", "") or ""),
+        "evidence_items": list(getattr(session, "evidence_items", []) or []),
         "evidence_chain_index": list(getattr(session, "evidence_chain_index", []) or []),
         "evidence_topup_round": int(getattr(session, "evidence_topup_round", 0) or 0),
         "report_evidence_resume_phase": str(

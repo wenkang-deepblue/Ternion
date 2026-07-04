@@ -234,6 +234,46 @@ def _hash_excerpt(excerpt: str) -> str:
     return digest[:16]
 
 
+def hash_excerpt_text(excerpt: str) -> str:
+    """
+    Compute the stable short hash used for evidence excerpt references.
+
+    Args:
+        excerpt: Normalized excerpt text.
+
+    Returns:
+        A 16-character hex digest.
+    """
+    return _hash_excerpt(excerpt)
+
+
+def canonicalize_evidence_path(path: str | None) -> str:
+    """
+    Canonicalize an evidence path for grouping and matching.
+
+    Args:
+        path: Raw path value from an evidence item or request.
+
+    Returns:
+        The canonical path string ("" when empty).
+    """
+    return _canonicalize_path_for_match(path)
+
+
+def evidence_paths_equivalent(left: str | None, right: str | None) -> bool:
+    """
+    Check best-effort path equivalence (absolute vs repo-relative aware).
+
+    Args:
+        left: First path value.
+        right: Second path value.
+
+    Returns:
+        True when the paths refer to the same file under suffix matching.
+    """
+    return _paths_equivalent(left, right)
+
+
 def parse_evidence_bundle(bundle: str) -> list[EvidenceItem]:
     """
     Parse evidence bundle into structured evidence items.

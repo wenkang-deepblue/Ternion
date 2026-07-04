@@ -85,6 +85,7 @@ class TernionState(TypedDict, total=False):
         rejection_context: User's rejection feedback for re-analysis.
         ternion_analyses: List of analysis results as dicts.
         evidence_requests: Evidence requested by council members for Phase 1.5.
+        evidence_items: Structured evidence records mirroring evidence_bundle.
         evidence_chain_index: Index of evidence chain items.
         evidence_topup_round: Number of Step E evidence top-ups.
         report_evidence_resume_phase: Target phase after Phase 1.5 top-up.
@@ -129,6 +130,7 @@ class TernionState(TypedDict, total=False):
 
     ternion_analyses: list[dict[str, Any]]
     evidence_requests: str
+    evidence_items: list[dict[str, Any]]
     evidence_chain_index: list[dict[str, Any]]
     evidence_topup_round: int
     report_evidence_resume_phase: str

@@ -7,7 +7,7 @@ Each node represents a step in the 4-step discussion flow.
 import ast
 import asyncio
 import contextlib
-import hashlib
+import difflib
 import json
 import re
 import shlex
@@ -42,6 +42,7 @@ from ternion.providers.manager import provider_manager
 from ternion.router.prompts import (
     ARBITER_EVIDENCE_PROMPT,
     ARBITER_REPORT_EVIDENCE_PROMPT,
+    DIVERGENCE_LENSES,
     DIVERGENCE_PROMPT,
     EXECUTION_PROMPT,
     GLOBAL_SECURITY_RULES,
@@ -55,9 +56,13 @@ from ternion.utils.evidence_chain import (
     is_deterministic_range_request,
     merge_adjacent_or_overlapping_ranges,
     merge_missing_purpose_gaps,
-    parse_evidence_bundle,
     parse_evidence_requests,
     reconcile_evidence_chain,
+)
+from ternion.utils.evidence_repository import (
+    EVIDENCE_BUNDLE_SOFT_CAP_CHARS,
+    EvidenceRepository,
+    build_evidence_item,
 )
 from ternion.utils.evidence_requests_protocol import (
     EVIDENCE_REQUESTS_BEGIN,
@@ -687,6 +692,134 @@ def _format_optimizer_verification_retry_policy(tool_results_meta: dict[str, Any
         f"OPTIMIZER_FAILED_VERIFICATION_ATTEMPTS: {optimizer_failed}\n"
         f"OPTIMIZER_VERIFICATION_RETRIES_REMAINING: {remaining}\n"
     )
+
+
+# Per-file cap for full post-change content in the Optimizer prompt. Beyond it,
+# the complete unified diff plus head/tail context is sent instead; the Optimizer
+# can request exact ranges via evidence top-up when the omitted middle matters.
+_OPTIMIZER_FILE_FULL_TEXT_MAX_CHARS = 48_000
+_OPTIMIZER_TRUNCATED_CONTEXT_LINES = 120
+
+
+def _unified_diff_text(baseline: str, current: str, path: str) -> str:
+    """Build a unified diff (baseline -> current) for a single file."""
+    diff_lines = difflib.unified_diff(
+        (baseline or "").splitlines(),
+        (current or "").splitlines(),
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+        lineterm="",
+    )
+    return "\n".join(diff_lines)
+
+
+def _truncate_file_content_for_prompt(content: str) -> str:
+    """Keep head/tail context of an oversized file with an explicit marker."""
+    lines = (content or "").splitlines()
+    keep = _OPTIMIZER_TRUNCATED_CONTEXT_LINES
+    if len(lines) <= keep * 2:
+        return content
+    omitted = len(lines) - keep * 2
+    return "\n".join(
+        [
+            *lines[:keep],
+            (
+                f"[... {omitted} unchanged-context lines omitted; the unified diff above is "
+                "complete. Request an evidence top-up for exact ranges if needed ...]"
+            ),
+            *lines[-keep:],
+        ]
+    )
+
+
+def _build_optimizer_file_context_parts(
+    baseline: dict[str, str],
+    writer_output_files: dict[str, str],
+) -> list[str]:
+    """
+    Build the Optimizer file-context block: unified diff + post-change content.
+
+    For each changed file the baseline full text is replaced by a complete
+    unified diff against the post-change content (lossless: baseline is
+    reconstructible from diff + post-change). When the diff is not smaller than
+    the baseline (rewrite-scale change), the legacy baseline+post pair is kept.
+    Oversized post-change content is reduced to head/tail context, with the
+    complete diff still carrying every changed line.
+
+    Args:
+        baseline: path -> pre-change file snapshots.
+        writer_output_files: path -> post-change file snapshots.
+
+    Returns:
+        Prompt content parts (empty when there is nothing to show).
+    """
+    parts: list[str] = []
+    legacy_baseline_paths: list[str] = [p for p in baseline if p not in writer_output_files]
+
+    if writer_output_files:
+        parts.append("\n\n[FILE CHANGES - UNIFIED DIFF + POST-CHANGE]\n\n")
+        parts.append(
+            "Each changed file below shows a complete unified diff (baseline -> current) "
+            "followed by the post-change content. The pre-change baseline is reconstructible "
+            "from the diff and is not repeated in full.\n"
+        )
+        for path, current in writer_output_files.items():
+            current_text = current or ""
+            base_text = baseline.get(path)
+            parts.append(f"\n\nFILE: {path}\n")
+            if base_text is None:
+                parts.extend(
+                    [
+                        "POST-CHANGE CONTENT (no pre-change baseline captured):\n-----\n",
+                        current_text,
+                        "\n-----\n",
+                    ]
+                )
+                continue
+
+            diff_text = _unified_diff_text(base_text, current_text, path)
+            if len(diff_text) >= len(base_text):
+                # Rewrite-scale change: the diff carries no size advantage, keep
+                # the legacy full baseline + post-change pair for this file.
+                parts.extend(
+                    [
+                        "PRE-CHANGE BASELINE:\n-----\n",
+                        base_text,
+                        "\n-----\n",
+                        "POST-CHANGE CONTENT:\n-----\n",
+                        current_text,
+                        "\n-----\n",
+                    ]
+                )
+                continue
+
+            rendered_current = current_text
+            if len(current_text) > _OPTIMIZER_FILE_FULL_TEXT_MAX_CHARS:
+                rendered_current = _truncate_file_content_for_prompt(current_text)
+            parts.extend(
+                [
+                    "UNIFIED DIFF (baseline -> current):\n-----\n",
+                    diff_text,
+                    "\n-----\n",
+                    "POST-CHANGE CONTENT:\n-----\n",
+                    rendered_current,
+                    "\n-----\n",
+                ]
+            )
+
+    if legacy_baseline_paths:
+        parts.append("\n\n[ORIGINAL CODE BASELINE - PRE-CHANGE]\n\n")
+        for path in legacy_baseline_paths:
+            parts.extend(
+                [
+                    f"\n\nFILE: {path}\n",
+                    "-----\n",
+                    baseline.get(path) or "",
+                    "\n-----\n",
+                ]
+            )
+
+    return parts
 
 
 def _resolve_api_mode(provider: Any, model: str) -> str | None:
@@ -1540,6 +1673,57 @@ def _serialize_evidence_chain_index_for_prompt(
         return "[]"
 
 
+def _warn_if_bundle_over_soft_cap(evidence_bundle: str, *, phase: str) -> None:
+    """
+    Emit an observability warning when the rendered bundle exceeds the soft cap.
+
+    Evidence is never dropped (first-priority principle); the warning makes
+    oversized bundles visible so collection discipline can be tuned upstream.
+    """
+    size = len(evidence_bundle or "")
+    if size <= EVIDENCE_BUNDLE_SOFT_CAP_CHARS:
+        return
+    logger.warning(
+        "evidence_bundle_over_soft_cap",
+        phase=phase,
+        bundle_chars=size,
+        soft_cap_chars=EVIDENCE_BUNDLE_SOFT_CAP_CHARS,
+    )
+    log_manager.emit(
+        level="WARN",
+        category="WORKFLOW",
+        message=(
+            "evidence_bundle_over_soft_cap | "
+            f"phase={phase} | chars={size} | soft_cap={EVIDENCE_BUNDLE_SOFT_CAP_CHARS}"
+        ),
+    )
+
+
+def _find_tool_loop_start_index(history: list[dict[str, Any]]) -> int:
+    """
+    Locate the first tool-loop message in an execution history.
+
+    Stable context blocks are inserted before this index so the serialized
+    prompt prefix stays byte-identical across tool-loop rounds (prompt caching)
+    while never splitting an assistant tool_calls message from its tool results.
+
+    Args:
+        history: Execution conversation history (OpenAI-compatible dicts).
+
+    Returns:
+        Index of the first tool-loop message, or len(history) when none exists.
+    """
+    for idx, msg in enumerate(history or []):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "tool":
+            return idx
+        if role == "assistant" and msg.get("tool_calls"):
+            return idx
+    return len(history or [])
+
+
 def _build_execution_policy_context(
     *,
     ternion_report: str,
@@ -1886,7 +2070,12 @@ async def evidence_node(state: TernionState) -> TernionState:
                 "thinking_logs": thinking_logs,
             }
 
-        evidence_bundle, evidence_gaps = _parse_evidence_output(response.content)
+        raw_bundle, evidence_gaps = _parse_evidence_output(response.content)
+        # Parse once at the LLM boundary; the canonical render becomes the only
+        # bundle text downstream phases and sessions ever see.
+        evidence_repo = EvidenceRepository.from_bundle_text(raw_bundle)
+        evidence_bundle = evidence_repo.render_bundle()
+        _warn_if_bundle_over_soft_cap(evidence_bundle, phase="evidence")
         evidence_gaps = merge_missing_purpose_gaps(
             evidence_bundle=evidence_bundle,
             evidence_gaps=evidence_gaps,
@@ -1897,6 +2086,7 @@ async def evidence_node(state: TernionState) -> TernionState:
             "current_phase": WorkflowPhase.DIVERGENCE.value,
             "conversation_history": cleaned_history,
             "evidence_bundle": evidence_bundle,
+            "evidence_items": evidence_repo.to_records(),
             "evidence_gaps": evidence_gaps,
             "thinking_logs": thinking_logs,
         }
@@ -2127,18 +2317,25 @@ async def divergence_node(state: TernionState) -> TernionState:
     evidence_bundle = state.get("evidence_bundle") or "EVIDENCE_BUNDLE:\n- None"
     evidence_gaps = state.get("evidence_gaps") or "EVIDENCE_GAPS:\n- None"
     evidence_block = f"[EVIDENCE]\n\n{evidence_bundle}\n\n{evidence_gaps}"
-    system_prompt = _prepend_global_security_rules(f"{DIVERGENCE_PROMPT}\n\n{evidence_block}")
-    ternion_messages = [
-        ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
-    ]
+    base_system_prompt = _prepend_global_security_rules(f"{DIVERGENCE_PROMPT}\n\n{evidence_block}")
+    history_messages: list[ChatMessage] = []
     for msg in history_for_prompt:
-        ternion_messages.append(
+        history_messages.append(
             ChatMessage(
                 role=MessageRole(msg["role"]),
                 content=msg.get("content"),
                 name=msg.get("name"),
             )
         )
+
+    def _build_member_messages(ternion_id: str) -> list[ChatMessage]:
+        """Build per-member messages with a member-specific analysis lens."""
+        lens = DIVERGENCE_LENSES.get(ternion_id, "").strip()
+        member_system = f"{base_system_prompt}\n\n{lens}" if lens else base_system_prompt
+        return [
+            ChatMessage(role=MessageRole.SYSTEM, content=member_system),
+            *history_messages,
+        ]
 
     ternion_ids = ["ternion_a", "ternion_b", "ternion_c"]
     ternion_configs = []
@@ -2195,7 +2392,7 @@ async def divergence_node(state: TernionState) -> TernionState:
             # so a cache write would only add cost without a follow-up read.
             response = await _call_with_timeout(
                 provider=provider,
-                messages=ternion_messages,
+                messages=_build_member_messages(ternion_id),
                 model=model,
                 temperature=0.7,
                 max_tokens=MAX_OUTPUT_TOKENS_ANALYSIS,
@@ -2465,11 +2662,6 @@ def _group_contiguous_numbered_lines(
     return runs
 
 
-def _sha256_16(text: str) -> str:
-    digest = hashlib.sha256((text or "").encode("utf-8")).hexdigest()
-    return digest[:16]
-
-
 def _format_purpose_for_deterministic_evidence(purposes: set[str]) -> str:
     cleaned = [p.strip() for p in purposes if isinstance(p, str) and p.strip()]
     if not cleaned:
@@ -2567,21 +2759,14 @@ async def report_evidence_node(state: TernionState) -> TernionState:
     }
 
     existing_bundle = state.get("evidence_bundle") or ""
+    evidence_repo = EvidenceRepository.from_state(
+        evidence_items=state.get("evidence_items"),
+        evidence_bundle=existing_bundle,
+    )
     updated_bundle = existing_bundle
     attempted_reads: set[tuple[str, int, int]] = set()
 
     if deterministic_targets:
-        existing_items = parse_evidence_bundle(existing_bundle)
-        existing_keys = {
-            (
-                _to_repo_relative_path(item.path),
-                (item.lines or "").strip(),
-                item.excerpt_hash_raw,
-            )
-            for item in existing_items
-            if item.path and item.lines
-        }
-
         tool_contents_by_id: dict[str, str] = {}
         for msg in history:
             if msg.get("role") != "tool":
@@ -2594,7 +2779,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                 content if isinstance(content, str) else str(content)
             )
 
-        new_item_blocks: list[str] = []
+        mined_items: list[Any] = []
 
         def ranges_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
             return not (a[1] < b[0] or a[0] > b[1])
@@ -2665,36 +2850,25 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                         and ranges_overlap(t["line_range"], (run_start, run_end))
                     }
                     purpose = _format_purpose_for_deterministic_evidence(purposes)
-                    excerpt_lines = ["  " + raw for _, raw in run]
-                    excerpt_raw = "\n".join(excerpt_lines).rstrip()
-                    excerpt_hash_raw = _sha256_16(excerpt_raw)
-                    lines_value = f"{run_start}-{run_end}"
-                    key = (path_rel, lines_value, excerpt_hash_raw)
-                    if key in existing_keys:
-                        continue
-                    existing_keys.add(key)
-                    new_item_blocks.append(
-                        f"- [FILE_EXCERPT] path={path_rel} | lines={lines_value}\n"
-                        f"  PURPOSE: {purpose}\n"
-                        "  EXCERPT_BEGIN\n" + "\n".join(excerpt_lines) + "\n"
-                        "  EXCERPT_END"
+                    mined_items.append(
+                        build_evidence_item(
+                            path=path_rel,
+                            lines=f"{run_start}-{run_end}",
+                            purpose=purpose,
+                            excerpt="\n".join(raw for _, raw in run),
+                        )
                     )
 
-        if new_item_blocks:
-            if (
-                updated_bundle
-                and updated_bundle.strip().startswith("EVIDENCE_BUNDLE:")
-                and "- None" not in updated_bundle
-            ):
-                updated_bundle = updated_bundle.rstrip() + "\n\n" + "\n".join(new_item_blocks)
-            else:
-                updated_bundle = "EVIDENCE_BUNDLE:\n" + "\n".join(new_item_blocks)
+        if mined_items:
+            # Structured merge: exact duplicates collapse and verified
+            # overlapping/adjacent ranges consolidate (lossless).
+            evidence_repo.merge_items(mined_items)
+            updated_bundle = evidence_repo.render_bundle()
 
     deterministic_tool_calls: list[dict[str, Any]] = []
     if deterministic_targets:
-        bundle_items = parse_evidence_bundle(updated_bundle)
         covered_by_path: dict[str, list[tuple[int, int]]] = {}
-        for bundle_item in bundle_items:
+        for bundle_item in evidence_repo.items:
             if bundle_item.line_range is None:
                 continue
             path_rel = _to_repo_relative_path(bundle_item.path)
@@ -2813,6 +2987,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                     "current_phase": WorkflowPhase.REPORT_EVIDENCE.value,
                     "pending_tool_calls": pending_tool_calls,
                     "evidence_bundle": updated_bundle,
+                    "evidence_items": evidence_repo.to_records(),
                     "thinking_logs": thinking_logs,
                 }
 
@@ -2846,6 +3021,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             **state,
             "current_phase": next_phase,
             "evidence_bundle": updated_bundle,
+            "evidence_items": evidence_repo.to_records(),
             "evidence_gaps": reconciled_gaps,
             "evidence_chain_index": evidence_chain_index,
             "conversation_history": _filter_conversation_history_for_analysis(
@@ -2860,16 +3036,43 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         host_evidence_requests = canonicalize_evidence_requests_text(evidence_requests)
 
     if updated_bundle != existing_bundle:
-        state = {**state, "evidence_bundle": updated_bundle}
+        state = {
+            **state,
+            "evidence_bundle": updated_bundle,
+            "evidence_items": evidence_repo.to_records(),
+        }
+
+    # Multi-round top-ups replay the whole tool loop each round (O(N^2) growth
+    # without a bound). Deterministic mining above always consumes the FULL
+    # history; only the LLM replay below is compacted.
+    replay_history = history
+    phase15_digest = ""
+    try:
+        from ternion.utils.execution_history_compaction import (
+            ExecutionHistoryCompactionConfig,
+            compact_execution_history_for_writer,
+        )
+
+        replay_history, phase15_digest = compact_execution_history_for_writer(
+            history,
+            config=ExecutionHistoryCompactionConfig(),
+        )
+    except Exception:
+        # Best-effort: do not block Phase 1.5 on compaction failures.
+        replay_history = history
+        phase15_digest = ""
 
     system_prompt = _prepend_global_security_rules(ARBITER_REPORT_EVIDENCE_PROMPT)
     messages: list[ChatMessage] = [
         ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
     ]
+    requests_content = f"[EVIDENCE_REQUESTS]\n{host_evidence_requests}"
+    if phase15_digest:
+        requests_content += f"\n\n[TERNION TOOL CONTEXT DIGEST]\n\n{phase15_digest}"
     messages.append(
         ChatMessage(
             role=MessageRole.USER,
-            content=f"[EVIDENCE_REQUESTS]\n{host_evidence_requests}",
+            content=requests_content,
         )
     )
 
@@ -2878,7 +3081,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
     raw_tool_msg_count = 0
     dropped_tool_msg_count = 0
     pending_tool_call_ids: set[str] = set()
-    for msg in history:
+    for msg in replay_history:
         role = msg.get("role")
         if role == "assistant":
             assistant_tool_calls = msg.get("tool_calls")
@@ -3038,22 +3241,14 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             }
 
         new_bundle, new_gaps = _parse_evidence_output(response.content)
-        existing_bundle = state.get("evidence_bundle") or ""
         existing_gaps = state.get("evidence_gaps") or ""
 
-        # Strip headers when appending to prevent duplication.
-        if new_bundle and "- None" not in new_bundle:
-            # Strip EVIDENCE_BUNDLE: header from new_bundle to avoid duplicate headers
-            new_bundle_content = new_bundle
-            if new_bundle_content.startswith("EVIDENCE_BUNDLE:"):
-                new_bundle_content = new_bundle_content[len("EVIDENCE_BUNDLE:") :].lstrip("\n")
-            if existing_bundle and "- None" not in existing_bundle:
-                # Append new evidence lines to existing bundle (after the header)
-                updated_bundle = f"{existing_bundle}\n\n{new_bundle_content}"
-            else:
-                updated_bundle = new_bundle  # Use full new_bundle with header if no existing
-        else:
-            updated_bundle = existing_bundle
+        # Structured merge at the LLM boundary: exact duplicates collapse and
+        # verified overlapping/adjacent ranges consolidate before rendering the
+        # canonical bundle back into state.
+        evidence_repo.merge_bundle_text(new_bundle)
+        updated_bundle = evidence_repo.render_bundle()
+        _warn_if_bundle_over_soft_cap(updated_bundle, phase="report_evidence")
 
         # Preserve previous phase gaps when merging new ones.
         if new_gaps and "- None" not in new_gaps:
@@ -3084,6 +3279,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             **state,
             "current_phase": next_phase,
             "evidence_bundle": updated_bundle,
+            "evidence_items": evidence_repo.to_records(),
             "evidence_gaps": reconciled_gaps,
             "evidence_chain_index": evidence_chain_index,
             "conversation_history": _filter_conversation_history_for_analysis(
@@ -3842,21 +4038,11 @@ async def execution_node(state: TernionState) -> TernionState:
             )
         )
 
-    # Add conversation history
-    for msg in history:
-        messages.append(
-            ChatMessage(
-                role=MessageRole(msg["role"]),
-                content=msg.get("content"),
-                name=msg.get("name"),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id"),
-            )
-        )
-
-    # Inject Writer constraints as a final user instruction without breaking client format rules.
-    # This keeps provider compatibility while ensuring the Writer sees Ternion constraints even
-    # when a client system prompt is present.
+    # Inject Writer constraints without breaking client format rules. Stable
+    # blocks (instructions/report/evidence/policy) are placed BEFORE the growing
+    # tool-loop suffix so the serialized prompt prefix stays byte-identical
+    # across rounds (provider prompt caching); only the small per-turn block at
+    # the tail is rebuilt each round.
     writer_instructions = _prepend_global_security_rules(EXECUTION_PROMPT)
 
     revision_count = state.get("revision_count", 0)
@@ -3881,7 +4067,7 @@ async def execution_node(state: TernionState) -> TernionState:
         )
     )
 
-    content_parts = [
+    stable_context_parts = [
         "[TERNION WRITER INSTRUCTIONS]\n\n",
         writer_instructions,
         "\n\n[TERNION ANALYSIS REPORT]\n\n",
@@ -3889,6 +4075,13 @@ async def execution_node(state: TernionState) -> TernionState:
         *evidence_chain_lines,
         "\n\n[DELIVERABLE POLICY]\n\n",
         deliverable_policy_text,
+    ]
+
+    content_parts = [
+        "[TERNION TURN CONTEXT]\n\n",
+        "Apply the [TERNION WRITER INSTRUCTIONS], [TERNION ANALYSIS REPORT], "
+        "[REPORT_EVIDENCE_CHAIN - VERBATIM], and [DELIVERABLE POLICY] provided in the "
+        "stable context message earlier in this conversation.",
         *topup_status_lines,
     ]
     if tool_context_digest:
@@ -3983,6 +4176,35 @@ async def execution_node(state: TernionState) -> TernionState:
             ]
         )
 
+    # Cache-friendly layout: leading user turns, then the stable context block,
+    # then the accumulated tool loop, then the small per-turn dynamic block.
+    stable_insert_idx = _find_tool_loop_start_index(history)
+    for msg in history[:stable_insert_idx]:
+        messages.append(
+            ChatMessage(
+                role=MessageRole(msg["role"]),
+                content=msg.get("content"),
+                name=msg.get("name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        )
+    messages.append(
+        ChatMessage(
+            role=MessageRole.USER,
+            content="".join(stable_context_parts),
+        )
+    )
+    for msg in history[stable_insert_idx:]:
+        messages.append(
+            ChatMessage(
+                role=MessageRole(msg["role"]),
+                content=msg.get("content"),
+                name=msg.get("name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        )
     messages.append(
         ChatMessage(
             role=MessageRole.USER,
@@ -4798,17 +5020,6 @@ async def optimizer_node(state: TernionState) -> TernionState:
         )
     ]
 
-    for msg in history:
-        messages.append(
-            ChatMessage(
-                role=MessageRole(msg["role"]),
-                content=msg.get("content"),
-                name=msg.get("name"),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id"),
-            )
-        )
-
     optimizer_instructions = _prepend_global_security_rules(optimizer_prompt_with_lang)
     evidence_bundle = str(state.get("evidence_bundle") or "EVIDENCE_BUNDLE:\n- None")
     evidence_gaps = str(state.get("evidence_gaps") or "EVIDENCE_GAPS:\n- None")
@@ -4825,7 +5036,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
         )
     )
 
-    content_parts: list[str] = [
+    stable_context_parts: list[str] = [
         "[TERNION OPTIMIZER INSTRUCTIONS]\n\n",
         optimizer_instructions,
         "\n\n[TERNION ANALYSIS REPORT]\n\n",
@@ -4833,6 +5044,13 @@ async def optimizer_node(state: TernionState) -> TernionState:
         *evidence_chain_lines,
         "\n\n[DELIVERABLE POLICY]\n\n",
         deliverable_policy_text,
+    ]
+
+    content_parts: list[str] = [
+        "[TERNION TURN CONTEXT]\n\n",
+        "Apply the [TERNION OPTIMIZER INSTRUCTIONS], [TERNION ANALYSIS REPORT], "
+        "[REPORT_EVIDENCE_CHAIN - VERBATIM], and [DELIVERABLE POLICY] provided in the "
+        "stable context message earlier in this conversation.",
         *topup_status_lines,
     ]
     pytest_status = _format_last_pytest_status(state.get("tool_results_meta"))
@@ -4866,29 +5084,9 @@ async def optimizer_node(state: TernionState) -> TernionState:
                 ]
             )
 
-    if baseline:
-        content_parts.append("\n\n[ORIGINAL CODE BASELINE - PRE-CHANGE]\n\n")
-        for path, content in baseline.items():
-            content_parts.extend(
-                [
-                    f"\n\nFILE: {path}\n",
-                    "-----\n",
-                    content,
-                    "\n-----\n",
-                ]
-            )
-
-    if writer_output_files:
-        content_parts.append("\n\n[WRITER OUTPUT FILES - POST-CHANGE]\n\n")
-        for path, content in writer_output_files.items():
-            content_parts.extend(
-                [
-                    f"\n\nFILE: {path}\n",
-                    "-----\n",
-                    content,
-                    "\n-----\n",
-                ]
-            )
+    # Changed files travel as "complete unified diff + post-change content"
+    # instead of the legacy baseline+post full-text pair (lossless, smaller).
+    content_parts.extend(_build_optimizer_file_context_parts(baseline, writer_output_files))
 
     if generated_code:
         content_parts.extend(
@@ -4898,6 +5096,35 @@ async def optimizer_node(state: TernionState) -> TernionState:
             ]
         )
 
+    # Cache-friendly layout: leading user turns, then the stable context block,
+    # then the accumulated tool loop, then the small per-turn dynamic block.
+    stable_insert_idx = _find_tool_loop_start_index(history)
+    for msg in history[:stable_insert_idx]:
+        messages.append(
+            ChatMessage(
+                role=MessageRole(msg["role"]),
+                content=msg.get("content"),
+                name=msg.get("name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        )
+    messages.append(
+        ChatMessage(
+            role=MessageRole.USER,
+            content="".join(stable_context_parts),
+        )
+    )
+    for msg in history[stable_insert_idx:]:
+        messages.append(
+            ChatMessage(
+                role=MessageRole(msg["role"]),
+                content=msg.get("content"),
+                name=msg.get("name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        )
     messages.append(
         ChatMessage(
             role=MessageRole.USER,

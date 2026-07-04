@@ -313,6 +313,7 @@ async def run_discussion(context: TernionContext) -> dict[str, Any]:
         "cursor_tool_choice": getattr(context, "cursor_tool_choice", None),
         "evidence_bundle": "",
         "evidence_gaps": "",
+        "evidence_items": [],
         # Workflow outputs
         "ternion_analyses": [],
         "evidence_requests": "",  # Phase 1.5: council member evidence requests
@@ -354,6 +355,7 @@ async def resume_report_evidence(
     evidence_gaps: str,
     evidence_requests: str,
     ternion_analyses: list[dict[str, Any]],
+    evidence_items: list[dict[str, Any]] | None = None,
     evidence_chain_index: list[dict[str, Any]] | None = None,
     evidence_topup_round: int = 0,
     report_evidence_resume_phase: str = "",
@@ -370,6 +372,7 @@ async def resume_report_evidence(
         evidence_gaps: Preserved evidence gaps from Phase 0
         evidence_requests: Council member evidence requests from Phase 1
         ternion_analyses: Council analyses from Phase 1
+        evidence_items: Preserved structured evidence records
         evidence_chain_index: Preserved evidence request satisfaction index
         evidence_topup_round: Number of top-up rounds already used
         report_evidence_resume_phase: Target phase after report_evidence
@@ -427,6 +430,7 @@ async def resume_report_evidence(
         "evidence_bundle": evidence_bundle,
         "evidence_gaps": evidence_gaps,
         "evidence_requests": evidence_requests,
+        "evidence_items": list(evidence_items or []),
         "evidence_chain_index": list(evidence_chain_index or []),
         "evidence_topup_round": int(evidence_topup_round or 0),
         "report_evidence_resume_phase": str(report_evidence_resume_phase or ""),

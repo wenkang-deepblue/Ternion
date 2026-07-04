@@ -23,6 +23,7 @@ from typing import Any
 import structlog
 
 from ternion.utils.evidence_chain import canonicalize_evidence_requests_text
+from ternion.utils.evidence_repository import derive_evidence_records
 from ternion.utils.log_manager import log_manager
 
 logger = structlog.get_logger(__name__)
@@ -157,6 +158,10 @@ class Session:
     evidence_bundle: str = ""
     evidence_gaps: str = ""
     evidence_requests: str = ""
+    # First-class structured evidence records (source of truth for the bundle).
+    # Kept in sync with evidence_bundle: derived from the canonical bundle text
+    # whenever a caller updates the bundle without providing records explicitly.
+    evidence_items: list[dict[str, Any]] = field(default_factory=list)
     evidence_chain_index: list[dict[str, Any]] = field(default_factory=list)
     stabilized_document_paths: list[str] = field(default_factory=list)
     # Step E: Execution/Optimizer evidence top-ups via Phase 1.5 (max 2 rounds).
@@ -207,6 +212,7 @@ class Session:
         data.setdefault("workspace_root_source", "")
         data.setdefault("evidence_topup_round", 0)
         data.setdefault("report_evidence_resume_phase", "")
+        data.setdefault("evidence_items", [])
         data.setdefault("stabilized_document_paths", [])
         data.setdefault("tool_call_index", {})
         data.setdefault("tool_loop_pre_git_status", {})
@@ -411,6 +417,7 @@ class SessionStore:
         evidence_bundle: str = "",
         evidence_gaps: str = "",
         evidence_requests: str = "",
+        evidence_items: list[dict[str, Any]] | None = None,
         evidence_chain_index: list[dict[str, Any]] | None = None,
         stabilized_document_paths: list[str] | None = None,
         evidence_topup_round: int = 0,
@@ -446,6 +453,9 @@ class SessionStore:
                 workflow_phase=workflow_phase,
                 round_index=round_index,
             )
+
+        if evidence_items is None and evidence_bundle:
+            evidence_items = derive_evidence_records(evidence_bundle)
 
         session = Session(
             session_id=generate_session_id(),
@@ -483,6 +493,7 @@ class SessionStore:
             evidence_bundle=evidence_bundle,
             evidence_gaps=evidence_gaps,
             evidence_requests=canonicalize_evidence_requests_text(evidence_requests),
+            evidence_items=list(evidence_items or []),
             evidence_chain_index=list(evidence_chain_index or []),
             stabilized_document_paths=list(stabilized_document_paths or []),
             evidence_topup_round=int(evidence_topup_round or 0),
@@ -585,6 +596,7 @@ class SessionStore:
         evidence_bundle: str | None = None,
         evidence_gaps: str | None = None,
         evidence_requests: str | None = None,
+        evidence_items: list[dict[str, Any]] | None = None,
         evidence_chain_index: list[dict[str, Any]] | None = None,
         stabilized_document_paths: list[str] | None = None,
         evidence_topup_round: int | None = None,
@@ -629,6 +641,8 @@ class SessionStore:
             evidence_bundle: Phase 1.5 evidence bundle content (optional).
             evidence_gaps: Phase 1.5 evidence gaps content (optional).
             evidence_requests: Phase 1.5 evidence requests content (optional).
+            evidence_items: Structured evidence records; derived from the
+                bundle when omitted while the bundle is updated (optional).
             evidence_chain_index: Evidence chain index entries (optional).
             evidence_topup_round: Execution-time evidence top-up round counter (optional).
             report_evidence_resume_phase: Phase to resume after report_evidence (optional).
@@ -714,6 +728,12 @@ class SessionStore:
             session.confirmation_reason = confirmation_reason
         if evidence_bundle is not None:
             session.evidence_bundle = evidence_bundle
+            # Keep the structured records in sync with the canonical bundle text
+            # unless the caller supplies them explicitly below.
+            if evidence_items is None:
+                session.evidence_items = derive_evidence_records(evidence_bundle)
+        if evidence_items is not None:
+            session.evidence_items = list(evidence_items)
         if evidence_gaps is not None:
             session.evidence_gaps = evidence_gaps
         if evidence_requests is not None:

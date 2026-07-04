@@ -158,6 +158,27 @@ Your analysis must follow this structured format:
 """
 
 # ==============================================================================
+# PHASE 1 LENSES: Per-council analysis priorities (appended to the system prompt
+# tail). All members still cover the full required structure; the lens only
+# weights their attention so three identically-prompted members do not converge
+# on the same blind spots when configured with same-family models.
+# ==============================================================================
+DIVERGENCE_LENSES: dict[str, str] = {
+    "ternion_a": """*** ANALYSIS LENS: CORRECTNESS-FIRST ***
+While covering every required section, weight your analysis toward logical correctness:
+exact control/data flow, boundary conditions, invariants, off-by-one and state-machine
+errors, and mismatches between claimed behavior and the evidence.""",
+    "ternion_b": """*** ANALYSIS LENS: ARCHITECTURE-FIRST ***
+While covering every required section, weight your analysis toward architecture and design:
+module boundaries, coupling and cohesion, data flow topology, API contracts, extensibility,
+and whether the change fits the existing structure or fights it.""",
+    "ternion_c": """*** ANALYSIS LENS: OPERATIONAL-RISK-FIRST ***
+While covering every required section, weight your analysis toward operational risk:
+failure modes, error handling and recovery paths, concurrency and timing hazards,
+resource and cost blowups, migration/rollback safety, and observability gaps.""",
+}
+
+# ==============================================================================
 # PHASE 1.5: REPORT EVIDENCE VERIFICATION (Arbiter Tool Loop)
 # Role: Evidence-only tool loop for convergence preparation
 # ==============================================================================
