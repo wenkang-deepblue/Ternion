@@ -15,7 +15,11 @@ from anthropic import AsyncAnthropic
 from ternion.core.budget import budget_manager
 from ternion.core.model_catalog import model_catalog_service
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
-from ternion.providers.base import BaseProvider, ProviderResponse
+from ternion.providers.base import (
+    BaseProvider,
+    ProviderResponse,
+    get_catalog_max_output_tokens,
+)
 from ternion.providers.resilience import (
     RETRY_MAX_ATTEMPTS,
     compute_backoff_delay,
@@ -427,15 +431,7 @@ class AnthropicProvider(BaseProvider):
             if isinstance(max_tokens, int) and max_tokens > 0
             else _DEFAULT_MAX_OUTPUT_TOKENS
         )
-        limit: int | None = None
-        try:
-            catalog_model = model_catalog_service.get_model_cached(model)
-        except Exception:
-            catalog_model = None
-        if catalog_model is not None:
-            raw_limit = getattr(catalog_model, "max_output_tokens", None)
-            if isinstance(raw_limit, int) and raw_limit > 0:
-                limit = raw_limit
+        limit = get_catalog_max_output_tokens(model_catalog_service, model)
         if limit is None:
             limit = _FALLBACK_MAX_OUTPUT_TOKENS
         return min(requested, limit)
@@ -483,16 +479,15 @@ class AnthropicProvider(BaseProvider):
         messages = list(converted)
         last_message = dict(messages[-1])
         content = last_message.get("content")
-        if isinstance(content, str):
-            if content:
-                last_message["content"] = [
-                    {
-                        "type": "text",
-                        "text": content,
-                        "cache_control": cache_control,
-                    }
-                ]
-                messages[-1] = last_message
+        if isinstance(content, str) and content:
+            last_message["content"] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": cache_control,
+                }
+            ]
+            messages[-1] = last_message
         elif isinstance(content, list) and content:
             blocks = list(content)
             last_block = blocks[-1]

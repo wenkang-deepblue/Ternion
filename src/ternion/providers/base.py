@@ -13,6 +13,34 @@ from typing import Any
 from ternion.core.models import ChatMessage
 
 
+def get_catalog_max_output_tokens(catalog_service: Any, model: str) -> int | None:
+    """
+    Return the model's catalog max_output_tokens, best effort.
+
+    Shared lookup step for the per-provider output-budget clamp helpers, which
+    each layer their own distinct fallback semantics on top of it. The catalog
+    service is passed in (rather than imported here) so each caller keeps its
+    own patch surface for testing.
+
+    Args:
+        catalog_service: Model catalog service exposing get_model_cached.
+        model: Configured model ID used for catalog lookup.
+
+    Returns:
+        Positive max_output_tokens for the model, or None when unavailable.
+    """
+    try:
+        catalog_model = catalog_service.get_model_cached(model)
+    except Exception:
+        catalog_model = None
+    if catalog_model is None:
+        return None
+    limit = getattr(catalog_model, "max_output_tokens", None)
+    if isinstance(limit, int) and limit > 0:
+        return limit
+    return None
+
+
 def clamp_max_output_tokens(model: str, max_tokens: int | None) -> int | None:
     """
     Clamp a requested output budget to the model's catalog max_output_tokens.
@@ -32,15 +60,14 @@ def clamp_max_output_tokens(model: str, max_tokens: int | None) -> int | None:
     if not isinstance(max_tokens, int) or max_tokens <= 0:
         return None
     try:
+        # Lazy import keeps base free of a model_catalog import cycle.
         from ternion.core.model_catalog import model_catalog_service
 
-        catalog_model = model_catalog_service.get_model_cached(model)
+        limit = get_catalog_max_output_tokens(model_catalog_service, model)
     except Exception:
-        catalog_model = None
-    if catalog_model is not None:
-        limit = getattr(catalog_model, "max_output_tokens", None)
-        if isinstance(limit, int) and limit > 0:
-            return min(max_tokens, limit)
+        limit = None
+    if limit is not None:
+        return min(max_tokens, limit)
     return max_tokens
 
 
