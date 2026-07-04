@@ -284,7 +284,7 @@ class TestOptimizerLayoutAndDiff:
         )
         assert "UNIFIED DIFF (baseline -> current):" in parts
         assert "+line 1500 CHANGED" in parts
-        assert "unchanged-context lines omitted" in parts
+        assert "middle lines omitted from this view" in parts
 
 
 class TestPhase15Compaction:

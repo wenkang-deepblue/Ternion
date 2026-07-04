@@ -210,6 +210,10 @@ class EvidenceRepository:
             if item is not None:
                 repo.items.append(item)
         repo.preserved_text = "\n".join(preserved_parts)
+        # to_records() output is already consolidated, so this is a no-op on the
+        # standard path; it keeps the consolidated-repository invariant
+        # self-enforcing for hand-built or legacy record payloads.
+        repo._consolidate()
         return repo
 
     @classmethod
@@ -458,6 +462,13 @@ def _group_indices_by_equivalent_path(items: list[EvidenceItem]) -> list[list[in
 
     Suffix matching keeps absolute and repo-relative notations of the same file
     in one group so cross-phase duplicates can consolidate.
+
+    Inherited assumption (same heuristic the reconcile matching layer accepted):
+    a repo-relative path and an absolute path sharing that suffix refer to the
+    same file. Two genuinely different files could collide only when they share
+    the suffix AND byte-identical content at the same line range (every merge is
+    content-verified), in which case a duplicate path notation is collapsed but
+    no excerpt content is lost.
     """
     groups: list[list[int]] = []
     representatives: list[str] = []

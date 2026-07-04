@@ -724,8 +724,9 @@ def _truncate_file_content_for_prompt(content: str) -> str:
         [
             *lines[:keep],
             (
-                f"[... {omitted} unchanged-context lines omitted; the unified diff above is "
-                "complete. Request an evidence top-up for exact ranges if needed ...]"
+                f"[... {omitted} middle lines omitted from this view; every changed line "
+                "appears in the complete unified diff above. Request an evidence top-up "
+                "for exact ranges if needed ...]"
             ),
             *lines[-keep:],
         ]
@@ -740,11 +741,13 @@ def _build_optimizer_file_context_parts(
     Build the Optimizer file-context block: unified diff + post-change content.
 
     For each changed file the baseline full text is replaced by a complete
-    unified diff against the post-change content (lossless: baseline is
-    reconstructible from diff + post-change). When the diff is not smaller than
-    the baseline (rewrite-scale change), the legacy baseline+post pair is kept.
-    Oversized post-change content is reduced to head/tail context, with the
-    complete diff still carrying every changed line.
+    unified diff against the post-change content. When the full post-change
+    content is included, the baseline is exactly reconstructible from the pair
+    (lossless). When the diff is not smaller than the baseline (rewrite-scale
+    change), the legacy baseline+post pair is kept. Oversized post-change
+    content is reduced to head/tail context — bounded-lossy for unchanged
+    middle context only: the complete diff still carries every changed line,
+    and omitted ranges remain recoverable via evidence top-up.
 
     Args:
         baseline: path -> pre-change file snapshots.
@@ -5085,7 +5088,12 @@ async def optimizer_node(state: TernionState) -> TernionState:
             )
 
     # Changed files travel as "complete unified diff + post-change content"
-    # instead of the legacy baseline+post full-text pair (lossless, smaller).
+    # instead of the legacy baseline+post full-text pair. This block MUST stay
+    # in the per-turn dynamic tail: baseline_file_snapshots, modified_files and
+    # writer_output_files are refreshed by the tool-loop follow-up handler after
+    # every mutation round, and a mutable block placed in the stable prefix
+    # would invalidate the provider prompt cache for the entire tool-loop
+    # history behind it on every change.
     content_parts.extend(_build_optimizer_file_context_parts(baseline, writer_output_files))
 
     if generated_code:
