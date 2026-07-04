@@ -55,6 +55,8 @@ function AppContent() {
   const [publicAccessReady, setPublicAccessReady] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [authTokenInput, setAuthTokenInput] = useState('');
+  const [authTokenInvalid, setAuthTokenInvalid] = useState(false);
+  const [authTokenChecking, setAuthTokenChecking] = useState(false);
   const [activeTab, setActiveTab] = useState<'config' | 'ports' | 'usage' | 'logs'>('config');
   const [modelsReloadSignal, setModelsReloadSignal] = useState(0);
 
@@ -163,8 +165,12 @@ function AppContent() {
   }, [loadData]);
 
   // Poll config periodically so backend-initiated changes (e.g. auto-switch execution_mode)
-  // become visible without requiring a manual page refresh.
+  // become visible without requiring a manual page refresh. Paused while the
+  // access-token gate is shown: polling would just produce a 401 every tick.
   useEffect(() => {
+    if (authRequired) {
+      return;
+    }
     let cancelled = false;
     const interval = window.setInterval(async () => {
       try {
@@ -186,7 +192,7 @@ function AppContent() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [authRequired]);
 
   const handleConfigUpdate = (newConfig: Config) => {
     setConfig(newConfig);
@@ -221,14 +227,31 @@ function AppContent() {
     }
   }, []);
 
-  const handleAuthTokenSubmit = () => {
+  const handleAuthTokenSubmit = async () => {
     const token = authTokenInput.trim();
-    if (!token) {
+    if (!token || authTokenChecking) {
       return;
     }
+    setAuthTokenChecking(true);
+    setAuthTokenInvalid(false);
     setStoredAuthToken(token);
-    setAuthTokenInput('');
-    void loadData();
+    try {
+      // Probe a lightweight protected endpoint first so a wrong token gets
+      // explicit feedback instead of silently re-rendering the same gate.
+      await api.getStatus();
+      setAuthTokenInput('');
+      await loadData();
+    } catch (error) {
+      if (isApiError(error) && error.status === 401) {
+        setAuthTokenInvalid(true);
+      } else {
+        // Non-auth failure (e.g. server restarting): let the normal load
+        // path surface it; the gate closes if the token itself was accepted.
+        void loadData();
+      }
+    } finally {
+      setAuthTokenChecking(false);
+    }
   };
 
   if (authRequired) {
@@ -247,19 +270,27 @@ function AppContent() {
               className="input"
               value={authTokenInput}
               placeholder={t.accessTokenGatePlaceholder}
-              onChange={event => setAuthTokenInput(event.target.value)}
+              onChange={event => {
+                setAuthTokenInput(event.target.value);
+                setAuthTokenInvalid(false);
+              }}
               onKeyDown={event => {
                 if (event.key === 'Enter') {
-                  handleAuthTokenSubmit();
+                  void handleAuthTokenSubmit();
                 }
               }}
             />
           </div>
+          {authTokenInvalid && (
+            <p className="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">
+              {t.accessTokenGateInvalid}
+            </p>
+          )}
           <button
             type="button"
             className="btn-primary mt-4 w-full"
-            onClick={handleAuthTokenSubmit}
-            disabled={!authTokenInput.trim()}
+            onClick={() => void handleAuthTokenSubmit()}
+            disabled={!authTokenInput.trim() || authTokenChecking}
           >
             {t.accessTokenGateSubmit}
           </button>

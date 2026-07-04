@@ -22,7 +22,12 @@ from ternion.core.session_store import (
     SessionStage,
     get_session_lock,
 )
-from ternion.server.routes import handle_report_evidence_followup
+from ternion.server.routes import (
+    _SessionTurnLock,
+    handle_evidence_followup,
+    handle_execution_followup,
+    handle_report_evidence_followup,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -132,6 +137,70 @@ class TestSessionTurnLockRelease:
                 pass
 
         assert get_session_lock(session.session_id).locked() is False
+
+    async def test_streaming_turn_releases_lock_when_stream_closed_early(self):
+        session = _build_session("eeee11112222")
+        request = _build_request(session.session_id, stream=True)
+        mock_resume = AsyncMock(return_value=_completed_final_state())
+        cfg, p_cfg, p_budget, p_sessions, p_wf = _patched_environment(mock_resume, session)
+
+        with p_cfg as m_cfg, p_budget as m_budget, p_sessions as m_sessions, p_wf:
+            m_cfg.load.return_value = cfg
+            m_budget.check_budget.return_value = (True, None)
+            m_sessions.update_session.return_value = session
+
+            resp = await handle_report_evidence_followup(session, request)
+            assert isinstance(resp, StreamingResponse)
+            assert get_session_lock(session.session_id).locked() is True
+
+            # Consume a single chunk, then close (client disconnect shape).
+            iterator = resp.body_iterator
+            await iterator.__anext__()
+            await iterator.aclose()
+
+        assert get_session_lock(session.session_id).locked() is False
+
+    @pytest.mark.parametrize(
+        ("handler", "inner_name"),
+        [
+            (handle_report_evidence_followup, "_report_evidence_followup_turn"),
+            (handle_evidence_followup, "_evidence_followup_turn"),
+            (handle_execution_followup, "_execution_followup_turn"),
+        ],
+    )
+    async def test_wrapper_releases_lock_when_inner_turn_raises(self, handler, inner_name):
+        session = _build_session("dddd11112222")
+        request = _build_request(session.session_id, stream=False)
+
+        with (
+            patch(f"ternion.server.routes.{inner_name}", AsyncMock(side_effect=RuntimeError)),
+            pytest.raises(RuntimeError),
+        ):
+            await handler(session, request)
+
+        assert get_session_lock(session.session_id).locked() is False
+
+    async def test_acquire_timeout_degrades_to_unlocked_turn(self):
+        session = _build_session("ffff11112222")
+        request = _build_request(session.session_id, stream=False)
+        blocker = get_session_lock(session.session_id)
+        await blocker.acquire()
+        try:
+            inner = AsyncMock(return_value="TURN_RESULT")
+            with (
+                patch.object(_SessionTurnLock, "_ACQUIRE_TIMEOUT_SECONDS", 0.05),
+                patch("ternion.server.routes._report_evidence_followup_turn", inner),
+            ):
+                result = await asyncio.wait_for(
+                    handle_report_evidence_followup(session, request), timeout=5
+                )
+        finally:
+            blocker.release()
+
+        # The turn completed without the lock instead of deadlocking, and the
+        # degraded wrapper did not release the lock it never acquired.
+        assert result == "TURN_RESULT"
+        inner.assert_awaited_once()
 
     async def test_concurrent_turns_for_same_session_serialize(self):
         session = _build_session("cccc11112222")

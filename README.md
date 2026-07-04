@@ -204,6 +204,15 @@ You can expose your local Ternion server with a third-party tunnel provider such
 
 These are third-party services with their own terms, pricing, and availability. Ternion does not bundle or distribute their binaries.
 
+> **Security warning: use HTTP-layer tunnels only.** Ternion's access-token
+> protection identifies remote traffic by the `X-Forwarded-*` headers that
+> HTTP-layer tunnels and reverse proxies (ngrok, Cloudflare Tunnel, Cloud Run)
+> always inject. Raw TCP port forwarders — `ssh -R`, `frp` in tcp mode,
+> `socat`, generic L4 port forwarding — deliver remote traffic to loopback
+> without those headers, so Ternion cannot tell it apart from your own local
+> requests and the token check is silently bypassed. Do **not** expose Ternion
+> to the internet through raw TCP forwarders.
+
 ### Example: ngrok
 
 ```bash

@@ -2,9 +2,10 @@
 Bearer-token authentication for publicly exposed endpoints.
 
 Ternion is designed to be reached by Cursor through a public HTTPS tunnel
-(ngrok, Cloud Run, custom proxies). Without authentication, anyone holding
-the tunnel URL could spend the user's LLM budget via /v1 or rewrite the
-configuration via /api. This middleware closes that gap:
+(ngrok, Cloudflare Tunnel, Cloud Run, custom reverse proxies). Without
+authentication, anyone holding the tunnel URL could spend the user's LLM
+budget via /v1 or rewrite the configuration via /api. This middleware closes
+that gap:
 
 - Requests arriving through a proxy/tunnel (any Forwarded-family header
   present) must carry the installation's bearer token.
@@ -13,10 +14,20 @@ configuration via /api. This middleware closes that gap:
 - Read-only probe endpoints (health, landing pages, docs, /panel assets)
   stay public: they expose no secrets and are needed for connectivity checks.
 
+Known limitation (by design, documented in the README): the exemption for
+local direct requests assumes exposure goes through an HTTP-layer proxy that
+injects Forwarded-family headers, which holds for every officially supported
+tunnel. Raw L4/TCP forwarders (ssh -R, frp in tcp mode, socat, generic port
+forwarding) deliver the remote client's bytes to loopback unchanged, so at
+the socket level they are indistinguishable from `curl localhost` and bypass
+the token check. Users must not expose Ternion through such forwarders.
+
 The token is generated once per installation (see
 ConfigStore.ensure_auth_token), printed in the CLI startup banner, and
 available in the Control Panel for copy/paste into Cursor's API key field.
 """
+
+import secrets
 
 import structlog
 from starlette.requests import Request
@@ -24,6 +35,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ternion.core.config_store import config_store
+from ternion.utils.i18n import MessageKey, t
 
 logger = structlog.get_logger(__name__)
 
@@ -32,11 +44,18 @@ logger = structlog.get_logger(__name__)
 _FORWARDED_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "forwarded")
 
 # Client hosts considered local. "testclient" is Starlette's in-process test
-# client default; real network connections always carry an IP here.
+# client default and never appears on real network connections (uvicorn always
+# reports the peer IP from the socket, which a remote client cannot spoof).
 _LOCAL_CLIENT_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+# Loopback prefixes: plain IPv4 loopback range and its IPv6-mapped form.
+_LOCAL_CLIENT_HOST_PREFIXES = ("127.", "::ffff:127.")
 
 # Paths that stay public: no secrets, needed for connectivity probes and the
 # Control Panel SPA shell (the panel's /api calls are still protected).
+# /docs, /redoc and /openapi.json intentionally stay public even through a
+# tunnel: the API schema carries no secrets for an open-source project (it is
+# published in the repository), every documented endpoint is itself protected,
+# and the pages are useful for connectivity troubleshooting.
 _EXEMPT_EXACT_PATHS = {"/", "/health", "/v1", "/docs", "/redoc", "/openapi.json"}
 _EXEMPT_PREFIXES = ("/panel",)
 
@@ -46,8 +65,11 @@ def is_local_direct_request(request: Request) -> bool:
     Return whether a request came directly from the local machine.
 
     A request is local only when it carries no proxy-forwarding headers and
-    its client host is a loopback address (tunnel agents forward from
-    loopback but always add Forwarded-family headers).
+    its client host is a loopback address. HTTP-layer tunnel agents forward
+    from loopback but add Forwarded-family headers, which distinguishes them
+    from genuine local clients. Raw L4/TCP forwarders do not add headers and
+    cannot be distinguished at this layer — see the module docstring for the
+    documented limitation.
 
     Args:
         request: The incoming request.
@@ -60,7 +82,7 @@ def is_local_direct_request(request: Request) -> bool:
             return False
     client = request.client
     host = (client.host if client else "") or ""
-    return host in _LOCAL_CLIENT_HOSTS or host.startswith("127.")
+    return host in _LOCAL_CLIENT_HOSTS or host.startswith(_LOCAL_CLIENT_HOST_PREFIXES)
 
 
 def extract_bearer_token(request: Request) -> str:
@@ -117,11 +139,7 @@ def _unauthorized_response() -> JSONResponse:
         status_code=401,
         content={
             "error": {
-                "message": (
-                    "Invalid or missing API key. Use the Ternion access token shown in "
-                    "the CLI startup banner (also available in the Control Panel) as "
-                    "the API key."
-                ),
+                "message": t(MessageKey.AUTH_TOKEN_REQUIRED),
                 "type": "authentication_error",
                 "code": "invalid_api_key",
             }
@@ -156,7 +174,11 @@ class AuthTokenMiddleware:
 
         expected_token = str(getattr(config_store.load(), "auth_token", "") or "")
         provided_token = extract_bearer_token(request)
-        if expected_token and provided_token == expected_token:
+        if (
+            expected_token
+            and provided_token
+            and secrets.compare_digest(provided_token, expected_token)
+        ):
             await self.app(scope, receive, send)
             return
 

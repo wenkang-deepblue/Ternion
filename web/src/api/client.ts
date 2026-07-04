@@ -42,9 +42,12 @@ export function setStoredAuthToken(token: string): void {
  * Local direct access does not require the token (the backend exempts it),
  * so an absent token is normal for localhost usage.
  *
+ * Exported for consumers that stream outside this client (e.g. the log
+ * stream, which uses fetch-based SSE and must attach the same header).
+ *
  * @returns A headers fragment with the bearer token, or an empty object.
  */
-function buildAuthHeaders(): Record<string, string> {
+export function buildAuthHeaders(): Record<string, string> {
   const token = getStoredAuthToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }

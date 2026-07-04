@@ -13,10 +13,13 @@ Covers:
 import asyncio
 import gzip
 import json
+import os
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 
+import ternion.core.session_store as session_store_module
 from ternion.core.session_store import (
     ExecutionMode,
     SessionStage,
@@ -140,6 +143,127 @@ class TestColdFieldExternalization:
         assert not (tmp_path / session.session_id).exists()
 
 
+class TestColdFieldIntegrity:
+    """Degraded reads never destroy on-disk history; mismatches are observable."""
+
+    async def test_corrupt_sidecar_degrades_to_empty(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path)
+        session = _create_session_with_cold_data(store)
+        sidecar = tmp_path / session.session_id / "tool_results_raw.json.gz"
+        sidecar.write_bytes(b"not a gzip file")
+
+        loaded = store.load_session(session.session_id)
+        assert loaded is not None
+        assert loaded.tool_results_raw == {}
+        assert loaded.baseline_file_snapshots == COLD_PAYLOAD["baseline_file_snapshots"]
+
+    async def test_hash_mismatch_keeps_readable_content(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path)
+        session = _create_session_with_cold_data(store)
+        sidecar = tmp_path / session.session_id / "tool_results_raw.json.gz"
+        # Valid gzip JSON whose content no longer matches the stub hash
+        # (a torn-write shape): the data is real, so it must be kept.
+        replaced = {"ternion_other_r0009_c00": "replaced content"}
+        sidecar.write_bytes(gzip.compress(json.dumps(replaced).encode("utf-8")))
+
+        loaded = store.load_session(session.session_id)
+        assert loaded is not None
+        assert loaded.tool_results_raw == replaced
+
+    async def test_degraded_load_does_not_overwrite_stub_on_save(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path)
+        session = _create_session_with_cold_data(store)
+        session_id = session.session_id
+        sidecar = tmp_path / session_id / "tool_results_raw.json.gz"
+        hidden = sidecar.with_suffix(".hidden")
+        sidecar.rename(hidden)
+
+        # Load degrades the field to empty, then a save happens (any update).
+        store.update_session(session_id, stage=SessionStage.EXECUTION_IN_PROGRESS)
+
+        on_disk = json.loads((tmp_path / f"{session_id}.json").read_text())
+        stub = on_disk["tool_results_raw"]
+        assert isinstance(stub, dict)
+        assert "__ternion_external__" in stub
+
+        # Transient failure heals: restoring the sidecar restores the data.
+        hidden.rename(sidecar)
+        recovered = store.load_session(session_id)
+        assert recovered is not None
+        assert recovered.tool_results_raw == COLD_PAYLOAD["tool_results_raw"]
+
+    async def test_nonempty_write_after_degraded_load_preserves_original(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path)
+        session = _create_session_with_cold_data(store)
+        session_id = session.session_id
+        cold_dir = tmp_path / session_id
+        sidecar = cold_dir / "tool_results_raw.json.gz"
+        original_bytes = sidecar.read_bytes()
+        # Corrupt the file so the next load degrades while it still exists.
+        sidecar.write_bytes(b"corrupted beyond repair")
+
+        store.load_session(session_id)
+        store.update_session(
+            session_id, tool_results_raw={"ternion_new_r0003_c00": "fresh history"}
+        )
+
+        recovered = list(cold_dir.glob("tool_results_raw.json.gz.recovered-*"))
+        assert len(recovered) == 1
+        assert recovered[0].read_bytes() == b"corrupted beyond repair"
+        assert original_bytes  # sanity: the pre-corruption file was non-empty
+
+        loaded = store.load_session(session_id)
+        assert loaded is not None
+        assert loaded.tool_results_raw == {"ternion_new_r0003_c00": "fresh history"}
+
+    async def test_ternion_analyses_round_trip_and_degradation(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path)
+        analyses = [{"ternion_id": "ternion_a", "analysis": "root cause " * 50}]
+        session = store.create_session(
+            ternion_report="# Report",
+            execution_mode=ExecutionMode.TERNION_FULL,
+            ternion_analyses=analyses,
+        )
+
+        on_disk = json.loads((tmp_path / f"{session.session_id}.json").read_text())
+        assert "__ternion_external__" in on_disk["ternion_analyses"]
+        loaded = store.load_session(session.session_id)
+        assert loaded is not None
+        assert loaded.ternion_analyses == analyses
+
+        (tmp_path / session.session_id / "ternion_analyses.json.gz").unlink()
+        degraded = store.load_session(session.session_id)
+        assert degraded is not None
+        # List-typed cold fields degrade to a list, not a dict.
+        assert degraded.ternion_analyses == []
+
+    async def test_unchanged_cold_payload_is_not_rewritten(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path)
+        session = _create_session_with_cold_data(store)
+        sidecar = tmp_path / session.session_id / "tool_results_raw.json.gz"
+        past = 1_000_000_000
+        os.utime(sidecar, (past, past))
+
+        # A save with unchanged cold content must skip the sidecar rewrite.
+        store.update_session(session.session_id, stage=SessionStage.EXECUTION_IN_PROGRESS)
+        assert sidecar.stat().st_mtime == past
+
+        # Changed content must rewrite it.
+        store.update_session(
+            session.session_id,
+            tool_results_raw={"ternion_abc_r0002_c00": "changed"},
+        )
+        assert sidecar.stat().st_mtime != past
+
+    async def test_delete_session_cleans_orphan_sidecar_dir(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path)
+        session = _create_session_with_cold_data(store)
+        (tmp_path / f"{session.session_id}.json").unlink()
+
+        assert store.delete_session(session.session_id) is False
+        assert not (tmp_path / session.session_id).exists()
+
+
 class TestCursorToolsDeduplication:
     """Identical tools schemas are stored once in the shared store."""
 
@@ -249,6 +373,46 @@ class TestSessionArchiving:
 
         assert store.archive_old_sessions(days=30) == 1
         assert store.list_sessions() == []
+
+    async def test_unparseable_timestamp_skips_archiving(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path)
+        session = store.create_session(
+            ternion_report="# done",
+            execution_mode=ExecutionMode.TERNION_FULL,
+        )
+        store.update_session(session.session_id, stage=SessionStage.EXECUTED)
+        path = tmp_path / f"{session.session_id}.json"
+        data = json.loads(path.read_text())
+        data["updated_at"] = "not-a-timestamp"
+        data["created_at"] = "not-a-timestamp"
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        assert store.archive_old_sessions(days=30) == 0
+        assert path.exists()
+
+    async def test_concurrent_update_during_archive_skips_deletion(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path)
+        session = store.create_session(
+            ternion_report="# done",
+            execution_mode=ExecutionMode.TERNION_FULL,
+        )
+        store.update_session(session.session_id, stage=SessionStage.EXECUTED)
+        self._age_session(store, session.session_id, days=60)
+        path = tmp_path / f"{session.session_id}.json"
+        real_dump = session_store_module._dump_gzip_json
+
+        def dump_and_touch(value):
+            # Simulate a turn writing the live file between the archive
+            # snapshot and its deletion re-check. An explicit past timestamp
+            # guarantees an mtime change even on coarse filesystems.
+            os.utime(path, (1_000_000_000, 1_000_000_000))
+            return real_dump(value)
+
+        with patch.object(session_store_module, "_dump_gzip_json", side_effect=dump_and_touch):
+            assert store.archive_old_sessions(days=30) == 0
+
+        assert path.exists()
+        assert not (tmp_path / "archive" / f"{session.session_id}.json.gz").exists()
 
 
 class TestSessionLockRegistry:

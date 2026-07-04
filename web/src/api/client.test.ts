@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ApiError, isApiError } from './client';
+import api, {
+  ApiError,
+  buildAuthHeaders,
+  getStoredAuthToken,
+  isApiError,
+  setStoredAuthToken,
+} from './client';
 
 describe('ApiError', () => {
   it('sets status, code, message, and payload from a full payload', () => {
@@ -85,5 +91,62 @@ describe('isApiError', () => {
 
   it('returns false for plain objects', () => {
     expect(isApiError({ status: 400, code: 'test' })).toBe(false);
+  });
+});
+
+describe('access token storage and header injection', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
+  });
+
+  it('round-trips the stored access token', () => {
+    expect(getStoredAuthToken()).toBe('');
+    setStoredAuthToken('my-token');
+    expect(getStoredAuthToken()).toBe('my-token');
+    setStoredAuthToken('');
+    expect(getStoredAuthToken()).toBe('');
+  });
+
+  it('builds the Authorization header only when a token is stored', () => {
+    expect(buildAuthHeaders()).toEqual({});
+    setStoredAuthToken('my-token');
+    expect(buildAuthHeaders()).toEqual({ Authorization: 'Bearer my-token' });
+  });
+
+  it('attaches the bearer token to API requests', async () => {
+    setStoredAuthToken('my-token');
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ server_status: 'running' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.getStatus();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer my-token');
+  });
+
+  it('sends no Authorization header without a stored token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ server_status: 'running' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.getStatus();
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init?.headers as Record<string, string>).Authorization).toBeUndefined();
   });
 });

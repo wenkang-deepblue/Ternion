@@ -4083,7 +4083,11 @@ class _SessionTurnLock:
     (legacy unserialized behavior) instead of deadlocking the session.
     """
 
-    _ACQUIRE_TIMEOUT_SECONDS = 300.0
+    # A legitimate turn can chain multiple provider calls (e.g. a Writer call
+    # capped at writer_timeout_seconds=300s plus one soft retry), so the
+    # acquire timeout must exceed a single provider timeout to avoid degrading
+    # to unlocked mode while a long-but-healthy turn still holds the lock.
+    _ACQUIRE_TIMEOUT_SECONDS = 600.0
 
     def __init__(self, session_id: str) -> None:
         self._session_id = session_id
@@ -4104,7 +4108,14 @@ class _SessionTurnLock:
             )
 
     def hand_off(self) -> None:
-        """Transfer release responsibility to the streaming generator."""
+        """Transfer release responsibility to the streaming generator.
+
+        Known edge: if the ASGI server never starts iterating the generator
+        after hand-off, the release in its finally block never runs and the
+        lock stays held for the process lifetime. No concrete trigger is
+        known; the bounded acquire timeout keeps this a delay (subsequent
+        turns degrade to unlocked mode) rather than a deadlock.
+        """
         self.handed_off = True
 
     def release(self) -> None:
@@ -4240,17 +4251,18 @@ def _merge_incoming_tool_results(
 def _check_followup_budget(
     session: Session,
     request: ChatCompletionRequest,
-    *,
-    skip_confirm: bool = False,
 ) -> Response | None:
     """
     Apply the budget gate for a follow-up turn.
 
+    Callers that must bypass the whole gate (e.g. the execution follow-up
+    resuming right after a user confirmed the budget warning) skip calling
+    this function entirely instead of passing a flag: both the hard-exceeded
+    block and the warning-level confirmation are suppressed in that case.
+
     Args:
         session: The session paused when the budget gate triggers.
         request: The incoming request (used for response formatting).
-        skip_confirm: When True, the warning-level confirmation gate is
-            bypassed (hard budget exceedance still blocks).
 
     Returns:
         A gate response to return immediately, or None to continue.
@@ -4268,7 +4280,7 @@ def _check_followup_budget(
             confirmation_reason="budget_exceeded",
         )
         return _respond_with_text(request, _budget_exceeded_message(session))
-    if budget_warning == "BUDGET_WARNING" and not skip_confirm:
+    if budget_warning == "BUDGET_WARNING":
         usage_summary = budget_manager.get_usage_summary()
         log_manager.emit(
             level="WARN",
@@ -4396,7 +4408,9 @@ def _log_followup_history_diagnostics(
             tool_msg_count=tool_msg_count,
             msg_roles=[m.get("role") for m in execution_messages],
             assistant_tool_calls=[
-                bool(m.get("tool_calls")) for m in execution_messages if m.get("role") == "assistant"
+                bool(m.get("tool_calls"))
+                for m in execution_messages
+                if m.get("role") == "assistant"
             ],
         )
 
@@ -4465,7 +4479,9 @@ def _prepare_evidence_pending_tool_calls_turn(
                 session_id=session.session_id,
             ),
         )
-        message = _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+        message = (
+            _tool_loop_failsafe_message(current_session) if current_session is not None else ""
+        )
         return _PendingToolCallsTurn(blocked=True, blocked_message=message)
 
     filtered_tool_calls = list(pending_tool_calls or [])
@@ -4475,10 +4491,12 @@ def _prepare_evidence_pending_tool_calls_turn(
             current_session,
             filtered_tool_calls,
         )
-    filtered_tool_calls, tool_policy_error = _normalize_and_validate_tool_calls_against_cursor_tools(
-        workflow_phase=workflow_phase,
-        tool_calls=filtered_tool_calls,
-        cursor_tools=list(getattr(current_session, "cursor_tools", []) or []),
+    filtered_tool_calls, tool_policy_error = (
+        _normalize_and_validate_tool_calls_against_cursor_tools(
+            workflow_phase=workflow_phase,
+            tool_calls=filtered_tool_calls,
+            cursor_tools=list(getattr(current_session, "cursor_tools", []) or []),
+        )
     )
     if not tool_policy_error:
         filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
@@ -4599,9 +4617,7 @@ def _prepare_evidence_pending_tool_calls_turn(
             final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""
         ),
         evidence_requests=str(
-            final_state.get("evidence_requests")
-            or getattr(session, "evidence_requests", "")
-            or ""
+            final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""
         ),
         evidence_chain_index=list(
             final_state.get("evidence_chain_index")
@@ -4609,9 +4625,7 @@ def _prepare_evidence_pending_tool_calls_turn(
             or []
         ),
         ternion_analyses=list(
-            final_state.get("ternion_analyses")
-            or getattr(session, "ternion_analyses", [])
-            or []
+            final_state.get("ternion_analyses") or getattr(session, "ternion_analyses", []) or []
         ),
         **topup_kwargs,
     )
@@ -4990,9 +5004,7 @@ def _prepare_execution_pending_tool_calls_turn(
             final_state.get("evidence_gaps") or getattr(session, "evidence_gaps", "") or ""
         ),
         evidence_requests=str(
-            final_state.get("evidence_requests")
-            or getattr(session, "evidence_requests", "")
-            or ""
+            final_state.get("evidence_requests") or getattr(session, "evidence_requests", "") or ""
         ),
         evidence_chain_index=list(
             final_state.get("evidence_chain_index")
@@ -5048,10 +5060,7 @@ def _create_initial_tool_loop_session(
     """
     cursor_prompt = (
         context.cursor_system_prompt.content
-        if (
-            context.cursor_system_prompt
-            and isinstance(context.cursor_system_prompt.content, str)
-        )
+        if (context.cursor_system_prompt and isinstance(context.cursor_system_prompt.content, str))
         else ""
     )
     workflow_phase = str(final_state.get("current_phase") or "execution")
@@ -5083,9 +5092,7 @@ def _create_initial_tool_loop_session(
         writer_output_files=dict(final_state.get("writer_output_files", {}) or {}),
         stabilized_document_paths=list(final_state.get("stabilized_document_paths", []) or []),
         evidence_topup_round=int(final_state.get("evidence_topup_round", 0) or 0),
-        report_evidence_resume_phase=str(
-            final_state.get("report_evidence_resume_phase", "") or ""
-        ),
+        report_evidence_resume_phase=str(final_state.get("report_evidence_resume_phase", "") or ""),
         ternion_analyses=list(final_state.get("ternion_analyses", []) or []),
     )
     filtered_tool_calls = list(pending_tool_calls or [])

@@ -11,7 +11,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { Translations } from '../i18n';
-import api from '../api/client';
+import api, { buildAuthHeaders } from '../api/client';
 
 // Log section icon
 import logIconLight from '../assets/icons/realtime_log_light_mode_dp50.svg';
@@ -72,7 +72,7 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
   } | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearReconnectTimer = useCallback(() => {
@@ -84,30 +84,29 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
 
   const disconnectStream = useCallback(() => {
     clearReconnectTimer();
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
     setStatus('disconnected');
   }, [clearReconnectTimer]);
 
+  // fetch-based SSE instead of EventSource: EventSource cannot send an
+  // Authorization header, so behind an authenticated tunnel it would loop
+  // on 401 reconnects forever. fetch lets us attach the access token and
+  // stop retrying on 401 (the App-level token gate handles recovery).
   const connectToLogStream = useCallback(() => {
     clearReconnectTimer();
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
     }
-
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setStatus('connecting');
-    const es = new EventSource('/api/logs/stream');
-    eventSourceRef.current = es;
 
-    es.onopen = () => {
-      setStatus('connected');
-    };
-
-    es.onmessage = (event) => {
+    const appendData = (data: string) => {
       try {
-        const logEntry: LogEntry = JSON.parse(event.data);
+        const logEntry: LogEntry = JSON.parse(data);
         // Limits log buffer to 500 entries to prevent memory leaks during extended sessions.
         setLogs((prev) => [...prev.slice(-499), logEntry]);
       } catch {
@@ -115,13 +114,52 @@ export function ObservabilityPanel({ t, isDarkMode, isVisible = true }: Observab
       }
     };
 
-    es.onerror = () => {
+    const consumeStream = async () => {
+      const response = await fetch('/api/logs/stream', {
+        headers: { Accept: 'text/event-stream', ...buildAuthHeaders() },
+        signal: controller.signal,
+      });
+      if (response.status === 401) {
+        // Token missing/invalid: do not schedule reconnects, otherwise the
+        // panel would hammer the backend with 401s every few seconds.
+        setStatus('disconnected');
+        return;
+      }
+      if (!response.ok || !response.body) {
+        throw new Error(`log stream failed: HTTP ${response.status}`);
+      }
+      setStatus('connected');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE frames are separated by a blank line; only data lines matter.
+        const frames = buffer.split(/\r?\n\r?\n/);
+        buffer = frames.pop() ?? '';
+        for (const frame of frames) {
+          for (const line of frame.split(/\r?\n/)) {
+            if (line.startsWith('data: ')) {
+              appendData(line.slice(6));
+            } else if (line.startsWith('data:')) {
+              appendData(line.slice(5));
+            }
+          }
+        }
+      }
+      throw new Error('log stream ended');
+    };
+
+    consumeStream().catch(() => {
+      if (controller.signal.aborted) {
+        return;
+      }
       setStatus('disconnected');
-      es.close();
-      eventSourceRef.current = null;
       // Schedule reconnection with timer ref for proper cleanup
       reconnectTimerRef.current = setTimeout(connectToLogStream, 3000);
-    };
+    });
   }, [clearReconnectTimer]);
 
   useEffect(() => {

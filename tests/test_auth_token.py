@@ -13,12 +13,38 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from ternion.core.config_store import ConfigStore
 from ternion.server.app import app
-from ternion.server.auth import is_protected_path
+from ternion.server.auth import is_local_direct_request, is_protected_path
 
 FORWARDED = {"x-forwarded-for": "203.0.113.7", "x-forwarded-proto": "https"}
+
+
+def _build_request(client_host: str | None, headers: dict[str, str] | None = None) -> Request:
+    """Build a minimal Starlette request with a controlled client host."""
+    raw_headers = [
+        (key.lower().encode("latin-1"), value.encode("latin-1"))
+        for key, value in (headers or {}).items()
+    ]
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/ports",
+        "headers": raw_headers,
+        "client": (client_host, 50000) if client_host else None,
+        "query_string": b"",
+    }
+    return Request(scope)
+
+
+def _mock_ports_config() -> MagicMock:
+    """Config mock with concrete port values so /api/ports serializes cleanly."""
+    mock_config = MagicMock()
+    mock_config.ports.backend = 9110
+    mock_config.ports.web = 9120
+    return mock_config
 
 
 class TestProtectedPathClassification:
@@ -62,6 +88,34 @@ class TestProtectedPathClassification:
         assert is_protected_path("/v1/chat/completions", "OPTIONS") is False
 
 
+class TestLocalDirectRequestClassification:
+    """Loopback-vs-remote classification for direct (unforwarded) connections."""
+
+    @pytest.mark.parametrize(
+        "client_host",
+        ["127.0.0.1", "127.0.0.53", "::1", "localhost", "testclient", "::ffff:127.0.0.1"],
+    )
+    def test_loopback_hosts_without_forwarding_are_local(self, client_host):
+        assert is_local_direct_request(_build_request(client_host)) is True
+
+    @pytest.mark.parametrize(
+        "client_host",
+        ["203.0.113.5", "192.168.1.20", "10.0.0.7", "::ffff:203.0.113.5"],
+    )
+    def test_non_loopback_direct_connections_are_not_local(self, client_host):
+        # Relevant when the server binds 0.0.0.0: remote direct clients must
+        # not be classified as local even without forwarding headers.
+        assert is_local_direct_request(_build_request(client_host)) is False
+
+    def test_forwarded_header_defeats_loopback_host(self):
+        # Tunnel agents forward from loopback but add Forwarded-family
+        # headers; any such header disqualifies the request as local.
+        assert is_local_direct_request(_build_request("127.0.0.1", FORWARDED)) is False
+
+    def test_missing_client_is_not_local(self):
+        assert is_local_direct_request(_build_request(None)) is False
+
+
 class TestAuthMiddleware:
     """Tunneled requests need the token; local direct requests do not."""
 
@@ -70,7 +124,10 @@ class TestAuthMiddleware:
 
     def test_local_direct_request_passes_without_token(self):
         # TestClient has no forwarding headers -> treated as local direct.
-        response = self._client().get("/api/ports")
+        # The /api/ports handler itself is isolated from the real user config.
+        with patch("ternion.server.control_routes.config_store") as mock_routes_store:
+            mock_routes_store.load.return_value = _mock_ports_config()
+            response = self._client().get("/api/ports")
         assert response.status_code == 200
 
     def test_forwarded_request_without_token_rejected(self):
@@ -96,8 +153,12 @@ class TestAuthMiddleware:
     def test_forwarded_request_with_valid_token_passes(self):
         mock_config = MagicMock()
         mock_config.auth_token = "secret-token"
-        with patch("ternion.server.auth.config_store") as mock_store:
+        with (
+            patch("ternion.server.auth.config_store") as mock_store,
+            patch("ternion.server.control_routes.config_store") as mock_routes_store,
+        ):
             mock_store.load.return_value = mock_config
+            mock_routes_store.load.return_value = _mock_ports_config()
             response = self._client().get(
                 "/api/ports",
                 headers={**FORWARDED, "Authorization": "Bearer secret-token"},

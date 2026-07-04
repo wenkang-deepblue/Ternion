@@ -102,6 +102,21 @@ describe('PortsSettings', () => {
     expect(screen.queryByText('https://demo.ngrok.app/v1')).not.toBeInTheDocument();
   });
 
+  it('renders the access token row masked with its own copy button', async () => {
+    const { t } = renderPortsSettings();
+
+    await waitFor(() => {
+      expect(mockApi.getAuthToken).toHaveBeenCalledTimes(1);
+    });
+
+    // Only the first six characters are shown; the full token never
+    // appears in the DOM.
+    expect(await screen.findByText(`test-a${'•'.repeat(12)}`)).toBeInTheDocument();
+    expect(screen.queryByText('test-access-token')).not.toBeInTheDocument();
+    const tokenCopyLabel = `${t.publicAccessTokenLabel}: ${t.publicAccessCopy}`;
+    expect(screen.getByRole('button', { name: tokenCopyLabel })).toBeInTheDocument();
+  });
+
   it('always shows deployment, detected URL, cursor URL, and source rows', async () => {
     const { t } = renderPortsSettings();
 

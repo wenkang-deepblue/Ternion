@@ -245,6 +245,7 @@ export interface Translations {
   accessTokenGateDescription: string;
   accessTokenGatePlaceholder: string;
   accessTokenGateSubmit: string;
+  accessTokenGateInvalid: string;
   publicAccessSaved: string;
   publicAccessUnavailable: string;
   publicAccessConfiguredToast: string;
@@ -539,6 +540,7 @@ const EN: Translations = {
     'This Control Panel is being accessed through a public tunnel. Enter the access token shown in the Ternion startup banner (or copy it from a local Control Panel session).',
   accessTokenGatePlaceholder: 'Paste the access token',
   accessTokenGateSubmit: 'Continue',
+  accessTokenGateInvalid: 'Invalid access token. Check the CLI startup banner and try again.',
   publicAccessSaved: 'Public access settings saved',
   publicAccessUnavailable: 'Unable to load public access settings right now.',
   publicAccessConfiguredToast:
@@ -897,6 +899,7 @@ const ZH: Translations = {
     '当前正通过公网隧道访问控制面板。请输入 Ternion 启动横幅中显示的访问令牌（也可在本机打开控制面板复制）。',
   accessTokenGatePlaceholder: '粘贴访问令牌',
   accessTokenGateSubmit: '继续',
+  accessTokenGateInvalid: '访问令牌无效。请核对 CLI 启动横幅中的令牌后重试。',
   publicAccessSaved: '公网接入设置已保存',
   publicAccessUnavailable: '暂时无法加载公网接入配置。',
   publicAccessConfiguredToast: '已检测到可用公网接入。请打开“端口”页复制 Cursor Base URL。',
@@ -1257,6 +1260,7 @@ const ES: Translations = {
     'Este panel se está abriendo a través de un túnel público. Introduce el token de acceso mostrado en el banner de inicio de Ternion (o cópialo desde una sesión local del panel).',
   accessTokenGatePlaceholder: 'Pega el token de acceso',
   accessTokenGateSubmit: 'Continuar',
+  accessTokenGateInvalid: 'Token de acceso no válido. Comprueba el banner de inicio de la CLI e inténtalo de nuevo.',
   publicAccessSaved: 'La configuración de acceso público se guardó',
   publicAccessUnavailable: 'No se puede cargar la configuración de acceso público en este momento.',
   publicAccessConfiguredToast:
@@ -1620,6 +1624,7 @@ const FR: Translations = {
     'Ce panneau est ouvert via un tunnel public. Saisissez le jeton d’accès affiché dans la bannière de démarrage de Ternion (ou copiez-le depuis une session locale du panneau).',
   accessTokenGatePlaceholder: 'Collez le jeton d’accès',
   accessTokenGateSubmit: 'Continuer',
+  accessTokenGateInvalid: 'Jeton d’accès invalide. Vérifiez la bannière de démarrage de la CLI et réessayez.',
   publicAccessSaved: 'Les paramètres d’accès public ont été enregistrés',
   publicAccessUnavailable: 'Impossible de charger les paramètres d’accès public pour le moment.',
   publicAccessConfiguredToast:
@@ -1983,6 +1988,7 @@ const DE: Translations = {
     'Dieses Panel wird über einen öffentlichen Tunnel geöffnet. Geben Sie das Zugriffstoken aus dem Ternion-Startbanner ein (oder kopieren Sie es aus einer lokalen Panel-Sitzung).',
   accessTokenGatePlaceholder: 'Zugriffstoken einfügen',
   accessTokenGateSubmit: 'Weiter',
+  accessTokenGateInvalid: 'Ungültiges Zugriffstoken. Prüfen Sie das CLI-Startbanner und versuchen Sie es erneut.',
   publicAccessSaved: 'Die Einstellungen für den öffentlichen Zugriff wurden gespeichert',
   publicAccessUnavailable: 'Die Einstellungen für den öffentlichen Zugriff konnten momentan nicht geladen werden.',
   publicAccessConfiguredToast:
@@ -2346,6 +2352,7 @@ const JA: Translations = {
     'このコントロールパネルは公開トンネル経由で開かれています。Ternion の起動バナーに表示されたアクセストークンを入力してください（ローカルのパネルからコピーすることもできます）。',
   accessTokenGatePlaceholder: 'アクセストークンを貼り付け',
   accessTokenGateSubmit: '続行',
+  accessTokenGateInvalid: 'アクセストークンが無効です。CLI起動バナーを確認して再試行してください。',
   publicAccessSaved: '公開アクセス設定を保存しました',
   publicAccessUnavailable: '現在、公開アクセス設定を読み込めません。',
   publicAccessConfiguredToast:
@@ -2709,6 +2716,7 @@ const KO: Translations = {
     '현재 공개 터널을 통해 컨트롤 패널에 접근하고 있습니다. Ternion 시작 배너에 표시된 액세스 토큰을 입력하세요(로컬 패널 세션에서 복사할 수도 있습니다).',
   accessTokenGatePlaceholder: '액세스 토큰 붙여넣기',
   accessTokenGateSubmit: '계속',
+  accessTokenGateInvalid: '액세스 토큰이 잘못되었습니다. CLI 시작 배너를 확인한 후 다시 시도하세요.',
   publicAccessSaved: '공개 액세스 설정이 저장되었습니다',
   publicAccessUnavailable: '현재 공개 액세스 설정을 불러올 수 없습니다.',
   publicAccessConfiguredToast:

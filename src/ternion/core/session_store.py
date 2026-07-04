@@ -18,7 +18,7 @@ import shutil
 import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -438,6 +438,12 @@ def _load_gzip_json(path: Path) -> Any:
         return json.load(f)
 
 
+def _load_gzip_text(path: Path) -> str:
+    """Load the raw decompressed text of a gzip file (for hash verification)."""
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        return f.read()
+
+
 class SessionStore:
     """
     Persistent session storage.
@@ -457,6 +463,11 @@ class SessionStore:
         # In-process cache of the last written content hash per cold sidecar
         # file, used to skip rewriting unchanged cold payloads on every turn.
         self._cold_write_hashes: dict[tuple[str, str], str] = {}
+        # Stubs for cold fields whose sidecar read failed on load. A degraded
+        # (empty) in-memory value must never overwrite the on-disk stub on the
+        # next save, otherwise a transient I/O failure would become permanent
+        # silent data loss for load-bearing history fields.
+        self._degraded_cold_stubs: dict[tuple[str, str], dict[str, Any]] = {}
         self._ensure_dir()
 
     def _ensure_dir(self) -> None:
@@ -497,25 +508,60 @@ class SessionStore:
         cold_dir = self._get_cold_dir(session_id)
         for field_name in _COLD_FIELDS:
             value = payload.get(field_name)
+            cache_key = (session_id, field_name)
             if not value:
+                # If this field degraded to empty because its sidecar could
+                # not be read on load, keep the original on-disk stub instead
+                # of overwriting it with an inline empty value. The sidecar
+                # data stays recoverable and the next successful read heals it.
+                degraded_stub = self._degraded_cold_stubs.get(cache_key)
+                if degraded_stub is not None:
+                    payload[field_name] = dict(degraded_stub)
                 continue
-            blob = _dump_gzip_json(value)
-            content_hash = _sha256_16(json.dumps(value, ensure_ascii=False, sort_keys=True))
+            # Canonical serialization is both the hash source and the file
+            # content, so the dedup check runs before any gzip work and the
+            # stub hash can be verified against the raw file text on load.
+            canonical = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            content_hash = _sha256_16(canonical)
             filename = f"{field_name}.json.gz"
             target = cold_dir / filename
-            cache_key = (session_id, field_name)
             if self._cold_write_hashes.get(cache_key) != content_hash or not target.exists():
                 cold_dir.mkdir(parents=True, exist_ok=True)
+                if cache_key in self._degraded_cold_stubs and target.exists():
+                    # The in-memory value restarted from a degraded empty state
+                    # while the original sidecar still exists on disk. Never
+                    # silently overwrite that history: preserve it under a
+                    # recovery name and surface the conflict loudly.
+                    recovery_name = (
+                        f"{filename}.recovered-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+                    )
+                    try:
+                        os.replace(target, cold_dir / recovery_name)
+                    except OSError as e:
+                        logger.error(
+                            "session_cold_field_recovery_rename_failed",
+                            session_id=session_id,
+                            field=field_name,
+                            error=str(e),
+                        )
+                    else:
+                        logger.error(
+                            "session_cold_field_overwrite_after_degraded_load",
+                            session_id=session_id,
+                            field=field_name,
+                            recovered_as=recovery_name,
+                        )
                 fd, tmp_path = tempfile.mkstemp(dir=cold_dir, suffix=".tmp")
                 try:
                     with os.fdopen(fd, "wb") as f:
-                        f.write(blob)
+                        f.write(gzip.compress(canonical.encode("utf-8"), compresslevel=6))
                     os.replace(tmp_path, target)
                 except Exception:
                     if os.path.exists(tmp_path):
                         os.unlink(tmp_path)
                     raise
                 self._cold_write_hashes[cache_key] = content_hash
+            self._degraded_cold_stubs.pop(cache_key, None)
             payload[field_name] = {
                 _EXTERNAL_FIELD_MARKER: filename,
                 "sha256_16": content_hash,
@@ -550,9 +596,19 @@ class SessionStore:
         """
         Resolve sidecar references in a loaded session payload back to values.
 
-        Missing or unreadable sidecar files degrade to empty values with a
-        warning instead of failing the whole session load: cold data is
-        traceability-only and must never block the hot routing path.
+        Missing or unreadable sidecar files degrade to empty values instead of
+        failing the whole session load, so a cold-storage I/O failure never
+        blocks the hot routing path. The degradation is loud (error log) and
+        recorded, because several cold fields are load-bearing, not merely
+        traceability data: `execution_messages` is the Writer's tool-loop
+        replay history and `ternion_analyses` feeds the Convergence input.
+        Recorded degradations keep the on-disk stub intact on the next save
+        (see `_externalize_cold_fields`), so transient read failures heal on
+        the next successful load instead of becoming permanent data loss.
+
+        Restored payloads are verified against the stub's `sha256_16` so a
+        torn write (sidecar replaced but main JSON not yet updated, or vice
+        versa) is at least observable instead of silently accepted.
 
         Args:
             session_id: The owning session identifier.
@@ -566,19 +622,39 @@ class SessionStore:
             stub = payload.get(field_name)
             if not (isinstance(stub, dict) and _EXTERNAL_FIELD_MARKER in stub):
                 continue
+            cache_key = (session_id, field_name)
             target = cold_dir / str(stub[_EXTERNAL_FIELD_MARKER])
             try:
-                payload[field_name] = _load_gzip_json(target)
+                raw_text = _load_gzip_text(target)
+                value = json.loads(raw_text)
             except Exception as e:
-                logger.warning(
+                logger.error(
                     "session_cold_field_restore_failed",
                     session_id=session_id,
                     field=field_name,
                     error=str(e),
                 )
+                self._degraded_cold_stubs[cache_key] = dict(stub)
                 payload[field_name] = (
                     [] if field_name in ("execution_messages", "ternion_analyses") else {}
                 )
+                continue
+            expected_hash = str(stub.get("sha256_16") or "")
+            if expected_hash and _sha256_16(raw_text) != expected_hash:
+                # Legacy sidecars were written without sorted keys while the
+                # stub hash used the canonical (sorted) form; recompute before
+                # flagging a genuine content/stub mismatch.
+                canonical_hash = _sha256_16(json.dumps(value, ensure_ascii=False, sort_keys=True))
+                if canonical_hash != expected_hash:
+                    logger.warning(
+                        "session_cold_field_hash_mismatch",
+                        session_id=session_id,
+                        field=field_name,
+                        expected=expected_hash,
+                        actual=canonical_hash,
+                    )
+            self._degraded_cold_stubs.pop(cache_key, None)
+            payload[field_name] = value
 
         tools_stub = payload.get("cursor_tools")
         if isinstance(tools_stub, dict) and _SHARED_TOOLS_MARKER in tools_stub:
@@ -1034,14 +1110,21 @@ class SessionStore:
             True if deleted, False if not found
         """
         path = self._get_session_path(session_id)
+        deleted = False
         if path.exists():
             path.unlink()
-            cold_dir = self._get_cold_dir(session_id)
-            if cold_dir.is_dir():
-                shutil.rmtree(cold_dir, ignore_errors=True)
+            deleted = True
+        # Sidecar cleanup runs regardless of the main JSON's presence so a
+        # previously half-deleted session cannot leak an orphan cold directory.
+        cold_dir = self._get_cold_dir(session_id)
+        if cold_dir.is_dir():
+            shutil.rmtree(cold_dir, ignore_errors=True)
+        for cache in (self._cold_write_hashes, self._degraded_cold_stubs):
+            for key in [k for k in cache if k[0] == session_id]:
+                cache.pop(key, None)
+        if deleted:
             logger.info("session_deleted", session_id=session_id)
-            return True
-        return False
+        return deleted
 
     def list_sessions(self, stage: SessionStage | None = None) -> list[Session]:
         """
@@ -1086,12 +1169,14 @@ class SessionStore:
         Returns:
             Number of sessions archived.
         """
-        from datetime import timedelta
-
         cutoff = datetime.now(UTC) - timedelta(days=days)
         archived = 0
 
         for path in sorted(self.sessions_dir.glob("*.json")):
+            try:
+                stat_before = path.stat()
+            except OSError:
+                continue
             session = self.load_session(path.stem)
             if session is None or session.stage not in ARCHIVABLE_TERMINAL_STAGES:
                 continue
@@ -1102,6 +1187,12 @@ class SessionStore:
                 if last_touched.tzinfo is None:
                     last_touched = last_touched.replace(tzinfo=UTC)
             except ValueError:
+                logger.warning(
+                    "session_archive_timestamp_unparseable",
+                    session_id=session.session_id,
+                    updated_at=session.updated_at,
+                    created_at=session.created_at,
+                )
                 continue
             if last_touched >= cutoff:
                 continue
@@ -1119,6 +1210,24 @@ class SessionStore:
                     if os.path.exists(tmp_path):
                         os.unlink(tmp_path)
                     raise
+                # The archive pass runs in a worker thread with no per-session
+                # lock: re-check the live file before deleting so a turn that
+                # wrote between snapshot and deletion is never destroyed. The
+                # stale archive file is discarded and the session retried on a
+                # later pass.
+                try:
+                    stat_after = path.stat()
+                except OSError:
+                    archive_path.unlink(missing_ok=True)
+                    continue
+                if stat_after.st_mtime_ns != stat_before.st_mtime_ns:
+                    logger.info(
+                        "session_archive_skipped_concurrent_update",
+                        session_id=session.session_id,
+                    )
+                    archive_path.unlink(missing_ok=True)
+                    continue
+                self.delete_session(session.session_id)
             except Exception as e:
                 logger.warning(
                     "session_archive_failed",
@@ -1127,7 +1236,6 @@ class SessionStore:
                 )
                 continue
 
-            self.delete_session(session.session_id)
             archived += 1
 
         if archived:
@@ -1151,8 +1259,6 @@ class SessionStore:
         Returns:
             Number of sessions deleted
         """
-        from datetime import timedelta
-
         cutoff = datetime.now(UTC) - timedelta(days=days)
         deleted = 0
 

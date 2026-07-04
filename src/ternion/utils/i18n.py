@@ -127,6 +127,9 @@ class MessageKey(str, Enum):
     STREAM_ERROR_GENERIC = "stream_error_generic"
     STREAM_ERROR_INTERRUPTED = "stream_error_interrupted"
 
+    # Authentication (API clients and tunneled Control Panel access)
+    AUTH_TOKEN_REQUIRED = "auth_token_required"
+
     # Report Display (Cursor-facing UI text)
     REPORT_SECTION_ROOT_CAUSE_TITLE = "report_section_root_cause_title"
     REPORT_SECTION_EVIDENCE_TITLE = "report_section_evidence_title"
