@@ -15,7 +15,7 @@ from openai import AsyncOpenAI
 from ternion.core.budget import budget_manager
 from ternion.core.config import settings
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
-from ternion.providers.base import BaseProvider, ProviderResponse
+from ternion.providers.base import BaseProvider, ProviderResponse, clamp_max_output_tokens
 from ternion.providers.resilience import (
     get_provider_semaphore,
     run_with_provider_resilience,
@@ -278,6 +278,7 @@ class OpenAIProvider(BaseProvider):
         del cache_prompt  # OpenAI prefix caching is automatic; no request flag exists.
         model = model or self._default_model
         api_mode = kwargs.pop("api_mode", None)
+        max_tokens = clamp_max_output_tokens(model, max_tokens)
         converted = self._convert_messages(messages)
 
         logger.debug(
@@ -285,6 +286,7 @@ class OpenAIProvider(BaseProvider):
             model=model,
             message_count=len(messages),
             api_mode=api_mode or "auto",
+            max_tokens=max_tokens,
         )
 
         # Proactive routing: skip Chat Completions entirely for Responses API models.
@@ -506,6 +508,7 @@ class OpenAIProvider(BaseProvider):
         del cache_prompt  # OpenAI prefix caching is automatic; no request flag exists.
         model = model or self._default_model
         api_mode = kwargs.pop("api_mode", None)
+        max_tokens = clamp_max_output_tokens(model, max_tokens)
         converted = self._convert_messages(messages)
 
         logger.debug(
@@ -513,6 +516,7 @@ class OpenAIProvider(BaseProvider):
             model=model,
             message_count=len(messages),
             api_mode=api_mode or "auto",
+            max_tokens=max_tokens,
         )
 
         # Proactive routing: skip Chat Completions entirely for Responses API models.

@@ -146,8 +146,8 @@ def compute_backoff_delay(attempt: int, retry_after_seconds: float | None = None
     Compute the delay before the next retry attempt.
 
     Honors an explicit Retry-After hint when available; otherwise applies
-    exponential backoff with proportional jitter, capped at
-    RETRY_MAX_DELAY_SECONDS.
+    exponential backoff with proportional jitter. The total returned delay
+    never exceeds RETRY_MAX_DELAY_SECONDS.
 
     Args:
         attempt: 1-based index of the attempt that just failed.
@@ -160,7 +160,7 @@ def compute_backoff_delay(attempt: int, retry_after_seconds: float | None = None
         return min(retry_after_seconds, RETRY_MAX_DELAY_SECONDS)
     base = RETRY_BASE_DELAY_SECONDS * (2 ** max(attempt - 1, 0))
     capped = min(base, RETRY_MAX_DELAY_SECONDS)
-    return capped + random.uniform(0, capped / 2)
+    return min(capped + random.uniform(0, capped / 2), RETRY_MAX_DELAY_SECONDS)
 
 
 async def run_with_retry[T](

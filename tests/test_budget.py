@@ -800,3 +800,18 @@ class TestCachePricing:
             cache_write_tokens=1000,
         )
         assert recorded == pytest.approx(calculated, rel=1e-9)
+
+    def test_cache_write_fallback_uses_write_premium(self, budget_manager: BudgetManager) -> None:
+        """Without catalog write pricing, writes are charged at 1.25x input rate."""
+        cost = budget_manager.calculate_cost(
+            model="claude-sonnet-4-5-20250929",
+            input_tokens=1000,
+            output_tokens=100,
+            cache_write_tokens=200,
+        )
+        expected = (
+            800 * (3.0 / 1_000_000)  # uncached input
+            + 200 * (3.0 / 1_000_000) * 1.25  # cache writes at fallback premium
+            + 100 * (15.0 / 1_000_000)  # output
+        )
+        assert cost == pytest.approx(expected, rel=1e-9)

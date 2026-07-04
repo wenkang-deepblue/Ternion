@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover
 
 from ternion.core.budget import budget_manager
 from ternion.core.models import ChatMessage, ImageContent, MessageRole, TextContent
-from ternion.providers.base import BaseProvider, ProviderResponse
+from ternion.providers.base import BaseProvider, ProviderResponse, clamp_max_output_tokens
 from ternion.providers.resilience import (
     get_provider_semaphore,
     run_with_provider_resilience,
@@ -96,12 +96,14 @@ class GoogleProvider(BaseProvider):
         """
         del cache_prompt  # Gemini implicit caching is automatic; no request flag exists.
         model_name = model or self._default_model
+        max_tokens = clamp_max_output_tokens(model_name, max_tokens)
         system_instruction, contents = self._convert_messages(messages)
 
         logger.debug(
             "google_chat_completion",
             model=model_name,
             message_count=len(messages),
+            max_tokens=max_tokens,
         )
 
         config = types.GenerateContentConfig(
@@ -206,12 +208,14 @@ class GoogleProvider(BaseProvider):
         """
         del cache_prompt  # Gemini implicit caching is automatic; no request flag exists.
         model_name = model or self._default_model
+        max_tokens = clamp_max_output_tokens(model_name, max_tokens)
         system_instruction, contents = self._convert_messages(messages)
 
         logger.debug(
             "google_chat_completion_stream",
             model=model_name,
             message_count=len(messages),
+            max_tokens=max_tokens,
         )
 
         config = types.GenerateContentConfig(

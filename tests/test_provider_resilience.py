@@ -108,6 +108,14 @@ class TestBackoffDelay:
             assert compute_backoff_delay(2) == 2.0
             assert compute_backoff_delay(3) == 4.0
 
+    def test_total_delay_never_exceeds_max(self) -> None:
+        """Backoff plus jitter is capped at RETRY_MAX_DELAY_SECONDS in total."""
+        with patch(
+            "ternion.providers.resilience.random.uniform",
+            return_value=RETRY_MAX_DELAY_SECONDS / 2,
+        ):
+            assert compute_backoff_delay(10) == RETRY_MAX_DELAY_SECONDS
+
 
 class TestRunWithRetry:
     """Tests for run_with_retry."""

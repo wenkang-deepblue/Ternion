@@ -138,12 +138,15 @@ WRITER_TIMEOUT_SECONDS = max(DEFAULT_TIMEOUT_SECONDS, settings.discussion.writer
 _MAX_EVIDENCE_TOPUP_ROUNDS = 2
 
 # Per-phase output token budgets. Generous ceilings that stop runaway
-# generations without constraining normal deliverables; evidence phases get
-# extra headroom because verbatim excerpts must never be truncated.
-# Providers clamp these to the model's own max output limit when needed.
+# generations without constraining normal deliverables. Providers clamp these
+# to the model's own catalog max_output_tokens, so oversized values never fail.
+# The evidence budget is deliberately set above every supported model's output
+# limit: verbatim evidence excerpts must never be truncated by an artificial
+# budget (first-priority principle), so its effective ceiling is always the
+# model's own maximum.
 MAX_OUTPUT_TOKENS_ANALYSIS = 8192
 MAX_OUTPUT_TOKENS_REPORT = 16384
-MAX_OUTPUT_TOKENS_EVIDENCE = 32768
+MAX_OUTPUT_TOKENS_EVIDENCE = 131072
 MAX_OUTPUT_TOKENS_DELIVERABLE = 65536
 
 

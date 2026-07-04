@@ -13,6 +13,37 @@ from typing import Any
 from ternion.core.models import ChatMessage
 
 
+def clamp_max_output_tokens(model: str, max_tokens: int | None) -> int | None:
+    """
+    Clamp a requested output budget to the model's catalog max_output_tokens.
+
+    Providers reject requests whose output budget exceeds the model limit, so
+    oversized phase budgets are reduced to the model's own ceiling. When the
+    catalog has no entry (e.g. passthrough model names), the requested value is
+    returned unchanged to preserve caller semantics.
+
+    Args:
+        model: Configured model ID used for catalog lookup.
+        max_tokens: Requested output budget, or None when unset.
+
+    Returns:
+        Effective output budget, or None when no budget was requested.
+    """
+    if not isinstance(max_tokens, int) or max_tokens <= 0:
+        return None
+    try:
+        from ternion.core.model_catalog import model_catalog_service
+
+        catalog_model = model_catalog_service.get_model_cached(model)
+    except Exception:
+        catalog_model = None
+    if catalog_model is not None:
+        limit = getattr(catalog_model, "max_output_tokens", None)
+        if isinstance(limit, int) and limit > 0:
+            return min(max_tokens, limit)
+    return max_tokens
+
+
 @dataclass
 class ProviderResponse:
     """

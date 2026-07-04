@@ -1092,9 +1092,11 @@ class TestOpenAICacheMetering:
                 "create",
                 AsyncMock(return_value=self._build_chat_response()),
             ) as mock_create,
+            patch("ternion.core.model_catalog.model_catalog_service") as mock_catalog,
             patch("ternion.providers.openai.log_manager.emit_token_usage"),
             patch("ternion.providers.openai.budget_manager.record_usage"),
         ):
+            mock_catalog.get_model_cached.return_value = None
             await provider.chat_completion(
                 messages=messages,
                 model="gpt-5.4",
@@ -1119,9 +1121,11 @@ class TestOpenAICacheMetering:
                 "create",
                 AsyncMock(return_value=self._build_chat_response()),
             ) as mock_create,
+            patch("ternion.core.model_catalog.model_catalog_service") as mock_catalog,
             patch("ternion.providers.openai.log_manager.emit_token_usage"),
             patch("ternion.providers.openai.budget_manager.record_usage"),
         ):
+            mock_catalog.get_model_cached.return_value = None
             await provider.chat_completion(
                 messages=messages,
                 model="gpt-4o",
@@ -1172,3 +1176,107 @@ class TestGoogleCacheMetering:
         assert record_kwargs["input_tokens"] == 100
         assert record_kwargs["cache_read_tokens"] == 40
         assert result.usage["cache_read_tokens"] == 40
+
+
+class TestMaxOutputTokensClamping:
+    """Tests for catalog-based output budget clamping in OpenAI/Google adapters."""
+
+    @staticmethod
+    def _catalog_model_with_limit(limit: int) -> Any:
+        return type(
+            "MockCatalogModel",
+            (),
+            {"max_output_tokens": limit},
+        )()
+
+    @pytest.mark.asyncio
+    async def test_openai_clamps_to_catalog_limit(self) -> None:
+        """Oversized budgets must be reduced to the model's catalog limit."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                AsyncMock(return_value=TestOpenAICacheMetering._build_chat_response()),
+            ) as mock_create,
+            patch("ternion.core.model_catalog.model_catalog_service") as mock_catalog,
+            patch("ternion.providers.openai.log_manager.emit_token_usage"),
+            patch("ternion.providers.openai.budget_manager.record_usage"),
+        ):
+            mock_catalog.get_model_cached.return_value = self._catalog_model_with_limit(8192)
+            await provider.chat_completion(
+                messages=messages,
+                model="gpt-5.4",
+                max_tokens=65536,
+            )
+
+        assert mock_create.await_args.kwargs["max_completion_tokens"] == 8192
+
+    @pytest.mark.asyncio
+    async def test_openai_passes_through_when_catalog_unknown(self) -> None:
+        """Without a catalog entry the requested budget is preserved unchanged."""
+        from ternion.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                AsyncMock(return_value=TestOpenAICacheMetering._build_chat_response()),
+            ) as mock_create,
+            patch("ternion.core.model_catalog.model_catalog_service") as mock_catalog,
+            patch("ternion.providers.openai.log_manager.emit_token_usage"),
+            patch("ternion.providers.openai.budget_manager.record_usage"),
+        ):
+            mock_catalog.get_model_cached.return_value = None
+            await provider.chat_completion(
+                messages=messages,
+                model="gpt-4o",
+                max_tokens=4096,
+            )
+
+        assert mock_create.await_args.kwargs["max_tokens"] == 4096
+
+    @pytest.mark.asyncio
+    async def test_google_clamps_to_catalog_limit(self) -> None:
+        """Gemini output budgets must be reduced to the model's catalog limit."""
+        from types import SimpleNamespace
+
+        from ternion.providers.google import GoogleProvider
+
+        provider = GoogleProvider(api_key="test-key")
+        messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
+        usage_metadata = SimpleNamespace(
+            prompt_token_count=10,
+            candidates_token_count=5,
+            thoughts_token_count=0,
+            cached_content_token_count=0,
+            total_token_count=15,
+        )
+        response = SimpleNamespace(usage_metadata=usage_metadata, text="ok")
+
+        with (
+            patch.object(
+                provider._client.aio.models,
+                "generate_content",
+                AsyncMock(return_value=response),
+            ) as mock_generate,
+            patch("ternion.core.model_catalog.model_catalog_service") as mock_catalog,
+            patch("ternion.providers.google.log_manager.emit_token_usage"),
+            patch("ternion.providers.google.budget_manager.record_usage"),
+        ):
+            mock_catalog.get_model_cached.return_value = self._catalog_model_with_limit(4096)
+            await provider.chat_completion(
+                messages=messages,
+                model="gemini-3-pro-preview",
+                max_tokens=131072,
+            )
+
+        config = mock_generate.await_args.kwargs["config"]
+        assert config.max_output_tokens == 4096

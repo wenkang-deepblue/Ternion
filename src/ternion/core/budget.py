@@ -22,6 +22,12 @@ from ternion.utils.i18n import MessageKey, t
 
 logger = structlog.get_logger(__name__)
 
+# Fallback multiplier for cache-write pricing when the catalog lacks
+# cache_creation_input_token_cost. Only Anthropic reports cache-write tokens,
+# and its 5-minute ephemeral cache write premium is 1.25x the input rate;
+# using the plain input rate would under-estimate real spend.
+_CACHE_WRITE_FALLBACK_MULTIPLIER = 1.25
+
 
 class CostControlSettings(BaseSettings):
     """Cost control configuration."""
@@ -376,7 +382,8 @@ class BudgetManager:
         When a model has no dedicated reasoning token rate, the standard output
         token rate is used for thoughts tokens. Cached prompt tokens (read and
         write subsets of input_tokens) are priced with the catalog cache rates
-        when available, falling back to the standard input rate otherwise.
+        when available; without catalog rates, reads fall back to the input
+        rate and writes to the input rate times the Anthropic write premium.
         """
         model_info = self.catalog_service.get_model_cached(model)
         if model_info is None:
@@ -452,7 +459,7 @@ class BudgetManager:
         cache_write_rate = (
             model_info.cache_creation_input_token_cost
             if model_info.cache_creation_input_token_cost is not None
-            else input_rate
+            else input_rate * _CACHE_WRITE_FALLBACK_MULTIPLIER
         )
 
         if safe_audio_tokens > 0 and model_info.input_cost_per_audio_token is not None:
