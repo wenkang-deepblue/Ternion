@@ -4,6 +4,51 @@
 
 const API_BASE = '/api';
 
+const AUTH_TOKEN_STORAGE_KEY = 'ternion-access-token';
+
+/**
+ * Read the stored access token used for remote (tunneled) Panel access.
+ *
+ * @returns The stored token, or an empty string when absent/unavailable.
+ */
+export function getStoredAuthToken(): string {
+  try {
+    return window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Persist (or clear) the access token used for remote Panel access.
+ *
+ * @param token - Token to store; an empty string removes the entry.
+ */
+export function setStoredAuthToken(token: string): void {
+  try {
+    if (token) {
+      window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Storage may be unavailable (private mode); requests simply omit the header.
+  }
+}
+
+/**
+ * Build the Authorization header when an access token is stored.
+ *
+ * Local direct access does not require the token (the backend exempts it),
+ * so an absent token is normal for localhost usage.
+ *
+ * @returns A headers fragment with the bearer token, or an empty object.
+ */
+function buildAuthHeaders(): Record<string, string> {
+  const token = getStoredAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 /**
  * Structured error payload returned by the backend.
  */
@@ -300,6 +345,7 @@ class ApiClient {
       ...options,
       headers: {
         'Content-Type': 'application/json',
+        ...buildAuthHeaders(),
         ...options?.headers,
       },
     });
@@ -323,6 +369,7 @@ class ApiClient {
       ...options,
       headers: {
         Accept: 'text/markdown',
+        ...buildAuthHeaders(),
         ...options?.headers,
       },
     });
@@ -609,6 +656,18 @@ class ApiClient {
    */
   async getPublicAccess(): Promise<PublicAccessStatus> {
     return this.request<PublicAccessStatus>('/public-access');
+  }
+
+  /**
+   * Fetch the installation access token for tunneled Cursor / Panel access.
+   *
+   * Only succeeds from local direct access or an already-authenticated
+   * remote session (the endpoint itself is auth-protected).
+   *
+   * @returns The persistent bearer token for this installation.
+   */
+  async getAuthToken(): Promise<{ auth_token: string }> {
+    return this.request<{ auth_token: string }>('/auth-token');
   }
 
   /**

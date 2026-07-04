@@ -16,6 +16,7 @@ const mockApi = vi.hoisted(() => ({
   getPorts: vi.fn(),
   updatePorts: vi.fn(),
   updatePublicAccess: vi.fn(),
+  getAuthToken: vi.fn(),
 }));
 
 vi.mock('../api/client', async () => {
@@ -84,7 +85,9 @@ describe('PortsSettings', () => {
     mockApi.getPorts.mockReset();
     mockApi.updatePorts.mockReset();
     mockApi.updatePublicAccess.mockReset();
+    mockApi.getAuthToken.mockReset();
     mockApi.getPorts.mockResolvedValue(buildPorts());
+    mockApi.getAuthToken.mockResolvedValue({ auth_token: 'test-access-token' });
   });
 
   it('shows the cursor base URL without appending /v1 and renders the copy button', async () => {

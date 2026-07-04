@@ -13,6 +13,19 @@ CONTROL_ROUTES_LOG_MANAGER = "ternion.server.control_routes.log_manager"
 PUBLIC_ACCESS_NGROK_DETECT = "ternion.core.public_access.detect_ngrok_public_base_url"
 
 
+@pytest.fixture(autouse=True)
+def _exempt_auth_for_detection_tests():
+    """
+    Treat every request in this module as a local direct request.
+
+    These tests simulate tunneled origins via forwarded headers to exercise
+    public-access detection; bearer-token authentication for such requests
+    is covered separately in test_auth_token.py.
+    """
+    with patch("ternion.server.auth.is_local_direct_request", return_value=True):
+        yield
+
+
 def test_get_public_access_local_request_origin_beats_configured_url() -> None:
     """In local mode, a live public request origin should beat saved config."""
     config = UserConfig()

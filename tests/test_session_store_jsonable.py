@@ -34,8 +34,16 @@ def test_session_store_persists_multimodal_text_content(tmp_path: Path) -> None:
     session_path = tmp_path / f"{session.session_id}.json"
     assert session_path.exists()
 
+    # execution_messages is externalized to a gzip sidecar (cold storage);
+    # the main JSON keeps a reference stub while loads stay transparent.
     raw = json.loads(session_path.read_text(encoding="utf-8"))
-    saved_messages = raw.get("execution_messages")
+    stub = raw.get("execution_messages")
+    assert isinstance(stub, dict)
+    assert "__ternion_external__" in stub
+
+    loaded = store.load_session(session.session_id)
+    assert loaded is not None
+    saved_messages = loaded.execution_messages
     assert isinstance(saved_messages, list)
     assert saved_messages, "Expected execution_messages to be persisted"
 

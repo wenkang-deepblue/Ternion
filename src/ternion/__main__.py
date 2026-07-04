@@ -17,7 +17,12 @@ from textwrap import dedent
 import structlog
 import uvicorn
 
-from ternion.core.config import DEFAULT_BACKEND_PORT, get_default_local_host, normalize_port, settings
+from ternion.core.config import (
+    DEFAULT_BACKEND_PORT,
+    get_default_local_host,
+    normalize_port,
+    settings,
+)
 from ternion.core.config_store import ConfigStore, get_config_store
 from ternion.utils.logging import setup_logging
 
@@ -57,11 +62,12 @@ def build_local_service_url(port: int, path: str) -> str:
     return f"http://{get_default_local_host()}:{port}{path}"
 
 
-def build_startup_message(backend_port: int) -> str:
+def build_startup_message(backend_port: int, auth_token: str = "") -> str:
     """Build the CLI startup guidance shown before the server enters its run loop.
 
     Args:
         backend_port: Local TCP port exposed by the backend service.
+        auth_token: Installation access token for tunneled requests.
 
     Returns:
         A multi-line startup summary for local access and Cursor tunnel setup.
@@ -71,27 +77,47 @@ def build_startup_message(backend_port: int) -> str:
     api_docs_url = build_local_service_url(backend_port, "/docs")
     public_base_url = "https://your-public-url"
 
-    return dedent(
-        f"""\
-        Ternion is running.
-        Local API:      {local_api_url}
-        Control Panel:  {control_panel_url}
-        API Docs:       {api_docs_url}
+    token_section = ""
+    if auth_token:
+        token_section = dedent(
+            f"""\
 
-        To use Ternion in Cursor, expose this local service through a public HTTPS tunnel,
-        then set Cursor's Override OpenAI Base URL to:
-        {public_base_url}
-        """
-    ).strip()
+            Access Token:   {auth_token}
+            Requests arriving through a public tunnel must send this token as the
+            API key (Authorization: Bearer). Paste it into Cursor's OpenAI API Key
+            field. Local requests on this machine do not need it.
+            """
+        ).rstrip()
+
+    return (
+        dedent(
+            f"""\
+            Ternion is running.
+            Local API:      {local_api_url}
+            Control Panel:  {control_panel_url}
+            API Docs:       {api_docs_url}
+            """
+        ).rstrip()
+        + token_section
+        + "\n\n"
+        + dedent(
+            f"""\
+            To use Ternion in Cursor, expose this local service through a public HTTPS tunnel,
+            then set Cursor's Override OpenAI Base URL to:
+            {public_base_url}
+            """
+        ).strip()
+    )
 
 
-def emit_startup_message(backend_port: int) -> None:
+def emit_startup_message(backend_port: int, auth_token: str = "") -> None:
     """Write the CLI startup guidance to standard output.
 
     Args:
         backend_port: Local TCP port exposed by the backend service.
+        auth_token: Installation access token for tunneled requests.
     """
-    print(build_startup_message(backend_port), flush=True)
+    print(build_startup_message(backend_port, auth_token), flush=True)
 
 
 def is_port_available(port: int) -> bool:
@@ -192,7 +218,9 @@ def _config_exists(config_store: ConfigStore) -> bool:
         return False
     exists = getattr(config_path, "exists", None)
     if not callable(exists):
-        logger.warning("config_store_invalid_config_path", config_path_type=type(config_path).__name__)
+        logger.warning(
+            "config_store_invalid_config_path", config_path_type=type(config_path).__name__
+        )
         return False
     return bool(exists())
 
@@ -244,7 +272,12 @@ def run_server() -> int:
     except PortInitializationError as exc:
         print(str(exc), file=sys.stderr, flush=True)
         return 1
-    emit_startup_message(backend_port)
+    try:
+        auth_token = config_store.ensure_auth_token()
+    except Exception:
+        logger.warning("auth_token_ensure_failed", exc_info=True)
+        auth_token = ""
+    emit_startup_message(backend_port, auth_token)
     uvicorn.run(
         "ternion.server.app:app",
         host=settings.server.host,

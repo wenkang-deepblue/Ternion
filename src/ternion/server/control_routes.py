@@ -393,6 +393,22 @@ async def get_config() -> dict:
     return config_store.to_safe_dict()
 
 
+@router.get("/auth-token")
+async def get_auth_token() -> dict:
+    """
+    Return the installation access token for Cursor / remote Panel access.
+
+    This endpoint is protected by the same auth middleware as the rest of
+    /api: only local direct requests or already-authenticated remote
+    requests can read the token, so it never leaks to unauthenticated
+    tunnel visitors.
+
+    Returns:
+        A dictionary with the persistent bearer token.
+    """
+    return {"auth_token": config_store.ensure_auth_token()}
+
+
 @router.get("/public-access")
 def get_public_access(request: Request) -> PublicAccessStateResponse:
     """Return current public-access guidance state for the Control Panel.

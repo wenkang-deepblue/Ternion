@@ -10,6 +10,7 @@ Provides persistent storage for user configuration including:
 import contextlib
 import json
 import os
+import secrets
 import tempfile
 import uuid
 from datetime import UTC, datetime
@@ -167,6 +168,10 @@ class UserConfig(BaseModel):
     # Users can add extra IPs (e.g., "192.168.1.100") for LAN access.
     # Backend will combine these with ports.web to form complete origins.
     cors_extra_origins: list[str] = Field(default_factory=list)
+    # Bearer token protecting /v1 and /api when the service is exposed through
+    # a public tunnel. Generated on first startup; local direct requests are
+    # exempt. Never included in to_safe_dict().
+    auth_token: str = ""
     updated_at: str = ""
 
 
@@ -293,6 +298,27 @@ class ConfigStore:
         """Force reload configuration from file."""
         self._config = None
         return self.load()
+
+    def ensure_auth_token(self) -> str:
+        """
+        Return the persistent access token, generating it on first use.
+
+        The token protects /v1 and /api endpoints when the service is exposed
+        through a public tunnel. It is stored in the user config file (0600
+        permissions) and shown via the CLI startup banner and Control Panel.
+
+        Returns:
+            The persistent bearer token for this installation.
+        """
+        config = self.load()
+        token = str(config.auth_token or "").strip()
+        if token:
+            return token
+        token = secrets.token_urlsafe(32)
+        config.auth_token = token
+        self.save(config)
+        logger.info("auth_token_generated")
+        return token
 
     def save(self, config: UserConfig) -> None:
         """

@@ -138,6 +138,7 @@ export function PortsSettings({
   const [portsLoadErrorCode, setPortsLoadErrorCode] = useState<string | null>(null);
   const [showAdvancedPorts, setShowAdvancedPorts] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [authToken, setAuthToken] = useState('');
   const previousFocusedElementRef = useRef<HTMLElement | null>(null);
   const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -160,6 +161,27 @@ export function PortsSettings({
   useEffect(() => {
     void loadPorts();
   }, [loadPorts]);
+
+  useEffect(() => {
+    // Best effort: the endpoint is auth-protected, so unauthenticated remote
+    // sessions simply do not see the token row.
+    let cancelled = false;
+    api
+      .getAuthToken()
+      .then(result => {
+        if (!cancelled) {
+          setAuthToken(result.auth_token || '');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuthToken('');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!publicAccess) {
@@ -316,6 +338,24 @@ export function PortsSettings({
       showToast(t.publicAccessCopied, 'success');
     } catch (error) {
       console.error('Failed to copy public access URL:', error);
+      showToast(t.publicAccessCopyFailed, 'error');
+    }
+  };
+
+  const handleCopyAuthToken = async () => {
+    if (!authToken) {
+      return;
+    }
+
+    try {
+      const clipboard = typeof window !== 'undefined' ? window.navigator.clipboard : undefined;
+      if (!clipboard?.writeText) {
+        throw new Error('Clipboard API unavailable');
+      }
+      await clipboard.writeText(authToken);
+      showToast(t.publicAccessCopied, 'success');
+    } catch (error) {
+      console.error('Failed to copy access token:', error);
       showToast(t.publicAccessCopyFailed, 'error');
     }
   };
@@ -558,6 +598,36 @@ export function PortsSettings({
                   label={t.publicAccessSource}
                   value={getEffectiveSourceLabel(t, publicAccess.effective_source)}
                 />
+
+                {authToken && (
+                  <div>
+                    <div className="flex items-center gap-3 mb-2">
+                      <label className="label mb-0!">{t.publicAccessTokenLabel}</label>
+                      <span className="text-sm font-normal text-slate-500">
+                        {t.publicAccessTokenHint}
+                      </span>
+                    </div>
+                    <div className="relative rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 pr-12 font-mono text-sm break-all text-slate-700 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-200">
+                      {`${authToken.slice(0, 6)}${'•'.repeat(12)}`}
+                      <button
+                        type="button"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 transition-colors"
+                        onClick={handleCopyAuthToken}
+                        title={`${t.publicAccessTokenLabel}: ${t.publicAccessCopy}`}
+                        aria-label={`${t.publicAccessTokenLabel}: ${t.publicAccessCopy}`}
+                      >
+                        <img
+                          src={copyIcon}
+                          alt=""
+                          className="w-4 h-4 dark:invert opacity-70 hover:opacity-100"
+                        />
+                      </button>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                      {t.publicAccessTokenDescription}
+                    </p>
+                  </div>
+                )}
               </div>
 
               {showManualFallback && (

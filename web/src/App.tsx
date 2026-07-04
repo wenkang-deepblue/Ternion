@@ -9,7 +9,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import api from './api/client';
+import api, { isApiError, setStoredAuthToken } from './api/client';
 import type { Config, ModelsData, PublicAccessStatus, ServerStatus } from './api/client';
 import { ToastProvider } from './components/Toast';
 import StatusBar from './components/StatusBar';
@@ -53,6 +53,8 @@ function AppContent() {
   const [modelsData, setModelsData] = useState<ModelsData | null>(null);
   const [publicAccess, setPublicAccess] = useState<PublicAccessStatus | null>(null);
   const [publicAccessReady, setPublicAccessReady] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authTokenInput, setAuthTokenInput] = useState('');
   const [activeTab, setActiveTab] = useState<'config' | 'ports' | 'usage' | 'logs'>('config');
   const [modelsReloadSignal, setModelsReloadSignal] = useState(0);
 
@@ -126,6 +128,7 @@ function AppContent() {
         api.getConfig(),
         api.getStatus(),
       ]);
+      setAuthRequired(false);
       setConfig(configData);
       setStatus(statusData);
       await Promise.all([
@@ -148,6 +151,10 @@ function AppContent() {
       }
     } catch (error) {
       console.error('Failed to load data:', error);
+      if (isApiError(error) && error.status === 401) {
+        // Remote (tunneled) Panel access requires the installation token.
+        setAuthRequired(true);
+      }
     }
   }, [loadModelsData, loadPublicAccess]);
 
@@ -213,6 +220,53 @@ function AppContent() {
       console.error('Failed to save language preference:', error);
     }
   }, []);
+
+  const handleAuthTokenSubmit = () => {
+    const token = authTokenInput.trim();
+    if (!token) {
+      return;
+    }
+    setStoredAuthToken(token);
+    setAuthTokenInput('');
+    void loadData();
+  };
+
+  if (authRequired) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors duration-200 flex items-center justify-center px-4">
+        <div className="card max-w-md w-full">
+          <h1 className="text-lg font-semibold text-slate-900 dark:text-white">
+            {t.accessTokenGateTitle}
+          </h1>
+          <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+            {t.accessTokenGateDescription}
+          </p>
+          <div className="mt-4 input-rainbow-glow">
+            <input
+              type="password"
+              className="input"
+              value={authTokenInput}
+              placeholder={t.accessTokenGatePlaceholder}
+              onChange={event => setAuthTokenInput(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  handleAuthTokenSubmit();
+                }
+              }}
+            />
+          </div>
+          <button
+            type="button"
+            className="btn-primary mt-4 w-full"
+            onClick={handleAuthTokenSubmit}
+            disabled={!authTokenInput.trim()}
+          >
+            {t.accessTokenGateSubmit}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors duration-200">

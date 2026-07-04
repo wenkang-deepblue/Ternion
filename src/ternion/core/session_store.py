@@ -9,9 +9,12 @@ Provides persistent session management for the confirmation gate workflow:
 Sessions are stored as individual JSON files in ~/.ternion/sessions/
 """
 
+import asyncio
+import gzip
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -19,6 +22,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from weakref import WeakKeyDictionary
 
 import structlog
 
@@ -363,17 +367,96 @@ def _merge_tool_call_index(
     return merged
 
 
+# Cold/hot storage separation: these fields dominate the on-disk session size
+# (execution message history, raw tool outputs, pre-change baselines,
+# post-change snapshots, council analyses) but are not needed to route
+# follow-up requests. They are externalized to per-session sidecar files
+# (gzip JSON) so the hot JSON stays small and each turn's full rewrite of the
+# main file no longer re-serializes megabytes of cold payload. Loading is
+# fully transparent: Session objects always carry the restored values.
+_COLD_FIELDS = (
+    "execution_messages",
+    "tool_results_raw",
+    "baseline_file_snapshots",
+    "writer_output_files",
+    "ternion_analyses",
+)
+_EXTERNAL_FIELD_MARKER = "__ternion_external__"
+_SHARED_TOOLS_MARKER = "__ternion_shared_tools__"
+_SHARED_TOOLS_DIRNAME = "shared_tool_schemas"
+_ARCHIVE_DIRNAME = "archive"
+
+# Session stages considered terminal for archiving purposes. Sessions never
+# expire (product decision), but terminal sessions untouched for a long time
+# can be moved into a gzip archive without losing anything.
+ARCHIVABLE_TERMINAL_STAGES = frozenset(
+    {SessionStage.EXECUTED, SessionStage.REJECTED, SessionStage.CONFIRMED}
+)
+
+# Per-session asyncio locks, keyed by event loop so pytest's per-test loops do
+# not reuse lock objects across loops (same pattern as provider semaphores).
+_loop_session_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = (
+    WeakKeyDictionary()
+)
+
+
+def get_session_lock(session_id: str) -> asyncio.Lock:
+    """
+    Return the per-session asyncio lock for the running event loop.
+
+    Follow-up handlers hold this lock across their load -> merge -> workflow ->
+    save turn so concurrent follow-ups for the same session serialize instead
+    of overwriting each other's merged tool results (last-writer-wins race).
+
+    Args:
+        session_id: The session identifier the lock guards.
+
+    Returns:
+        The lock instance shared by all callers on the current event loop.
+    """
+    loop = asyncio.get_running_loop()
+    per_loop = _loop_session_locks.get(loop)
+    if per_loop is None:
+        per_loop = {}
+        _loop_session_locks[loop] = per_loop
+    lock = per_loop.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        per_loop[session_id] = lock
+    return lock
+
+
+def _dump_gzip_json(value: Any) -> bytes:
+    """Serialize a JSON-safe value to gzip-compressed UTF-8 JSON bytes."""
+    raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    return gzip.compress(raw, compresslevel=6)
+
+
+def _load_gzip_json(path: Path) -> Any:
+    """Load a gzip-compressed JSON file written by `_dump_gzip_json`."""
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
 class SessionStore:
     """
     Persistent session storage.
 
     Stores each session as an individual JSON file in ~/.ternion/sessions/.
     Sessions do not expire (per design decision).
+
+    Large cold fields (raw tool outputs, file snapshots) are externalized to a
+    per-session sidecar directory, and the Cursor tools schema is deduplicated
+    into a shared content-addressed store. Both are transparent to callers:
+    `load_session` always returns a fully populated Session.
     """
 
     def __init__(self, sessions_dir: Path | None = None) -> None:
         """Initialize session store."""
         self.sessions_dir = sessions_dir or Path.home() / ".ternion" / "sessions"
+        # In-process cache of the last written content hash per cold sidecar
+        # file, used to skip rewriting unchanged cold payloads on every turn.
+        self._cold_write_hashes: dict[tuple[str, str], str] = {}
         self._ensure_dir()
 
     def _ensure_dir(self) -> None:
@@ -383,6 +466,136 @@ class SessionStore:
     def _get_session_path(self, session_id: str) -> Path:
         """Get file path for a session."""
         return self.sessions_dir / f"{session_id}.json"
+
+    def _get_cold_dir(self, session_id: str) -> Path:
+        """Get the per-session sidecar directory for externalized cold fields."""
+        return self.sessions_dir / session_id
+
+    def _get_shared_tools_dir(self) -> Path:
+        """Get the shared content-addressed store for Cursor tools schemas."""
+        return self.sessions_dir / _SHARED_TOOLS_DIRNAME
+
+    def _get_archive_dir(self) -> Path:
+        """Get the archive directory for gzip-compressed terminal sessions."""
+        return self.sessions_dir / _ARCHIVE_DIRNAME
+
+    def _externalize_cold_fields(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        Replace large cold fields in a session payload with sidecar references.
+
+        Cold values are written to gzip JSON files under the per-session
+        sidecar directory; unchanged payloads (same content hash as the last
+        write from this process) are not rewritten. Empty values stay inline.
+
+        Args:
+            session_id: The owning session identifier.
+            payload: JSON-safe session payload (mutated copy is returned).
+
+        Returns:
+            The payload with cold fields replaced by external-reference stubs.
+        """
+        cold_dir = self._get_cold_dir(session_id)
+        for field_name in _COLD_FIELDS:
+            value = payload.get(field_name)
+            if not value:
+                continue
+            blob = _dump_gzip_json(value)
+            content_hash = _sha256_16(json.dumps(value, ensure_ascii=False, sort_keys=True))
+            filename = f"{field_name}.json.gz"
+            target = cold_dir / filename
+            cache_key = (session_id, field_name)
+            if self._cold_write_hashes.get(cache_key) != content_hash or not target.exists():
+                cold_dir.mkdir(parents=True, exist_ok=True)
+                fd, tmp_path = tempfile.mkstemp(dir=cold_dir, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(blob)
+                    os.replace(tmp_path, target)
+                except Exception:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    raise
+                self._cold_write_hashes[cache_key] = content_hash
+            payload[field_name] = {
+                _EXTERNAL_FIELD_MARKER: filename,
+                "sha256_16": content_hash,
+                "count": len(value),
+            }
+
+        tools = payload.get("cursor_tools")
+        if isinstance(tools, list) and tools:
+            tools_json = json.dumps(tools, ensure_ascii=False, sort_keys=True)
+            tools_hash = _sha256_16(tools_json)
+            shared_dir = self._get_shared_tools_dir()
+            shared_path = shared_dir / f"{tools_hash}.json.gz"
+            if not shared_path.exists():
+                shared_dir.mkdir(parents=True, exist_ok=True)
+                fd, tmp_path = tempfile.mkstemp(dir=shared_dir, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(_dump_gzip_json(tools))
+                    os.replace(tmp_path, shared_path)
+                except Exception:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    raise
+            payload["cursor_tools"] = {
+                _SHARED_TOOLS_MARKER: tools_hash,
+                "count": len(tools),
+            }
+
+        return payload
+
+    def _restore_cold_fields(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        Resolve sidecar references in a loaded session payload back to values.
+
+        Missing or unreadable sidecar files degrade to empty values with a
+        warning instead of failing the whole session load: cold data is
+        traceability-only and must never block the hot routing path.
+
+        Args:
+            session_id: The owning session identifier.
+            payload: Raw payload loaded from the main session JSON file.
+
+        Returns:
+            The payload with all external references resolved.
+        """
+        cold_dir = self._get_cold_dir(session_id)
+        for field_name in _COLD_FIELDS:
+            stub = payload.get(field_name)
+            if not (isinstance(stub, dict) and _EXTERNAL_FIELD_MARKER in stub):
+                continue
+            target = cold_dir / str(stub[_EXTERNAL_FIELD_MARKER])
+            try:
+                payload[field_name] = _load_gzip_json(target)
+            except Exception as e:
+                logger.warning(
+                    "session_cold_field_restore_failed",
+                    session_id=session_id,
+                    field=field_name,
+                    error=str(e),
+                )
+                payload[field_name] = (
+                    [] if field_name in ("execution_messages", "ternion_analyses") else {}
+                )
+
+        tools_stub = payload.get("cursor_tools")
+        if isinstance(tools_stub, dict) and _SHARED_TOOLS_MARKER in tools_stub:
+            tools_hash = str(tools_stub[_SHARED_TOOLS_MARKER])
+            shared_path = self._get_shared_tools_dir() / f"{tools_hash}.json.gz"
+            try:
+                payload["cursor_tools"] = _load_gzip_json(shared_path)
+            except Exception as e:
+                logger.warning(
+                    "session_shared_tools_restore_failed",
+                    session_id=session_id,
+                    tools_hash=tools_hash,
+                    error=str(e),
+                )
+                payload["cursor_tools"] = []
+
+        return payload
 
     def create_session(
         self,
@@ -512,17 +725,21 @@ class SessionStore:
     def _save_session(self, session: Session) -> None:
         """Save session to disk using atomic write (tmp + replace).
 
+        Large cold fields are externalized to sidecar files first so the main
+        JSON file stays small; see `_externalize_cold_fields` for details.
+
         Uses a temporary file + os.replace pattern to ensure atomicity:
         - Write completes fully to temp file first
         - os.replace is atomic on POSIX systems
         - If interrupted, only temp file is corrupted (cleaned up)
         """
         path = self._get_session_path(session.session_id)
+        payload = self._externalize_cold_fields(session.session_id, session.to_dict())
         # Create temp file in same directory (required for atomic rename on same filesystem)
         fd, tmp_path = tempfile.mkstemp(dir=self.sessions_dir, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(session.to_dict(), f, indent=2, ensure_ascii=False)
+                json.dump(payload, f, indent=2, ensure_ascii=False)
             os.replace(tmp_path, path)  # Atomic on POSIX
         except Exception:
             # Clean up temp file on failure
@@ -548,6 +765,7 @@ class SessionStore:
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
+            data = self._restore_cold_fields(session_id, data)
             return Session.from_dict(data)
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             logger.error("session_load_failed", session_id=session_id, error=str(e))
@@ -818,6 +1036,9 @@ class SessionStore:
         path = self._get_session_path(session_id)
         if path.exists():
             path.unlink()
+            cold_dir = self._get_cold_dir(session_id)
+            if cold_dir.is_dir():
+                shutil.rmtree(cold_dir, ignore_errors=True)
             logger.info("session_deleted", session_id=session_id)
             return True
         return False
@@ -845,6 +1066,78 @@ class SessionStore:
     def get_pending_sessions(self) -> list[Session]:
         """Get all sessions awaiting user confirmation."""
         return self.list_sessions(stage=SessionStage.AWAITING_CONFIRMATION)
+
+    def archive_old_sessions(self, days: int = 30) -> int:
+        """
+        Archive terminal sessions that have not been touched for `days` days.
+
+        Archiving preserves the "sessions never expire" product decision:
+        each archived session is written as a self-contained gzip JSON file
+        (cold sidecar data inlined) under sessions/archive/, then the live
+        session file and its sidecar directory are removed.
+
+        Only sessions in a terminal stage (executed / rejected / confirmed)
+        are eligible; in-progress and awaiting-confirmation sessions are
+        never archived automatically.
+
+        Args:
+            days: Archive sessions whose last update is older than this.
+
+        Returns:
+            Number of sessions archived.
+        """
+        from datetime import timedelta
+
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        archived = 0
+
+        for path in sorted(self.sessions_dir.glob("*.json")):
+            session = self.load_session(path.stem)
+            if session is None or session.stage not in ARCHIVABLE_TERMINAL_STAGES:
+                continue
+            try:
+                last_touched = datetime.fromisoformat(
+                    (session.updated_at or session.created_at).replace("Z", "+00:00")
+                )
+                if last_touched.tzinfo is None:
+                    last_touched = last_touched.replace(tzinfo=UTC)
+            except ValueError:
+                continue
+            if last_touched >= cutoff:
+                continue
+
+            archive_dir = self._get_archive_dir()
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            archive_path = archive_dir / f"{session.session_id}.json.gz"
+            try:
+                fd, tmp_path = tempfile.mkstemp(dir=archive_dir, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(_dump_gzip_json(session.to_dict()))
+                    os.replace(tmp_path, archive_path)
+                except Exception:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    raise
+            except Exception as e:
+                logger.warning(
+                    "session_archive_failed",
+                    session_id=session.session_id,
+                    error=str(e),
+                )
+                continue
+
+            self.delete_session(session.session_id)
+            archived += 1
+
+        if archived:
+            logger.info("session_archive_complete", archived_count=archived)
+            log_manager.emit(
+                level="INFO",
+                category="SESSION",
+                message=f"Archived {archived} terminal session(s) older than {days} days",
+            )
+        return archived
 
     def cleanup_old_sessions(self, days: int = 30) -> int:
         """

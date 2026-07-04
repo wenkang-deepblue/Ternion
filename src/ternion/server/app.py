@@ -23,9 +23,11 @@ from ternion import __version__
 from ternion.core.config_store import config_store
 from ternion.core.exceptions import TernionError
 from ternion.core.models import ErrorDetail, ErrorResponse
+from ternion.server.auth import AuthTokenMiddleware
 from ternion.server.control_routes import router as control_router
 from ternion.server.model_catalog_refresh import run_model_catalog_refresh_scheduler
 from ternion.server.routes import router
+from ternion.server.session_archive import run_session_archive_scheduler
 from ternion.utils.log_manager import log_manager
 
 logger = structlog.get_logger(__name__)
@@ -180,21 +182,32 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     )
     log_manager.emit("INFO", "LIFECYCLE", f"Server started (version {__version__})")
 
+    # Ensure the installation access token exists before the first request.
+    try:
+        config_store.ensure_auth_token()
+    except Exception:
+        logger.warning("auth_token_ensure_failed", exc_info=True)
+
     scheduler_stop_event = asyncio.Event()
     scheduler_task = asyncio.create_task(run_model_catalog_refresh_scheduler(scheduler_stop_event))
+    archive_task = asyncio.create_task(run_session_archive_scheduler(scheduler_stop_event))
 
     yield  # Application runs here
 
     # Shutdown
     scheduler_stop_event.set()
-    try:
-        await asyncio.wait_for(asyncio.shield(scheduler_task), timeout=5.0)
-    except TimeoutError:
-        scheduler_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await scheduler_task
-    except Exception:
-        logger.warning("model_catalog_refresh_scheduler_shutdown_failed", exc_info=True)
+    for task, failure_event in (
+        (scheduler_task, "model_catalog_refresh_scheduler_shutdown_failed"),
+        (archive_task, "session_archive_scheduler_shutdown_failed"),
+    ):
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+        except TimeoutError:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        except Exception:
+            logger.warning(failure_event, exc_info=True)
     logger.info("ternion_shutting_down")
     log_manager.emit("INFO", "LIFECYCLE", "Server shutting down")
 
@@ -208,6 +221,10 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+# Bearer-token auth for /v1 and /api on publicly tunneled deployments.
+# Added before CORS so CORS stays outermost and handles preflight requests.
+app.add_middleware(AuthTokenMiddleware)
 
 # CORS origins are computed once at process start and fixed for the process lifetime.
 # Changing port configuration via the Control Panel requires a server restart to take effect.

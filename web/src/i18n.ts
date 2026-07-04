@@ -238,6 +238,13 @@ export interface Translations {
   publicAccessCopy: string;
   publicAccessCopied: string;
   publicAccessCopyFailed: string;
+  publicAccessTokenLabel: string;
+  publicAccessTokenHint: string;
+  publicAccessTokenDescription: string;
+  accessTokenGateTitle: string;
+  accessTokenGateDescription: string;
+  accessTokenGatePlaceholder: string;
+  accessTokenGateSubmit: string;
   publicAccessSaved: string;
   publicAccessUnavailable: string;
   publicAccessConfiguredToast: string;
@@ -523,6 +530,15 @@ const EN: Translations = {
   publicAccessCopy: 'Copy',
   publicAccessCopied: 'Cursor base URL copied',
   publicAccessCopyFailed: 'Failed to copy the Cursor base URL',
+  publicAccessTokenLabel: 'Access Token',
+  publicAccessTokenHint: 'Required for requests arriving through a public tunnel',
+  publicAccessTokenDescription:
+    'Paste this token into Cursor as the OpenAI API Key. Remote Control Panel access also requires it. Local requests on this machine do not.',
+  accessTokenGateTitle: 'Access token required',
+  accessTokenGateDescription:
+    'This Control Panel is being accessed through a public tunnel. Enter the access token shown in the Ternion startup banner (or copy it from a local Control Panel session).',
+  accessTokenGatePlaceholder: 'Paste the access token',
+  accessTokenGateSubmit: 'Continue',
   publicAccessSaved: 'Public access settings saved',
   publicAccessUnavailable: 'Unable to load public access settings right now.',
   publicAccessConfiguredToast:
@@ -872,6 +888,15 @@ const ZH: Translations = {
   publicAccessCopy: '复制',
   publicAccessCopied: '已复制 Cursor Base URL',
   publicAccessCopyFailed: '复制 Cursor Base URL 失败',
+  publicAccessTokenLabel: '访问令牌',
+  publicAccessTokenHint: '通过公网隧道访问时必须携带',
+  publicAccessTokenDescription:
+    '请将此令牌粘贴到 Cursor 的 OpenAI API Key 字段。远程访问控制面板同样需要它；本机请求无需携带。',
+  accessTokenGateTitle: '需要访问令牌',
+  accessTokenGateDescription:
+    '当前正通过公网隧道访问控制面板。请输入 Ternion 启动横幅中显示的访问令牌（也可在本机打开控制面板复制）。',
+  accessTokenGatePlaceholder: '粘贴访问令牌',
+  accessTokenGateSubmit: '继续',
   publicAccessSaved: '公网接入设置已保存',
   publicAccessUnavailable: '暂时无法加载公网接入配置。',
   publicAccessConfiguredToast: '已检测到可用公网接入。请打开“端口”页复制 Cursor Base URL。',
@@ -1223,6 +1248,15 @@ const ES: Translations = {
   publicAccessCopy: 'Copiar',
   publicAccessCopied: 'La URL base de Cursor se copió',
   publicAccessCopyFailed: 'No se pudo copiar la URL base de Cursor',
+  publicAccessTokenLabel: 'Token de acceso',
+  publicAccessTokenHint: 'Obligatorio para solicitudes que llegan por un túnel público',
+  publicAccessTokenDescription:
+    'Pega este token en Cursor como la OpenAI API Key. El acceso remoto al panel también lo requiere; las solicitudes locales no.',
+  accessTokenGateTitle: 'Se requiere token de acceso',
+  accessTokenGateDescription:
+    'Este panel se está abriendo a través de un túnel público. Introduce el token de acceso mostrado en el banner de inicio de Ternion (o cópialo desde una sesión local del panel).',
+  accessTokenGatePlaceholder: 'Pega el token de acceso',
+  accessTokenGateSubmit: 'Continuar',
   publicAccessSaved: 'La configuración de acceso público se guardó',
   publicAccessUnavailable: 'No se puede cargar la configuración de acceso público en este momento.',
   publicAccessConfiguredToast:
@@ -1577,6 +1611,15 @@ const FR: Translations = {
   publicAccessCopy: 'Copier',
   publicAccessCopied: 'L’URL de base Cursor a été copiée',
   publicAccessCopyFailed: 'Impossible de copier l’URL de base Cursor',
+  publicAccessTokenLabel: 'Jeton d’accès',
+  publicAccessTokenHint: 'Requis pour les requêtes arrivant via un tunnel public',
+  publicAccessTokenDescription:
+    'Collez ce jeton dans Cursor comme OpenAI API Key. L’accès distant au panneau le requiert aussi ; les requêtes locales non.',
+  accessTokenGateTitle: 'Jeton d’accès requis',
+  accessTokenGateDescription:
+    'Ce panneau est ouvert via un tunnel public. Saisissez le jeton d’accès affiché dans la bannière de démarrage de Ternion (ou copiez-le depuis une session locale du panneau).',
+  accessTokenGatePlaceholder: 'Collez le jeton d’accès',
+  accessTokenGateSubmit: 'Continuer',
   publicAccessSaved: 'Les paramètres d’accès public ont été enregistrés',
   publicAccessUnavailable: 'Impossible de charger les paramètres d’accès public pour le moment.',
   publicAccessConfiguredToast:
@@ -1931,6 +1974,15 @@ const DE: Translations = {
   publicAccessCopy: 'Kopieren',
   publicAccessCopied: 'Die Cursor-Basis-URL wurde kopiert',
   publicAccessCopyFailed: 'Die Cursor-Basis-URL konnte nicht kopiert werden',
+  publicAccessTokenLabel: 'Zugriffstoken',
+  publicAccessTokenHint: 'Erforderlich für Anfragen über einen öffentlichen Tunnel',
+  publicAccessTokenDescription:
+    'Fügen Sie dieses Token in Cursor als OpenAI API Key ein. Auch der Fernzugriff auf das Panel erfordert es; lokale Anfragen nicht.',
+  accessTokenGateTitle: 'Zugriffstoken erforderlich',
+  accessTokenGateDescription:
+    'Dieses Panel wird über einen öffentlichen Tunnel geöffnet. Geben Sie das Zugriffstoken aus dem Ternion-Startbanner ein (oder kopieren Sie es aus einer lokalen Panel-Sitzung).',
+  accessTokenGatePlaceholder: 'Zugriffstoken einfügen',
+  accessTokenGateSubmit: 'Weiter',
   publicAccessSaved: 'Die Einstellungen für den öffentlichen Zugriff wurden gespeichert',
   publicAccessUnavailable: 'Die Einstellungen für den öffentlichen Zugriff konnten momentan nicht geladen werden.',
   publicAccessConfiguredToast:
@@ -2285,6 +2337,15 @@ const JA: Translations = {
   publicAccessCopy: 'コピー',
   publicAccessCopied: 'Cursor Base URL をコピーしました',
   publicAccessCopyFailed: 'Cursor Base URL のコピーに失敗しました',
+  publicAccessTokenLabel: 'アクセストークン',
+  publicAccessTokenHint: '公開トンネル経由のリクエストに必須',
+  publicAccessTokenDescription:
+    'このトークンを Cursor の OpenAI API Key に貼り付けてください。リモートからのコントロールパネル利用にも必要です。ローカルのリクエストには不要です。',
+  accessTokenGateTitle: 'アクセストークンが必要です',
+  accessTokenGateDescription:
+    'このコントロールパネルは公開トンネル経由で開かれています。Ternion の起動バナーに表示されたアクセストークンを入力してください（ローカルのパネルからコピーすることもできます）。',
+  accessTokenGatePlaceholder: 'アクセストークンを貼り付け',
+  accessTokenGateSubmit: '続行',
   publicAccessSaved: '公開アクセス設定を保存しました',
   publicAccessUnavailable: '現在、公開アクセス設定を読み込めません。',
   publicAccessConfiguredToast:
@@ -2639,6 +2700,15 @@ const KO: Translations = {
   publicAccessCopy: '복사',
   publicAccessCopied: 'Cursor Base URL이 복사되었습니다',
   publicAccessCopyFailed: 'Cursor Base URL 복사에 실패했습니다',
+  publicAccessTokenLabel: '액세스 토큰',
+  publicAccessTokenHint: '공개 터널을 통한 요청에 필수',
+  publicAccessTokenDescription:
+    '이 토큰을 Cursor의 OpenAI API Key 필드에 붙여넣으세요. 원격 컨트롤 패널 접근에도 필요하며, 로컬 요청에는 필요하지 않습니다.',
+  accessTokenGateTitle: '액세스 토큰이 필요합니다',
+  accessTokenGateDescription:
+    '현재 공개 터널을 통해 컨트롤 패널에 접근하고 있습니다. Ternion 시작 배너에 표시된 액세스 토큰을 입력하세요(로컬 패널 세션에서 복사할 수도 있습니다).',
+  accessTokenGatePlaceholder: '액세스 토큰 붙여넣기',
+  accessTokenGateSubmit: '계속',
   publicAccessSaved: '공개 액세스 설정이 저장되었습니다',
   publicAccessUnavailable: '현재 공개 액세스 설정을 불러올 수 없습니다.',
   publicAccessConfiguredToast:
