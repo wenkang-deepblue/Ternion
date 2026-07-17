@@ -81,6 +81,7 @@ class PortsConfig(BaseModel):
 
 PublicAccessMode = Literal["none", "local_tunnel", "cloud_run", "custom"]
 ModelCatalogRefreshMode = Literal["daily", "interval_days", "interval_weeks"]
+UserExecutionMode = Literal["cursor_handoff", "ternion_full", ""]
 
 
 class PublicAccessConfig(BaseModel):
@@ -155,7 +156,7 @@ class UserConfig(BaseModel):
     browser_language: str = "en"
     # Execution mode is intentionally empty by default.
     # Users MUST explicitly choose and save it in the Web Control Panel.
-    execution_mode: str = ""  # "cursor_handoff" | "ternion_full" | ""
+    execution_mode: UserExecutionMode = ""
     hide_usage_disclaimer: bool = False  # Hide usage disclaimer warning
     # Control whether thinking logs are prepended to final output.
     # Set to False for strict system prompts that require only patch/diff output.

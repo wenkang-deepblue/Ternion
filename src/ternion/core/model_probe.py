@@ -65,7 +65,7 @@ def is_model_unavailable_error(provider: str, error_message: str) -> bool:
     Args:
         provider: Reserved for future provider-specific keyword matching.
         error_message: Error text returned by a provider SDK or HTTP client.
-        
+
     Returns:
         True if the error indicates a missing or retired model, otherwise False.
     """
@@ -127,12 +127,12 @@ class ModelAvailabilityProbeService:
         api_key: str,
     ) -> ModelAvailabilityProbeResult:
         """Probe a specific provider/model pair with a low-cost metadata request.
-        
+
         Args:
             provider: The name of the LLM provider to probe.
             model: The ID of the model to probe.
             api_key: The API key to use for authentication.
-            
+
         Returns:
             The result of the model availability probe.
         """

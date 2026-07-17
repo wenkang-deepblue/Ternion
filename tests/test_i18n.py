@@ -60,7 +60,6 @@ class TestTranslationFunction:
     def test_t_returns_translated_string(self, mock_english_config: MagicMock) -> None:
         """t() should return translated string for valid key."""
         with patch("ternion.utils.i18n._load_user_config", return_value=mock_english_config):
-
             result = t(MessageKey.DIVERGENCE_START)
 
             assert "Arbiter" in result
@@ -69,7 +68,6 @@ class TestTranslationFunction:
     def test_t_formats_placeholders_correctly(self, mock_english_config: MagicMock) -> None:
         """t() should correctly format placeholder values."""
         with patch("ternion.utils.i18n._load_user_config", return_value=mock_english_config):
-
             result = t(
                 MessageKey.DIVERGENCE_ANALYSIS, ternion_id="ternion_a", preview="Test preview"
             )
@@ -80,7 +78,6 @@ class TestTranslationFunction:
     def test_t_formats_error_placeholders(self, mock_english_config: MagicMock) -> None:
         """t() should correctly format error placeholders."""
         with patch("ternion.utils.i18n._load_user_config", return_value=mock_english_config):
-
             result = t(MessageKey.CONVERGENCE_ERROR, error="Test error message")
 
             assert "Test error message" in result
@@ -89,7 +86,6 @@ class TestTranslationFunction:
     def test_t_formats_missing_roles_placeholder(self, mock_english_config: MagicMock) -> None:
         """t() should correctly format missing_roles placeholder."""
         with patch("ternion.utils.i18n._load_user_config", return_value=mock_english_config):
-
             result = t(MessageKey.ROLE_CONFIG_INCOMPLETE, missing_roles="arbiter, writer")
 
             assert "arbiter, writer" in result
@@ -97,7 +93,6 @@ class TestTranslationFunction:
     def test_t_respects_language_setting(self, mock_chinese_config: MagicMock) -> None:
         """t() should use user's configured language."""
         with patch("ternion.utils.i18n._load_user_config", return_value=mock_chinese_config):
-
             result = t(MessageKey.DIVERGENCE_START)
 
             # Chinese translation should contain Chinese characters
@@ -109,7 +104,6 @@ class TestTranslationFunction:
         config.language = "invalid_lang"
 
         with patch("ternion.utils.i18n._load_user_config", return_value=config):
-
             result = t(MessageKey.DIVERGENCE_START)
 
             # Should get English version
@@ -126,7 +120,6 @@ class TestAllLanguagePlaceholderFormatting:
         config.language = lang
 
         with patch("ternion.utils.i18n._load_user_config", return_value=config):
-
             # Should not raise KeyError or ValueError
             result = t(MessageKey.DIVERGENCE_ANALYSIS, ternion_id="ternion_a", preview="Test")
 
@@ -140,7 +133,6 @@ class TestAllLanguagePlaceholderFormatting:
         config.language = lang
 
         with patch("ternion.utils.i18n._load_user_config", return_value=config):
-
             # Test all error keys
             error_keys = [
                 MessageKey.CONVERGENCE_ERROR,
@@ -159,7 +151,6 @@ class TestAllLanguagePlaceholderFormatting:
         config.language = lang
 
         with patch("ternion.utils.i18n._load_user_config", return_value=config):
-
             # ROLE_CONFIG_INCOMPLETE has a placeholder
             result = t(MessageKey.ROLE_CONFIG_INCOMPLETE, missing_roles="arbiter")
             assert "arbiter" in result, f"ROLE_CONFIG_INCOMPLETE failed to format in {lang}"
@@ -178,7 +169,6 @@ class TestGetUserLanguage:
         config.language = "zh"
 
         with patch("ternion.utils.i18n._load_user_config", return_value=config):
-
             result = get_user_language()
 
             assert result == "zh"
@@ -186,7 +176,6 @@ class TestGetUserLanguage:
     def test_returns_default_on_error(self) -> None:
         """Should return default language when config fails."""
         with patch("ternion.utils.i18n._load_user_config", return_value=None):
-
             result = get_user_language()
 
             assert result == DEFAULT_LANGUAGE
@@ -197,7 +186,6 @@ class TestGetUserLanguage:
         config.language = "unsupported"
 
         with patch("ternion.utils.i18n._load_user_config", return_value=config):
-
             result = get_user_language()
 
             assert result == DEFAULT_LANGUAGE
@@ -209,7 +197,6 @@ class TestGetUserLanguage:
         config.browser_language = "zh"
 
         with patch("ternion.utils.i18n._load_user_config", return_value=config):
-
             result = get_user_language()
 
             assert result == "zh"
@@ -221,7 +208,6 @@ class TestGetUserLanguage:
         config.browser_language = "pt"  # Portuguese not in supported list
 
         with patch("ternion.utils.i18n._load_user_config", return_value=config):
-
             result = get_user_language()
 
             assert result == DEFAULT_LANGUAGE

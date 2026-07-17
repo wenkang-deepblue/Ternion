@@ -17,6 +17,20 @@ import os from 'os'
 const DEFAULT_WEB_PORT = 9120
 const DEFAULT_BACKEND_PORT = 9110
 
+function loadPackageVersion(): string {
+  const packagePath = new URL('./package.json', import.meta.url)
+  const packageMetadata: unknown = JSON.parse(fs.readFileSync(packagePath, 'utf-8'))
+  if (
+    !packageMetadata ||
+    typeof packageMetadata !== 'object' ||
+    !('version' in packageMetadata) ||
+    typeof packageMetadata.version !== 'string'
+  ) {
+    throw new Error('web/package.json must define a string version')
+  }
+  return packageMetadata.version
+}
+
 /**
  * Read port configuration from user config file.
  * Falls back to defaults if file doesn't exist or is invalid.
@@ -44,11 +58,15 @@ function loadPortConfig(): { webPort: number; backendPort: number } {
 }
 
 const { webPort, backendPort } = loadPortConfig()
+const packageVersion = loadPackageVersion()
 
 console.log(`[vite] Web port: ${webPort}, Backend port: ${backendPort}`)
 
 export default defineConfig(({ command }) => ({
   plugins: [react()],
+  define: {
+    __TERNION_VERSION__: JSON.stringify(packageVersion),
+  },
   // Dev mode keeps root-relative paths for the standalone Vite server.
   // Build mode targets the embedded FastAPI mount point at /panel/.
   base: command === 'build' ? '/panel/' : '/',
@@ -67,5 +85,13 @@ export default defineConfig(({ command }) => ({
   },
   build: {
     outDir: 'dist',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom'],
+          charts: ['recharts'],
+        },
+      },
+    },
   },
 }))

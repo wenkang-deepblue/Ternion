@@ -115,10 +115,7 @@ class TestControlRoutesModelCatalog:
             response = client.get("/api/config")
 
             assert response.status_code == 200
-            assert (
-                response.json()["roles"]["ternion_a"]["model"]
-                == "claude-opus-4-6"
-            )
+            assert response.json()["roles"]["ternion_a"]["model"] == "claude-opus-4-6"
             mock_config_store.save.assert_not_called()
 
     def test_get_models_uses_catalog_service(self) -> None:
@@ -612,9 +609,7 @@ class TestControlRoutesModelCatalog:
             mock_config_store.load.return_value = config
             mock_config_store.to_safe_dict.return_value = {"budget": "safe"}
             mock_catalog_service.get_model_cached.side_effect = (
-                lambda model_id: canonical_model
-                if model_id == "claude-opus-4-6-20260205"
-                else None
+                lambda model_id: canonical_model if model_id == "claude-opus-4-6-20260205" else None
             )
             mock_log_manager.emit = MagicMock()
 

@@ -11,7 +11,7 @@ Provides REST API endpoints for the Web Control Panel to manage:
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import TypedDict, get_args
+from typing import TypedDict, cast, get_args
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request
@@ -21,11 +21,13 @@ from pydantic import BaseModel
 from ternion.core.budget import budget_manager
 from ternion.core.config_store import (
     ApiKeyEntry,
+    ModelCatalogRefreshMode,
     ProviderConfig,
     PublicAccessConfig,
     PublicAccessMode,
     RoleConfig,
     UserConfig,
+    UserExecutionMode,
     config_store,
 )
 from ternion.core.model_catalog import CatalogModel, model_catalog_service
@@ -54,6 +56,8 @@ from ternion.utils.secrets import redact_secrets
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["control-panel"])
 VALID_PUBLIC_ACCESS_MODES = set(get_args(PublicAccessMode))
+
+
 class PublicAccessStateResponse(TypedDict):
     """Serialized public-access state returned by the Control Panel API."""
 
@@ -73,7 +77,6 @@ class PublicAccessUpdateResponse(PublicAccessStateResponse):
     """Serialized response for a public-access update operation."""
 
     success: bool
-
 
 
 # Sync budget settings from config_store to budget_manager on module load.
@@ -253,9 +256,8 @@ def _serialize_public_access_state(
     Returns:
         A dictionary containing configured and effective public-access values.
     """
-    mode = str(config.public_access.mode or "none")
-    if mode not in VALID_PUBLIC_ACCESS_MODES:
-        mode = "none"
+    raw_mode = str(config.public_access.mode or "none")
+    mode = cast(PublicAccessMode, raw_mode if raw_mode in VALID_PUBLIC_ACCESS_MODES else "none")
 
     raw_configured_public_base_url = str(config.public_access.public_base_url or "")
     configured_public_base_url = normalize_public_base_url(raw_configured_public_base_url)
@@ -793,7 +795,7 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
         if request.execution_mode not in ("cursor_handoff", "ternion_full"):
             raise HTTPException(status_code=400, detail="INVALID_EXECUTION_MODE")
         old_mode = config.execution_mode
-        config.execution_mode = request.execution_mode
+        config.execution_mode = cast(UserExecutionMode, request.execution_mode)
         if old_mode != request.execution_mode:
             mode_display = (
                 "Ternion + Cursor"
@@ -813,7 +815,10 @@ async def update_config(request: ConfigUpdateRequest) -> dict | JSONResponse:
         if request.model_catalog_refresh.mode is not None:
             if request.model_catalog_refresh.mode not in VALID_REFRESH_MODES:
                 raise HTTPException(status_code=400, detail="INVALID_MODEL_CATALOG_REFRESH_MODE")
-            refresh_settings.mode = request.model_catalog_refresh.mode
+            refresh_settings.mode = cast(
+                ModelCatalogRefreshMode,
+                request.model_catalog_refresh.mode,
+            )
         if request.model_catalog_refresh.time_of_day is not None:
             try:
                 refresh_settings.time_of_day = normalize_time_of_day(

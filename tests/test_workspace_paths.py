@@ -59,16 +59,22 @@ class TestNormalizeWorkspaceTargetPath:
 
     def test_normalizes_relative_absolute_and_mixed_style_targets(self) -> None:
         """Target normalization should reject style mismatches."""
-        assert normalize_workspace_target_path(
-            "src/app.py",
-            workspace_root="/repo/project",
-            workspace_path_style="posix",
-        ) == "/repo/project/src/app.py"
-        assert normalize_workspace_target_path(
-            r"docs\spec.md",
-            workspace_root=r"C:\repo\project",
-            workspace_path_style="windows",
-        ) == r"C:\repo\project\docs\spec.md"
+        assert (
+            normalize_workspace_target_path(
+                "src/app.py",
+                workspace_root="/repo/project",
+                workspace_path_style="posix",
+            )
+            == "/repo/project/src/app.py"
+        )
+        assert (
+            normalize_workspace_target_path(
+                r"docs\spec.md",
+                workspace_root=r"C:\repo\project",
+                workspace_path_style="windows",
+            )
+            == r"C:\repo\project\docs\spec.md"
+        )
         assert (
             normalize_workspace_target_path(
                 r"C:\repo\project\src\app.py",
@@ -84,10 +90,13 @@ class TestWorkspaceRelativePath:
 
     def test_returns_relative_path_inside_workspace_and_blocks_outside(self) -> None:
         """Relative path logic should be boundary-aware without filesystem access."""
-        assert workspace_relative_path(
-            "/repo/project/docs/spec.md",
-            workspace_root="/repo/project",
-        ) == "docs/spec.md"
+        assert (
+            workspace_relative_path(
+                "/repo/project/docs/spec.md",
+                workspace_root="/repo/project",
+            )
+            == "docs/spec.md"
+        )
         assert (
             workspace_relative_path(
                 "/repo/other/outside.md",
@@ -95,11 +104,14 @@ class TestWorkspaceRelativePath:
             )
             is None
         )
-        assert workspace_relative_path(
-            r"C:\repo\project\src\app.py",
-            workspace_root=r"C:\repo\project",
-            workspace_path_style="windows",
-        ) == "src/app.py"
+        assert (
+            workspace_relative_path(
+                r"C:\repo\project\src\app.py",
+                workspace_root=r"C:\repo\project",
+                workspace_path_style="windows",
+            )
+            == "src/app.py"
+        )
         assert (
             workspace_relative_path(
                 r"D:\other\outside.py",
@@ -155,15 +167,24 @@ class TestRenderWorkspacePath:
 
     def test_renders_relative_root_and_original_fallback(self) -> None:
         """Rendered path should prefer relative output when safe."""
-        assert render_workspace_path(
-            "/repo/project/docs/spec.md",
-            workspace_root="/repo/project",
-        ) == "docs/spec.md"
-        assert render_workspace_path(
-            "/repo/project",
-            workspace_root="/repo/project",
-        ) == "."
-        assert render_workspace_path(
-            "/repo/other/spec.md",
-            workspace_root="/repo/project",
-        ) == "/repo/other/spec.md"
+        assert (
+            render_workspace_path(
+                "/repo/project/docs/spec.md",
+                workspace_root="/repo/project",
+            )
+            == "docs/spec.md"
+        )
+        assert (
+            render_workspace_path(
+                "/repo/project",
+                workspace_root="/repo/project",
+            )
+            == "."
+        )
+        assert (
+            render_workspace_path(
+                "/repo/other/spec.md",
+                workspace_root="/repo/project",
+            )
+            == "/repo/other/spec.md"
+        )

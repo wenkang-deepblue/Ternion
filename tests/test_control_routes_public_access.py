@@ -140,7 +140,9 @@ def test_get_public_access_passes_configured_backend_port_to_ngrok_detection() -
 
     with (
         patch(CONTROL_ROUTES_CONFIG_STORE) as mock_config_store,
-        patch(PUBLIC_ACCESS_NGROK_DETECT, return_value=("https://port-aware.ngrok.app", "ngrok_api")) as mock_detect,
+        patch(
+            PUBLIC_ACCESS_NGROK_DETECT, return_value=("https://port-aware.ngrok.app", "ngrok_api")
+        ) as mock_detect,
     ):
         mock_config_store.load.return_value = config
 

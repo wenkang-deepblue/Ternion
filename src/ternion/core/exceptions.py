@@ -12,7 +12,7 @@ class TernionError(Exception):
 
     def __init__(self, message: str, status_code: int = 500) -> None:
         """Initialize TernionError.
-        
+
         Args:
             message: The error message.
             status_code: The associated HTTP status code.
@@ -32,7 +32,7 @@ class ProviderError(TernionError):
         status_code: int = 502,
     ) -> None:
         """Initialize ProviderError.
-        
+
         Args:
             message: The error message from the provider.
             provider: The name of the LLM provider.
@@ -47,7 +47,7 @@ class RuntimeModelUnavailableError(TernionError):
 
     def __init__(self, provider: str, model: str, provider_message: str = "") -> None:
         """Initialize RuntimeModelUnavailableError.
-        
+
         Args:
             provider: The name of the LLM provider.
             model: The name of the unavailable model.
@@ -63,7 +63,7 @@ class RuntimeModelUnavailableError(TernionError):
 
     def to_payload(self) -> dict[str, Any]:
         """Serialize the runtime error into a stable structured payload.
-        
+
         Returns:
             A dictionary containing the error payload.
         """
@@ -83,7 +83,7 @@ class AllProvidersUnavailable(TernionError):
 
     def __init__(self, role: str) -> None:
         """Initialize AllProvidersUnavailable.
-        
+
         Args:
             role: The role for which no providers were available.
         """
@@ -99,7 +99,7 @@ class ConfigurationError(TernionError):
 
     def __init__(self, message: str) -> None:
         """Initialize ConfigurationError.
-        
+
         Args:
             message: The configuration error message.
         """
@@ -111,7 +111,7 @@ class TernionTimeoutError(TernionError):
 
     def __init__(self, operation: str, timeout_seconds: int) -> None:
         """Initialize TernionTimeoutError.
-        
+
         Args:
             operation: The name of the timed-out operation.
             timeout_seconds: The duration after which the timeout occurred.
@@ -129,7 +129,7 @@ class ValidationError(TernionError):
 
     def __init__(self, message: str) -> None:
         """Initialize ValidationError.
-        
+
         Args:
             message: The validation error message.
         """

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { getTranslations } from './i18n';
+import { loadTranslations } from './i18n';
 
 describe('model catalog translations', () => {
   it.each([
@@ -11,8 +11,8 @@ describe('model catalog translations', () => {
     ['de', 'Modellkatalog', 'Speichern'],
     ['ja', 'モデルカタログ', '保存'],
     ['ko', '모델 카탈로그', '저장'],
-  ] as const)('keeps %s model catalog texts aligned', (language, modelCatalogTitle, saveLabel) => {
-    const t = getTranslations(language);
+  ] as const)('keeps %s model catalog texts aligned', async (language, modelCatalogTitle, saveLabel) => {
+    const t = await loadTranslations(language);
 
     expect(t.modelCatalogTitle).toBe(modelCatalogTitle);
     expect(t.execModeSave).toBe(saveLabel);
@@ -26,8 +26,8 @@ describe('model catalog translations', () => {
     ['de', 'Anomaliebericht zum Modellkatalog nicht gefunden'],
     ['ja', 'カタログ異常レポートが見つかりません'],
     ['ko', '카탈로그 이상 보고서를 찾을 수 없습니다'],
-  ] as const)('keeps %s model catalog error texts aligned', (language, errorText) => {
-    const t = getTranslations(language);
+  ] as const)('keeps %s model catalog error texts aligned', async (language, errorText) => {
+    const t = await loadTranslations(language);
 
     expect(t.code_MODEL_CATALOG_ANOMALY_REPORT_NOT_FOUND).toBe(errorText);
   });

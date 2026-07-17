@@ -6,9 +6,9 @@ between multiple LLM providers (OpenAI, Anthropic, Google) to produce
 higher quality, cross-validated solutions.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.3.3"
 __author__ = "Ternion Contributors"
-__license__ = "Apache-2.0"
+__license__ = "AGPL-3.0-only"
 
 from ternion.core.config import settings
 

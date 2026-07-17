@@ -177,12 +177,20 @@ def detect_ngrok_public_base_url(backend_port: int) -> tuple[str, PublicAccessDe
             continue
 
         if not isinstance(payload, dict):
-            logger.debug("ngrok_probe_invalid_payload", api_base=api_base, payload_type=type(payload).__name__)
+            logger.debug(
+                "ngrok_probe_invalid_payload",
+                api_base=api_base,
+                payload_type=type(payload).__name__,
+            )
             continue
 
         tunnels = payload.get("tunnels", [])
         if not isinstance(tunnels, list):
-            logger.debug("ngrok_probe_invalid_tunnels", api_base=api_base, tunnels_type=type(tunnels).__name__)
+            logger.debug(
+                "ngrok_probe_invalid_tunnels",
+                api_base=api_base,
+                tunnels_type=type(tunnels).__name__,
+            )
             continue
 
         for tunnel in tunnels:

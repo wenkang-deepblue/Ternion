@@ -24,8 +24,8 @@ import ObservabilityPanel from './components/ObservabilityPanel';
 import ExecutionModeSelector from './components/ExecutionModeSelector';
 import SettingsDropdown from './components/SettingsDropdown';
 import type { ThemeMode, LanguageMode } from './components/SettingsDropdown';
-import { detectBrowserLanguage, getTranslations } from './i18n';
-import type { Language } from './i18n';
+import { detectBrowserLanguage, getTranslations, loadTranslations } from './i18n';
+import type { Language, Translations } from './i18n';
 import './index.css';
 import ternionLogo from './assets/icons/ternion-logo-light.png';
 import ternionLogoDark from './assets/icons/ternion-logo-dark.png';
@@ -80,13 +80,33 @@ function AppContent() {
 
   const effectiveLanguage: Language =
     languageMode === 'auto' ? detectBrowserLanguage() : languageMode;
-  const t = getTranslations(effectiveLanguage);
+  const [t, setTranslations] = useState<Translations>(() =>
+    getTranslations(effectiveLanguage)
+  );
 
   const [systemDark, setSystemDark] = useState(() =>
     typeof window !== 'undefined'
       ? window.matchMedia('(prefers-color-scheme: dark)').matches
       : false
   );
+
+  useEffect(() => {
+    let active = true;
+
+    void loadTranslations(effectiveLanguage)
+      .then((translations) => {
+        if (active) {
+          setTranslations(translations);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load translations:', error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [effectiveLanguage]);
 
   const isDarkMode =
     themeMode === 'dark' || (themeMode === 'system' && systemDark);

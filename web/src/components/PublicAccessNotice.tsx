@@ -204,7 +204,7 @@ export function PublicAccessNotice({
     return () => {
       window.clearTimeout(timerId);
     };
-  }, [publicAccess, ready, showToast, t.publicAccessConfiguredToast]);
+  }, [previewModal, publicAccess, ready, showToast, t.publicAccessConfiguredToast]);
 
   const closeAll = () => {
     setIntroOpen(false);

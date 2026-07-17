@@ -20,7 +20,9 @@ async def test_call_with_timeout_reraises_runtime_model_unavailable() -> None:
     """Timeout wrapper should convert stale-model provider errors into structured exceptions."""
     provider = MagicMock()
     provider.name = "openai"
-    provider.chat_completion = AsyncMock(side_effect=Exception("The requested model does not exist"))
+    provider.chat_completion = AsyncMock(
+        side_effect=Exception("The requested model does not exist")
+    )
 
     with pytest.raises(RuntimeModelUnavailableError) as exc_info:
         await _call_with_timeout(
@@ -105,8 +107,12 @@ async def test_convergence_fallback_returns_runtime_model_unavailable_state() ->
     with (
         patch("ternion.workflow.nodes.config_store") as mock_config_store,
         patch("ternion.workflow.nodes.provider_manager") as mock_provider_manager,
-        patch("ternion.workflow.nodes._call_with_stream", new_callable=AsyncMock) as mock_call_stream,
-        patch("ternion.workflow.nodes._call_with_timeout", new_callable=AsyncMock) as mock_call_timeout,
+        patch(
+            "ternion.workflow.nodes._call_with_stream", new_callable=AsyncMock
+        ) as mock_call_stream,
+        patch(
+            "ternion.workflow.nodes._call_with_timeout", new_callable=AsyncMock
+        ) as mock_call_timeout,
     ):
         mock_config_store.load.return_value = mock_user_config
         mock_config_store.get_role_config.side_effect = lambda role: role_configs.get(role)

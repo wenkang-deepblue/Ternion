@@ -6515,12 +6515,14 @@ async def _execution_followup_turn(
                     workspace_path_style=workspace_path_style,
                     local_workspace_root=local_workspace_root,
                 )
-                snapshot = _read_text_file_best_effort(local_target) if local_target else None
-                if snapshot is not None:
-                    writer_output_files[normalized] = snapshot
+                document_snapshot = (
+                    _read_text_file_best_effort(local_target) if local_target else None
+                )
+                if document_snapshot is not None:
+                    writer_output_files[normalized] = document_snapshot
                     meta["document_output_stabilized"] = True
                     meta["document_output_path"] = normalized
-                    meta["document_output_snapshot_chars"] = len(snapshot)
+                    meta["document_output_snapshot_chars"] = len(document_snapshot)
                     if normalized not in stabilized_document_set:
                         stabilized_document_paths.append(normalized)
                         stabilized_document_set.add(normalized)
@@ -6554,20 +6556,20 @@ async def _execution_followup_turn(
             delta_truncated = False
 
             if isinstance(git_cursor, dict) and "repo_root" in git_cursor:
-                snapshot = _try_get_git_status_snapshot(
+                git_status_snapshot = _try_get_git_status_snapshot(
                     workspace_root=workspace_root,
                     workspace_path_style=workspace_path_style,
                     local_workspace_root=local_workspace_root,
                 )
-                if snapshot:
+                if git_status_snapshot:
                     post_modified = {
                         p
-                        for p in (snapshot.get("modified") or [])
+                        for p in (git_status_snapshot.get("modified") or [])
                         if isinstance(p, str) and p.strip()
                     }
                     post_untracked = {
                         p
-                        for p in (snapshot.get("untracked") or [])
+                        for p in (git_status_snapshot.get("untracked") or [])
                         if isinstance(p, str) and p.strip()
                     }
                     pre_all = set(git_cursor_modified) | set(git_cursor_untracked)
@@ -6624,7 +6626,7 @@ async def _execution_followup_turn(
 
                     git_cursor_modified = post_modified
                     git_cursor_untracked = post_untracked
-                    git_cursor["repo_root"] = snapshot.get(
+                    git_cursor["repo_root"] = git_status_snapshot.get(
                         "repo_root",
                         git_cursor.get("repo_root", ""),
                     )
@@ -6833,7 +6835,7 @@ async def _execution_followup_turn(
             return _respond_with_text(request, tool_policy_error)
 
         before_deliverable_policy = list(filtered_tool_calls)
-        filtered_tool_calls, policy_error, deliverable_type, allowed_scope = (
+        filtered_tool_calls, policy_error, deferred_deliverable_type, allowed_scope = (
             _enforce_deliverable_policy(
                 workflow_phase=workflow_phase,
                 tool_calls=filtered_tool_calls,
@@ -6848,20 +6850,20 @@ async def _execution_followup_turn(
             violations = (
                 _collect_deliverable_policy_violations(
                     before_deliverable_policy,
-                    deliverable_type,
+                    deferred_deliverable_type,
                     workspace_root,
                     workspace_path_style,
                     workspace_root_source,
                 )
-                if deliverable_type is not None
+                if deferred_deliverable_type is not None
                 else []
             )
             guardrail_events_to_append.append(
                 {
                     "type": "deliverable_policy_blocked",
                     "role": "optimizer" if workflow_phase == "optimizer" else "writer",
-                    "deliverable_type": deliverable_type.value
-                    if deliverable_type is not None
+                    "deliverable_type": deferred_deliverable_type.value
+                    if deferred_deliverable_type is not None
                     else "",
                     "allowed_scope": allowed_scope or "",
                     "violations": violations,

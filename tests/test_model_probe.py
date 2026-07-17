@@ -48,10 +48,7 @@ class TestModelAvailabilityProbeService:
 
     def test_normalize_anthropic_model_id_for_api_latest_snapshot(self) -> None:
         """Claude 4.6+ snapshot IDs should normalize to Anthropic's canonical API IDs."""
-        assert (
-            normalize_anthropic_model_id_for_api("claude-opus-4-6-20260205")
-            == "claude-opus-4-6"
-        )
+        assert normalize_anthropic_model_id_for_api("claude-opus-4-6-20260205") == "claude-opus-4-6"
         assert (
             normalize_anthropic_model_id_for_api("claude-sonnet-4-6-20260217")
             == "claude-sonnet-4-6"
@@ -310,9 +307,7 @@ class TestModelAvailabilityProbeService:
 
         mock_client = MagicMock()
         mock_meta_response = MagicMock()
-        mock_meta_response.raise_for_status.side_effect = _build_http_status_error(
-            404, "not found"
-        )
+        mock_meta_response.raise_for_status.side_effect = _build_http_status_error(404, "not found")
         mock_chat_response = MagicMock()
         mock_chat_response.raise_for_status = MagicMock()
         mock_client.get = AsyncMock(return_value=mock_meta_response)
@@ -338,13 +333,9 @@ class TestModelAvailabilityProbeService:
 
         mock_client = MagicMock()
         mock_meta_response = MagicMock()
-        mock_meta_response.raise_for_status.side_effect = _build_http_status_error(
-            404, "not found"
-        )
+        mock_meta_response.raise_for_status.side_effect = _build_http_status_error(404, "not found")
         mock_client.get = AsyncMock(return_value=mock_meta_response)
-        mock_client.post = AsyncMock(
-            side_effect=FakeProbeError("model not found", status_code=404)
-        )
+        mock_client.post = AsyncMock(side_effect=FakeProbeError("model not found", status_code=404))
 
         mock_context = AsyncMock()
         mock_context.__aenter__.return_value = mock_client

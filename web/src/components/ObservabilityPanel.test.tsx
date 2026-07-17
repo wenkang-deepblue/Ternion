@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setStoredAuthToken } from '../api/client';
-import { getTranslations } from '../i18n';
+import ZH from '../locales/zh';
 import { ObservabilityPanel } from './ObservabilityPanel';
 
 const mockApi = vi.hoisted(() => ({
@@ -19,7 +19,7 @@ vi.mock('../api/client', async () => {
   };
 });
 
-const t = getTranslations('zh');
+const t = ZH;
 
 function sseResponse(frames: string[], status = 200): Response {
   const encoder = new TextEncoder();

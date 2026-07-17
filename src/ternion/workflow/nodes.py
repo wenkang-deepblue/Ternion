@@ -4735,7 +4735,7 @@ async def execution_node(state: TernionState) -> TernionState:
                         return {
                             **state,
                             "current_phase": WorkflowPhase.EXECUTION.value,
-                            "pending_tool_calls": response.tool_calls,
+                            "pending_tool_calls": list(response.tool_calls or []),
                             "thinking_logs": thinking_logs,
                         }
                     response = await _retry_writer_if_empty(
@@ -5323,7 +5323,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
                         return {
                             **state,
                             "current_phase": WorkflowPhase.OPTIMIZER.value,
-                            "pending_tool_calls": response.tool_calls,
+                            "pending_tool_calls": list(response.tool_calls or []),
                             "thinking_logs": thinking_logs,
                         }
                     tool_call_validation_retry_used = True
@@ -5383,7 +5383,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
                 return {
                     **state,
                     "current_phase": WorkflowPhase.OPTIMIZER.value,
-                    "pending_tool_calls": response.tool_calls,
+                    "pending_tool_calls": list(response.tool_calls or []),
                     "thinking_logs": thinking_logs,
                 }
 

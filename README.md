@@ -2,7 +2,7 @@
 
 > TL;DR: Ternion is a local OpenAI-compatible gateway for Cursor that runs a three-model technical discussion, builds an evidence-based Ternion report, and can optionally execute the fix.
 
-[![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE.md)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 
 ## What Ternion Is
@@ -375,4 +375,4 @@ Bug reports, reproduction steps, screenshots, logs, and configuration details ar
 
 ## License
 
-Ternion is licensed under AGPL-3.0-only. See [LICENSE](LICENSE).
+Ternion is licensed under AGPL-3.0-only. See [LICENSE](LICENSE.md).

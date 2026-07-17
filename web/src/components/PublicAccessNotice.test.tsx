@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PublicAccessStatus } from '../api/client';
-import { getTranslations } from '../i18n';
+import ZH from '../locales/zh';
 import { PublicAccessNotice } from './PublicAccessNotice';
 import { ToastContext } from './toastContext';
 
@@ -28,7 +28,7 @@ function renderNotice(
   ready = true,
   previewModal: 'intro' | 'guide' | null = null
 ) {
-  const t = getTranslations('zh');
+  const t = ZH;
   const showToast = vi.fn();
 
   const utils = render(

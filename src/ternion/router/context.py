@@ -20,7 +20,9 @@ class DiscussionPhase(Enum):
     DIVERGENCE = auto()  # Phase 1: Independent root cause analysis (3 council members)
     CONVERGENCE = auto()  # Phase 2: Arbiter synthesizes analyses into a plan
     EXECUTION = auto()  # Phase 3: Writer generates the implementation
-    FINAL_CHECK = auto()  # Phase 4: Optimizer applies targeted improvements (Reviewer path inactive)
+    FINAL_CHECK = (
+        auto()
+    )  # Phase 4: Optimizer applies targeted improvements (Reviewer path inactive)
 
 
 ExecutionMode = Literal["ternion_full", "cursor_handoff", ""]

@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../api/client';
 import type { PortsConfig, PublicAccessStatus } from '../api/client';
-import { getTranslations } from '../i18n';
+import ZH from '../locales/zh';
 import { PortsSettings } from './PortsSettings';
 
 const REPOSITORY_BLOB_URL = 'https://github.com/wenkang-deepblue/Ternion/blob/main';
@@ -56,7 +56,7 @@ function renderPortsSettings(overrides?: {
   publicAccess?: PublicAccessStatus | null;
   publicAccessReady?: boolean;
 }) {
-  const t = getTranslations('zh');
+  const t = ZH;
   const showToast = vi.fn();
   const onPublicAccessUpdate = vi.fn();
   const publicAccess: PublicAccessStatus | null =

@@ -322,7 +322,9 @@ async def test_refresh_catalog_failure_skips_retry_when_disabled() -> None:
         patch("ternion.server.model_catalog_refresh.model_catalog_service") as mock_catalog_service,
         patch("ternion.server.model_catalog_refresh.config_store") as mock_config_store,
     ):
-        mock_catalog_service.refresh_snapshot = AsyncMock(side_effect=RuntimeError("network unavailable"))
+        mock_catalog_service.refresh_snapshot = AsyncMock(
+            side_effect=RuntimeError("network unavailable")
+        )
         mock_config_store.load.return_value = config
 
         with pytest.raises(RuntimeError, match="network unavailable"):

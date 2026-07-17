@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CATALOG_PROVIDERS: tuple[str, ...] = ("openai", "google", "anthropic")
+CatalogProvider = Literal["openai", "google", "anthropic"]
+CATALOG_PROVIDERS: tuple[CatalogProvider, ...] = ("openai", "google", "anthropic")
 DEFAULT_MODEL_CATALOG_URL = (
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 )
@@ -65,7 +66,7 @@ class CatalogModel(BaseModel):
 
     id: str
     name: str
-    provider: Literal["openai", "google", "anthropic"]
+    provider: CatalogProvider
     mode: str = ""
     raw_key: str
     source_keys: list[str] = Field(default_factory=list)
@@ -502,7 +503,9 @@ class LiteLLMModelCatalogService:
         provider_truth_index: dict[str, set[str] | None] | None = None,
     ) -> CatalogSnapshot:
         """Normalize upstream JSON into a provider-grouped snapshot."""
-        models_by_provider = {provider: [] for provider in CATALOG_PROVIDERS}
+        models_by_provider: dict[CatalogProvider, list[CatalogModel]] = {
+            provider: [] for provider in CATALOG_PROVIDERS
+        }
         index_by_id: dict[str, CatalogModel] = {}
         index_by_source_key: dict[str, CatalogModel] = {}
         provider_stats = self._build_empty_provider_stats()
@@ -550,19 +553,21 @@ class LiteLLMModelCatalogService:
 
         for models in models_by_provider.values():
             models.sort(key=self._model_sort_key)
-        for provider in CATALOG_PROVIDERS:
+        for catalog_provider in CATALOG_PROVIDERS:
             accepted_source_keys = {
                 source_key
-                for model in models_by_provider[provider]
+                for model in models_by_provider[catalog_provider]
                 for source_key in model.source_keys
             }
-            provider_stats[provider].raw_candidate_count = len(
-                provider_stats[provider].raw_candidate_ids
+            provider_stats[catalog_provider].raw_candidate_count = len(
+                provider_stats[catalog_provider].raw_candidate_ids
             )
-            provider_stats[provider].filtered_count = len(provider_stats[provider].filtered_ids)
-            provider_stats[provider].suspected_filtered_ids = [
+            provider_stats[catalog_provider].filtered_count = len(
+                provider_stats[catalog_provider].filtered_ids
+            )
+            provider_stats[catalog_provider].suspected_filtered_ids = [
                 model_id
-                for model_id in provider_stats[provider].raw_candidate_ids
+                for model_id in provider_stats[catalog_provider].raw_candidate_ids
                 if model_id not in accepted_source_keys
             ]
 
@@ -749,7 +754,7 @@ class LiteLLMModelCatalogService:
             provider_stats=self._build_empty_provider_stats(),
         )
 
-    def _map_provider(self, raw_provider: Any) -> Literal["openai", "google", "anthropic"] | None:
+    def _map_provider(self, raw_provider: Any) -> CatalogProvider | None:
         """Map LiteLLM provider names to Ternion provider names.
 
         Returns ``None`` for unsupported providers so the entry can be skipped.

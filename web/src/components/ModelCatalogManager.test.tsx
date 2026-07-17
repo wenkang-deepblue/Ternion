@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Config, ModelsData } from '../api/client';
-import { getTranslations } from '../i18n';
+import ZH from '../locales/zh';
 import { ModelCatalogManager } from './ModelCatalogManager';
 import { ToastContext } from './toastContext';
 
@@ -70,7 +70,7 @@ function buildModelsData(): ModelsData {
 }
 
 function renderModelCatalogManager(config: Config = buildConfig()) {
-  const t = getTranslations('zh');
+  const t = ZH;
   const showToast = vi.fn();
 
   render(

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
+
+from ternion import __license__, __version__
 
 
 def load_pyproject() -> dict[str, object]:
@@ -16,6 +19,21 @@ def load_gitignore() -> str:
     """Load the repository gitignore file."""
     gitignore_path = Path(__file__).resolve().parents[1] / ".gitignore"
     return gitignore_path.read_text(encoding="utf-8")
+
+
+def load_web_package() -> dict[str, object]:
+    """Load the frontend package metadata."""
+    package_path = Path(__file__).resolve().parents[1] / "web" / "package.json"
+    return json.loads(package_path.read_text(encoding="utf-8"))
+
+
+def test_release_metadata_is_aligned() -> None:
+    """Verifies that backend and frontend release metadata cannot drift."""
+    project = load_pyproject()["project"]
+    web_package = load_web_package()
+
+    assert project["version"] == __version__ == web_package["version"]
+    assert project["license"]["text"] == __license__ == web_package["license"]
 
 
 def test_wheel_includes_web_static_artifacts() -> None:

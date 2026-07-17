@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../api/client';
 import type { Config, ModelsData } from '../api/client';
-import { getTranslations } from '../i18n';
+import type { Language, Translations } from '../i18n';
+import DE from '../locales/de';
+import EN from '../locales/en';
+import ES from '../locales/es';
+import FR from '../locales/fr';
+import JA from '../locales/ja';
+import KO from '../locales/ko';
+import ZH from '../locales/zh';
 import { RoleModelConfig } from './RoleModelConfig';
 import { ToastContext } from './toastContext';
 
@@ -14,6 +21,16 @@ const mockApi = vi.hoisted(() => ({
   updateConfig: vi.fn(),
   refreshModels: vi.fn(),
 }));
+
+const TEST_TRANSLATIONS: Record<Language, Translations> = {
+  en: EN,
+  zh: ZH,
+  es: ES,
+  fr: FR,
+  de: DE,
+  ja: JA,
+  ko: KO,
+};
 
 vi.mock('../api/client', async () => {
   const actual = await vi.importActual<typeof import('../api/client')>('../api/client');
@@ -117,7 +134,7 @@ function renderRoleModelConfig(
   } = {}
 ) {
   const language = overrides.language || 'zh';
-  const t = getTranslations(language);
+  const t = TEST_TRANSLATIONS[language];
   const showToast = vi.fn();
   const onConfigUpdate = overrides.onConfigUpdate || vi.fn();
   const onModelsReload = overrides.onModelsReload || vi.fn();
@@ -462,7 +479,7 @@ describe('RoleModelConfig', () => {
 
     renderRoleModelConfig({ config });
 
-    const heading = await screen.findByText(getTranslations('zh').ternionAName);
+    const heading = await screen.findByText(ZH.ternionAName);
     const card = heading.closest('[class*="rounded-lg"]')!;
     const selects = within(card as HTMLElement).getAllByRole('combobox');
     const providerSelect = selects[0] as HTMLSelectElement;
@@ -481,7 +498,7 @@ describe('RoleModelConfig', () => {
   it('disables writer and reviewer selects under cursor_handoff mode', async () => {
     renderRoleModelConfig({ executionMode: 'cursor_handoff' });
 
-    const t = getTranslations('zh');
+    const t = ZH;
     const writerHeading = await screen.findByText(t.writerName);
     const writerCard = writerHeading.closest('[class*="rounded-lg"]')!;
     const writerSelects = within(writerCard as HTMLElement).getAllByRole('combobox');

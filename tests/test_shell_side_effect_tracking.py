@@ -171,13 +171,11 @@ async def test_execution_followup_streaming_pending_tool_calls_does_not_crash() 
         mock_config_store.load.return_value = mock_user_config
         mock_session_store.update_session.return_value = session
         mock_tool_policy.side_effect = lambda **kwargs: (kwargs["tool_calls"], None)
-        mock_deliverable_policy.side_effect = (
-            lambda **kwargs: (
-                kwargs["tool_calls"],
-                None,
-                None,
-                None,
-            )
+        mock_deliverable_policy.side_effect = lambda **kwargs: (
+            kwargs["tool_calls"],
+            None,
+            None,
+            None,
         )
         mock_baseline.return_value = ({}, [])
         mock_pre_git.return_value = {}
