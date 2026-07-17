@@ -1727,7 +1727,7 @@ def _render_cached_evidence_for_prompt(records: list[dict[str, Any]]) -> str:
     return EvidenceRepository(items=selected).render_bundle() if selected else ""
 
 
-def _load_workspace_evidence_cache(
+async def _load_workspace_evidence_cache(
     state: TernionState,
     *,
     phase: str,
@@ -1735,7 +1735,8 @@ def _load_workspace_evidence_cache(
 ) -> tuple[EvidenceRepository, str]:
     """Load locally revalidated workspace evidence without blocking the workflow."""
     try:
-        lookup = workspace_evidence_cache.load_records(
+        lookup = await asyncio.to_thread(
+            workspace_evidence_cache.load_records,
             workspace_root=str(state.get("workspace_root") or ""),
             local_workspace_root=str(state.get("local_workspace_root") or ""),
             workspace_path_style=str(state.get("workspace_path_style") or ""),
@@ -1763,7 +1764,7 @@ def _load_workspace_evidence_cache(
     return repository, _render_cached_evidence_for_prompt(lookup.records)
 
 
-def _store_workspace_evidence_cache(
+async def _store_workspace_evidence_cache(
     state: TernionState,
     repository: EvidenceRepository,
     *,
@@ -1771,7 +1772,8 @@ def _store_workspace_evidence_cache(
 ) -> None:
     """Best-effort persistence for locally verified evidence records."""
     try:
-        updated_paths = workspace_evidence_cache.store_records(
+        updated_paths = await asyncio.to_thread(
+            workspace_evidence_cache.store_records,
             workspace_root=str(state.get("workspace_root") or ""),
             local_workspace_root=str(state.get("local_workspace_root") or ""),
             workspace_path_style=str(state.get("workspace_path_style") or ""),
@@ -2160,7 +2162,7 @@ async def evidence_node(state: TernionState) -> TernionState:
     messages: list[ChatMessage] = [
         ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
     ]
-    _cached_repository, cached_prompt_bundle = _load_workspace_evidence_cache(
+    _cached_repository, cached_prompt_bundle = await _load_workspace_evidence_cache(
         state,
         phase="evidence",
     )
@@ -2292,7 +2294,7 @@ async def evidence_node(state: TernionState) -> TernionState:
             evidence_bundle=evidence_bundle,
             evidence_gaps=evidence_gaps,
         )
-        _store_workspace_evidence_cache(state, evidence_repo, phase="evidence")
+        await _store_workspace_evidence_cache(state, evidence_repo, phase="evidence")
         cleaned_history = _filter_conversation_history_for_analysis(history)
         return {
             **state,
@@ -2983,7 +2985,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         for request in parsed_requests
         if (cache_target := _cache_request_target(request)) is not None
     }
-    cached_repository, _cached_prompt_bundle = _load_workspace_evidence_cache(
+    cached_repository, _cached_prompt_bundle = await _load_workspace_evidence_cache(
         state,
         phase="report_evidence",
         paths=requested_cache_paths or None,
@@ -3098,7 +3100,11 @@ async def report_evidence_node(state: TernionState) -> TernionState:
             # overlapping/adjacent ranges consolidate (lossless).
             evidence_repo.merge_items(mined_items)
             updated_bundle = evidence_repo.render_bundle()
-            _store_workspace_evidence_cache(state, evidence_repo, phase="report_evidence")
+            await _store_workspace_evidence_cache(
+                state,
+                evidence_repo,
+                phase="report_evidence",
+            )
 
     deterministic_tool_calls: list[dict[str, Any]] = []
     if deterministic_targets:
@@ -3226,7 +3232,7 @@ async def report_evidence_node(state: TernionState) -> TernionState:
                     "thinking_logs": thinking_logs,
                 }
 
-    _cache_reconciled_gaps, cache_chain_index = reconcile_evidence_chain(
+    cache_reconciled_gaps, cache_chain_index = reconcile_evidence_chain(
         evidence_bundle=updated_bundle,
         evidence_gaps=state.get("evidence_gaps") or "",
         evidence_requests=evidence_requests,
@@ -3262,18 +3268,15 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         effective_evidence_requests = canonicalize_evidence_requests_text("")
 
     if all_requests_satisfied and not deterministic_tool_calls:
-        reconciled_gaps, evidence_chain_index = reconcile_evidence_chain(
-            evidence_bundle=updated_bundle,
-            evidence_gaps=state.get("evidence_gaps") or "",
-            evidence_requests=evidence_requests,
-        )
+        # A cache-only completion adds request-scoped PURPOSE metadata to this
+        # session, but collects no new evidence that warrants a persistent rewrite.
         return {
             **state,
             "current_phase": next_phase,
             "evidence_bundle": updated_bundle,
             "evidence_items": evidence_repo.to_records(),
-            "evidence_gaps": reconciled_gaps,
-            "evidence_chain_index": evidence_chain_index,
+            "evidence_gaps": cache_reconciled_gaps,
+            "evidence_chain_index": cache_chain_index,
             "conversation_history": _filter_conversation_history_for_analysis(
                 state.get("conversation_history", [])
             ),
@@ -3508,7 +3511,11 @@ async def report_evidence_node(state: TernionState) -> TernionState:
         evidence_repo.merge_bundle_text(new_bundle)
         updated_bundle = evidence_repo.render_bundle()
         _warn_if_bundle_over_soft_cap(updated_bundle, phase="report_evidence")
-        _store_workspace_evidence_cache(state, evidence_repo, phase="report_evidence")
+        await _store_workspace_evidence_cache(
+            state,
+            evidence_repo,
+            phase="report_evidence",
+        )
 
         # Preserve previous phase gaps when merging new ones.
         if new_gaps and "- None" not in new_gaps:

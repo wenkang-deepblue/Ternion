@@ -106,6 +106,65 @@ async def test_phase_zero_receives_revalidated_cross_session_evidence(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_phase_zero_persists_finalized_evidence_for_later_sessions(tmp_path: Path) -> None:
+    from ternion.workflow.nodes import evidence_node
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "foo.py").write_text("alpha\nbeta\n", encoding="utf-8")
+    cache = WorkspaceEvidenceCache(cache_dir=tmp_path / "cache")
+    adapter = AsyncMock()
+    adapter.name = "openai"
+    adapter.supports_native_tool_calls = True
+    adapter.chat_completion.return_value = MagicMock(
+        content=(
+            "EVIDENCE_BUNDLE:\n"
+            "- [FILE_EXCERPT] path=foo.py | lines=1-2\n"
+            "  PURPOSE: Persist finalized Phase 0 evidence.\n"
+            "  EXCERPT_BEGIN\n"
+            "  alpha\n"
+            "  beta\n"
+            "  EXCERPT_END\n\n"
+            "EVIDENCE_GAPS:\n"
+            "- None"
+        ),
+        tool_calls=None,
+        usage={},
+    )
+    state = {
+        "conversation_history": [{"role": "user", "content": "Inspect foo.py"}],
+        "session_id": "current-session",
+        "workspace_root": str(workspace),
+        "local_workspace_root": str(workspace),
+        "workspace_path_style": "posix",
+        "cursor_tools": [{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+        "cursor_tool_choice": "auto",
+        "thinking_logs": [],
+        "errors": [],
+    }
+
+    with (
+        patch("ternion.workflow.nodes.workspace_evidence_cache", cache),
+        patch("ternion.workflow.nodes.config_store") as mock_config_store,
+        patch("ternion.workflow.nodes.provider_manager") as mock_provider_manager,
+    ):
+        mock_config_store.get_role_config.return_value = RoleConfig(
+            provider="openai", model="gpt-test"
+        )
+        mock_provider_manager.get_provider_for_role.return_value = adapter
+        await evidence_node(state)
+
+    lookup = cache.load_records(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+    )
+    repository = EvidenceRepository.from_records(lookup.records)
+    assert lookup.hit_paths == ("foo.py",)
+    assert len(repository.items) == 1
+    assert repository.items[0].purpose == "Persist finalized Phase 0 evidence."
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "evidence_request",
     [
@@ -157,6 +216,13 @@ async def test_phase_one_five_cache_hit_skips_tool_and_provider_rounds(
     assert "Verify requested lines." in result["evidence_bundle"] or (
         "Verify the complete file." in result["evidence_bundle"]
     )
+    cached_repository = EvidenceRepository.from_records(
+        cache.load_records(
+            workspace_root=str(workspace),
+            local_workspace_root=str(workspace),
+        ).records
+    )
+    assert cached_repository.items[0].purpose == "Prior verified purpose."
     mock_provider_manager.get_provider_for_role.assert_not_called()
 
 

@@ -6,6 +6,7 @@ import gzip
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 from ternion.core.evidence_cache import WorkspaceEvidenceCache
 from ternion.utils.evidence_repository import EvidenceRepository, build_evidence_item
@@ -170,6 +171,109 @@ def test_same_content_hash_accumulates_verified_ranges(tmp_path: Path) -> None:
     assert repository.items[0].lines == "1-2"
     assert repository.items[0].excerpt == "alpha\nbeta"
     assert repository.items[0].purpose == "First range. / Second range."
+
+
+def test_lookup_file_cap_returns_only_newest_verified_entries(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for name in ("a.py", "b.py", "c.py"):
+        (workspace / name).write_text(f"{name}\n", encoding="utf-8")
+    cache = WorkspaceEvidenceCache(cache_dir=tmp_path / "cache")
+    with patch(
+        "ternion.core.evidence_cache._now_iso_z",
+        side_effect=[
+            "2026-07-17T00:00:01Z",
+            "2026-07-17T00:00:02Z",
+            "2026-07-17T00:00:03Z",
+        ],
+    ):
+        cache.store_records(
+            workspace_root=str(workspace),
+            local_workspace_root=str(workspace),
+            records=[
+                *_records("a.py", lines="1-1", excerpt="a.py"),
+                *_records("b.py", lines="1-1", excerpt="b.py"),
+                *_records("c.py", lines="1-1", excerpt="c.py"),
+            ],
+        )
+
+    lookup = cache.load_records(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+        max_files=2,
+    )
+
+    assert lookup.hit_paths == ("c.py", "b.py")
+    assert {item.path for item in EvidenceRepository.from_records(lookup.records).items} == {
+        "b.py",
+        "c.py",
+    }
+
+
+def test_workspace_file_cap_prunes_oldest_entries(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for name in ("a.py", "b.py", "c.py"):
+        (workspace / name).write_text(f"{name}\n", encoding="utf-8")
+    cache = WorkspaceEvidenceCache(
+        cache_dir=tmp_path / "cache",
+        max_workspace_files=2,
+    )
+    with patch(
+        "ternion.core.evidence_cache._now_iso_z",
+        side_effect=[
+            "2026-07-17T00:00:01Z",
+            "2026-07-17T00:00:02Z",
+            "2026-07-17T00:00:03Z",
+        ],
+    ):
+        cache.store_records(
+            workspace_root=str(workspace),
+            local_workspace_root=str(workspace),
+            records=[
+                *_records("a.py", lines="1-1", excerpt="a.py"),
+                *_records("b.py", lines="1-1", excerpt="b.py"),
+                *_records("c.py", lines="1-1", excerpt="c.py"),
+            ],
+        )
+
+    lookup = cache.load_records(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+    )
+    pruned = cache.load_records(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+        paths={"a.py"},
+    )
+
+    assert lookup.hit_paths == ("c.py", "b.py")
+    assert pruned.records == []
+
+
+def test_oversized_file_is_not_cached(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "large.py").write_text("too-large\n", encoding="utf-8")
+    cache = WorkspaceEvidenceCache(
+        cache_dir=tmp_path / "cache",
+        max_cacheable_file_bytes=4,
+    )
+
+    updated = cache.store_records(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+        records=_records("large.py", lines="1-1", excerpt="too-large"),
+    )
+
+    assert updated == 0
+    assert (
+        cache.load_records(
+            workspace_root=str(workspace),
+            local_workspace_root=str(workspace),
+        ).records
+        == []
+    )
 
 
 def test_explicit_path_and_workspace_invalidation(tmp_path: Path) -> None:

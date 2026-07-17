@@ -6556,7 +6556,6 @@ async def _execution_followup_turn(
                 workspace_root=workspace_root,
                 workspace_path_style=workspace_path_style,
             )
-        if canonical_tool in _MUTATING_TOOL_NAMES:
             target = _extract_mutation_target_path(tool_name or "", tool_args or "{}")
             normalized = _normalize_file_path(
                 target or "",
