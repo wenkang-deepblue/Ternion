@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from ternion.core.budget import budget_manager
 from ternion.core.config_store import config_store
 from ternion.core.deliverable_policy import DeliverableType, resolve_deliverable_policy
+from ternion.core.evidence_cache import workspace_evidence_cache
 from ternion.core.exceptions import RuntimeModelUnavailableError
 from ternion.core.intent_classifier import (
     Intent,
@@ -1443,6 +1444,66 @@ def _extract_apply_patch_target_path(patch_text: str) -> str | None:
         if s.startswith("*** Add File:"):
             return s[len("*** Add File:") :].strip() or None
     return None
+
+
+def _invalidate_workspace_evidence_after_tool_result(
+    *,
+    canonical_tool: str,
+    tool_name: str,
+    tool_arguments: str,
+    workspace_root: str,
+    workspace_path_style: str,
+    shell_may_write: bool = False,
+) -> None:
+    """Invalidate cross-session evidence after an observed write-capable tool result."""
+    if not workspace_root:
+        return
+    try:
+        if canonical_tool in _MUTATING_TOOL_NAMES:
+            target = _extract_mutation_target_path(tool_name, tool_arguments)
+            if target:
+                removed = workspace_evidence_cache.invalidate_paths(
+                    workspace_root=workspace_root,
+                    workspace_path_style=workspace_path_style,
+                    paths=[target],
+                )
+                if removed:
+                    log_manager.emit(
+                        level="INFO",
+                        category="MEMORY",
+                        message=(
+                            f"workspace_evidence_cache_invalidated | scope=path | entries={removed}"
+                        ),
+                    )
+                return
+            removed = workspace_evidence_cache.invalidate_workspace(
+                workspace_root=workspace_root,
+                workspace_path_style=workspace_path_style,
+            )
+            if removed:
+                log_manager.emit(
+                    level="INFO",
+                    category="MEMORY",
+                    message="workspace_evidence_cache_invalidated | scope=workspace",
+                )
+            return
+        if canonical_tool == "shell" and shell_may_write:
+            removed = workspace_evidence_cache.invalidate_workspace(
+                workspace_root=workspace_root,
+                workspace_path_style=workspace_path_style,
+            )
+            if removed:
+                log_manager.emit(
+                    level="INFO",
+                    category="MEMORY",
+                    message="workspace_evidence_cache_invalidated | scope=workspace",
+                )
+    except Exception as exc:
+        logger.warning(
+            "workspace_evidence_cache_invalidation_failed",
+            tool=tool_name,
+            error=str(exc),
+        )
 
 
 def _extract_shell_command(arguments_json: str) -> str | None:
@@ -6488,6 +6549,14 @@ async def _execution_followup_turn(
         meta["source_ref"] = tool_result_msg.tool_call_id
         canonical_tool = re.sub(r"[^a-z0-9]+", "", (tool_name or "").strip().lower())
         if canonical_tool in _MUTATING_TOOL_NAMES:
+            _invalidate_workspace_evidence_after_tool_result(
+                canonical_tool=canonical_tool,
+                tool_name=tool_name or "",
+                tool_arguments=tool_args or "{}",
+                workspace_root=workspace_root,
+                workspace_path_style=workspace_path_style,
+            )
+        if canonical_tool in _MUTATING_TOOL_NAMES:
             target = _extract_mutation_target_path(tool_name or "", tool_args or "{}")
             normalized = _normalize_file_path(
                 target or "",
@@ -6546,6 +6615,15 @@ async def _execution_followup_turn(
             )
             role = "optimizer" if phase == "optimizer" else "writer"
             shell_may_write = _shell_command_may_write(shell_command)
+            if shell_may_write:
+                _invalidate_workspace_evidence_after_tool_result(
+                    canonical_tool=canonical_tool,
+                    tool_name=tool_name or "",
+                    tool_arguments=tool_args or "{}",
+                    workspace_root=workspace_root,
+                    workspace_path_style=workspace_path_style,
+                    shell_may_write=True,
+                )
 
             dirty_before_count = 0
             dirty_after_count = 0
