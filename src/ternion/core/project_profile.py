@@ -8,31 +8,31 @@ observations are removed, and the rendered profile contains no file excerpts.
 
 from __future__ import annotations
 
-import contextlib
-import gzip
 import hashlib
-import json
-import os
 import re
-import tempfile
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from ternion.core.workspace_memory import (
+    ensure_private_directory,
+    evidence_item_matches_file,
+    load_workspace_manifest,
+    now_iso_z,
+    read_current_workspace_file,
+    relative_workspace_path,
+    save_workspace_manifest,
+    workspace_identity,
+)
 from ternion.utils.evidence_chain import EvidenceItem
 from ternion.utils.evidence_repository import EvidenceRepository
 from ternion.utils.report_parser import parse_structured_report
-from ternion.utils.workspace_paths import (
-    normalize_declared_workspace_path,
-    normalize_local_file_path,
-    workspace_relative_path,
-)
 
 logger = structlog.get_logger(__name__)
+_now_iso_z = now_iso_z
 
 PROJECT_PROFILE_VERSION = 1
 DEFAULT_PROJECT_PROFILE_DIR = Path.home() / ".ternion" / "project_profiles"
@@ -41,7 +41,6 @@ DEFAULT_MAX_PROFILE_SOURCES = 12
 DEFAULT_MAX_PROFILE_OBSERVATIONS = 3
 DEFAULT_MAX_PROFILE_PROMPT_CHARS = 5_000
 
-_NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _ENTRYPOINT_NAMES = {
     "__main__.py",
@@ -71,16 +70,6 @@ class ProjectProfileLookup:
     skipped_reason: str = ""
 
 
-@dataclass(frozen=True)
-class _CurrentFile:
-    """Current local file state used to validate profile sources."""
-
-    content_hash: str
-    size: int
-    mtime_ns: int
-    lines: list[str]
-
-
 class WorkspaceProjectProfile:
     """Persist a small, current workspace map for evidence discovery."""
 
@@ -108,7 +97,7 @@ class WorkspaceProjectProfile:
         self.max_observations = max(1, int(max_observations))
         self.max_prompt_chars = max(500, int(max_prompt_chars))
         self._lock = threading.RLock()
-        self._ensure_dir()
+        ensure_private_directory(self.profile_dir)
 
     def load_profile(
         self,
@@ -127,7 +116,7 @@ class WorkspaceProjectProfile:
         Returns:
             A bounded navigation prompt and validation diagnostics.
         """
-        identity = self._workspace_identity(workspace_root, workspace_path_style)
+        identity = workspace_identity(workspace_root, workspace_path_style)
         if not identity:
             return ProjectProfileLookup(skipped_reason="workspace_unresolved")
         if not str(local_workspace_root or "").strip():
@@ -192,7 +181,7 @@ class WorkspaceProjectProfile:
         Returns:
             True when a current profile observation was persisted.
         """
-        identity = self._workspace_identity(workspace_root, workspace_path_style)
+        identity = workspace_identity(workspace_root, workspace_path_style)
         summary = _summarize_report(report)
         if (
             not identity
@@ -261,14 +250,14 @@ class WorkspaceProjectProfile:
         paths: list[str],
     ) -> int:
         """Remove observations that depend on files changed by a tool result."""
-        identity = self._workspace_identity(workspace_root, workspace_path_style)
+        identity = workspace_identity(workspace_root, workspace_path_style)
         if not identity or not paths:
             return 0
         targets = {
             relative
             for raw_path in paths
             if (
-                relative := self._relative_path(
+                relative := relative_workspace_path(
                     raw_path,
                     workspace_root=workspace_root,
                     workspace_path_style=workspace_path_style,
@@ -308,7 +297,7 @@ class WorkspaceProjectProfile:
         workspace_path_style: str = "",
     ) -> bool:
         """Remove the complete navigation profile for a workspace."""
-        identity = self._workspace_identity(workspace_root, workspace_path_style)
+        identity = workspace_identity(workspace_root, workspace_path_style)
         if not identity:
             return False
         with self._lock:
@@ -325,7 +314,7 @@ class WorkspaceProjectProfile:
         repository = EvidenceRepository.from_records(evidence_records)
         grouped: dict[str, list[EvidenceItem]] = {}
         for item in repository.items:
-            relative = self._relative_path(
+            relative = relative_workspace_path(
                 item.path,
                 workspace_root=workspace_root,
                 workspace_path_style=workspace_path_style,
@@ -335,15 +324,16 @@ class WorkspaceProjectProfile:
 
         sources: dict[str, dict[str, Any]] = {}
         for relative_path, items in grouped.items():
-            current = self._read_current_file(
+            current = read_current_workspace_file(
                 relative_path,
                 workspace_root=workspace_root,
                 local_workspace_root=local_workspace_root,
                 workspace_path_style=workspace_path_style,
+                max_file_bytes=self.max_source_file_bytes,
             )
             if current is None:
                 continue
-            verified = [item for item in items if _item_matches_file(item, current.lines)]
+            verified = [item for item in items if evidence_item_matches_file(item, current.lines)]
             if not verified:
                 continue
             purposes = _merge_purposes(item.purpose for item in verified)
@@ -373,11 +363,12 @@ class WorkspaceProjectProfile:
             if not isinstance(entry, dict):
                 changed = True
                 continue
-            current = self._read_current_file(
+            current = read_current_workspace_file(
                 relative_path,
                 workspace_root=workspace_root,
                 local_workspace_root=local_workspace_root,
                 workspace_path_style=workspace_path_style,
+                max_file_bytes=self.max_source_file_bytes,
             )
             if current is None or current.content_hash != str(entry.get("content_hash") or ""):
                 stale_paths.append(relative_path)
@@ -409,75 +400,27 @@ class WorkspaceProjectProfile:
             changed = True
         return manifest, stale_paths, changed
 
-    def _read_current_file(
-        self,
-        relative_path: str,
-        *,
-        workspace_root: str,
-        local_workspace_root: str,
-        workspace_path_style: str,
-    ) -> _CurrentFile | None:
-        local_path = normalize_local_file_path(
-            relative_path,
-            workspace_root=workspace_root,
-            workspace_path_style=workspace_path_style,
-            local_workspace_root=local_workspace_root,
-        )
-        if not local_path:
-            return None
-        path = Path(local_path)
-        try:
-            stat = path.stat()
-            if not path.is_file() or stat.st_size > self.max_source_file_bytes:
-                return None
-            data = path.read_bytes()
-        except OSError:
-            return None
-        return _CurrentFile(
-            content_hash=hashlib.sha256(data).hexdigest(),
-            size=len(data),
-            mtime_ns=stat.st_mtime_ns,
-            lines=data.decode("utf-8", errors="replace").splitlines(),
-        )
-
     def _render_profile(self, manifest: dict[str, Any]) -> str:
         sources = list(manifest["sources"].values())
         observations = list(reversed(manifest["observations"]))
         while True:
-            rendered = _render_profile_text(sources, observations)
+            referenced_paths = {
+                path for item in observations for path in _observation_source_paths(item)
+            }
+            visible_sources = [
+                item for item in sources if str(item.get("path") or "") in referenced_paths
+            ]
+            rendered = _render_profile_text(visible_sources, observations)
             if len(rendered) <= self.max_prompt_chars:
                 return rendered
             if len(observations) > 1:
                 observations.pop()
                 continue
-            if len(sources) > 3:
-                sources.pop()
+            if len(visible_sources) > 3:
+                visible_path = str(visible_sources[-1].get("path") or "")
+                sources = [item for item in sources if str(item.get("path") or "") != visible_path]
                 continue
             return rendered[: self.max_prompt_chars].rstrip()
-
-    def _workspace_identity(self, workspace_root: str, workspace_path_style: str) -> str:
-        normalized, detected_style = normalize_declared_workspace_path(workspace_root)
-        style = str(workspace_path_style or detected_style or "")
-        if not normalized or not style:
-            return ""
-        identity_path = normalized.lower() if style == "windows" else normalized
-        return hashlib.sha256(f"{style}\n{identity_path}".encode()).hexdigest()[:24]
-
-    @staticmethod
-    def _relative_path(
-        path: str,
-        *,
-        workspace_root: str,
-        workspace_path_style: str,
-    ) -> str:
-        relative = workspace_relative_path(
-            str(path or ""),
-            workspace_root=workspace_root,
-            workspace_path_style=workspace_path_style,
-        )
-        if relative is None or relative == "":
-            return ""
-        return relative.replace("\\", "/")
 
     def _profile_path(self, identity: str) -> Path:
         return self.profile_dir / f"{identity}.json.gz"
@@ -493,51 +436,18 @@ class WorkspaceProjectProfile:
         }
 
     def _load_manifest(self, path: Path, identity: str) -> dict[str, Any]:
-        if not path.exists():
-            return self._new_manifest(identity)
-        try:
-            with gzip.open(path, "rt", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except (OSError, ValueError, TypeError) as exc:
-            logger.warning(
-                "workspace_project_profile_load_failed",
-                workspace_hash=identity,
-                error=str(exc),
-            )
-            return self._new_manifest(identity)
-        if not isinstance(payload, dict):
-            return self._new_manifest(identity)
-        if payload.get("version") != PROJECT_PROFILE_VERSION:
-            return self._new_manifest(identity)
-        if payload.get("workspace_hash") != identity:
-            return self._new_manifest(identity)
-        if not isinstance(payload.get("sources"), dict):
-            payload["sources"] = {}
-        if not isinstance(payload.get("observations"), list):
-            payload["observations"] = []
-        return payload
+        return load_workspace_manifest(
+            path,
+            identity=identity,
+            version=PROJECT_PROFILE_VERSION,
+            new_manifest=self._new_manifest,
+            collection_defaults={"sources": dict, "observations": list},
+            logger=logger,
+            failure_event="workspace_project_profile_load_failed",
+        )
 
     def _save_manifest(self, path: Path, manifest: dict[str, Any]) -> None:
-        self._ensure_dir()
-        data = gzip.compress(
-            json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"),
-            compresslevel=6,
-        )
-        fd, temp_path = tempfile.mkstemp(dir=self.profile_dir, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-            os.chmod(temp_path, 0o600)
-            os.replace(temp_path, path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.unlink(temp_path)
-            raise
-
-    def _ensure_dir(self) -> None:
-        self.profile_dir.mkdir(parents=True, exist_ok=True)
-        with contextlib.suppress(OSError):
-            os.chmod(self.profile_dir, 0o700)
+        save_workspace_manifest(path, manifest)
 
     @staticmethod
     def _drop_unreferenced_sources(manifest: dict[str, Any]) -> None:
@@ -568,31 +478,6 @@ class WorkspaceProjectProfile:
             )
             return False
         return True
-
-
-def _item_matches_file(item: EvidenceItem, file_lines: list[str]) -> bool:
-    if item.line_range is None:
-        return item.excerpt.splitlines() == file_lines
-    start, end = item.line_range
-    if start < 1 or end < start or end > len(file_lines):
-        return False
-    excerpt_lines = item.excerpt.splitlines()
-    if len(excerpt_lines) != end - start + 1:
-        return False
-    numbered_matches = [_NUMBERED_LINE_RE.match(line) for line in excerpt_lines]
-    if all(match is not None for match in numbered_matches):
-        for expected_number, match, source_line in zip(
-            range(start, end + 1),
-            numbered_matches,
-            file_lines[start - 1 : end],
-            strict=True,
-        ):
-            if match is None:
-                return False
-            if int(match.group(1)) != expected_number or match.group(2) != source_line:
-                return False
-        return True
-    return excerpt_lines == file_lines[start - 1 : end]
 
 
 def _summarize_report(report: str) -> str:
@@ -651,15 +536,20 @@ def _render_profile_text(
     sources: list[dict[str, Any]],
     observations: list[dict[str, Any]],
 ) -> str:
-    paths = [str(item.get("path") or "") for item in sources if item.get("path")]
+    purpose_by_path = {
+        str(item.get("path") or ""): str(item.get("purpose") or "")
+        for item in sources
+        if item.get("path")
+    }
+    paths = list(purpose_by_path)
+    visible_paths = set(paths)
     directories = sorted({str(Path(path).parent).replace("\\", "/") or "." for path in paths})
     entrypoints = [
         path
         for path in paths
         if Path(path).name.lower() in _ENTRYPOINT_NAMES
         or any(
-            term
-            in str(next((s.get("purpose") for s in sources if s.get("path") == path), "")).lower()
+            term in purpose_by_path[path].lower()
             for term in ("entrypoint", "entry point", "startup", "bootstrap", "routing")
         )
     ]
@@ -680,15 +570,13 @@ def _render_profile_text(
     for item in observations:
         query = str(item.get("query") or "")
         summary = str(item.get("summary") or "")
-        source_paths = ", ".join(_observation_source_paths(item))
+        source_paths = ", ".join(
+            path for path in _observation_source_paths(item) if path in visible_paths
+        )
         lines.append(f"- query={query or '(not recorded)'}")
         lines.append(f"  prior_orientation={summary}")
         lines.append(f"  current_source_paths={source_paths}")
     return "\n".join(lines).strip()
-
-
-def _now_iso_z() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 workspace_project_profile = WorkspaceProjectProfile()

@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 
-from ternion.core.project_profile import WorkspaceProjectProfile
+from ternion.core.project_profile import WorkspaceProjectProfile, _render_profile_text
 from ternion.utils.evidence_repository import EvidenceRepository, build_evidence_item
 
 REPORT = """## Root Cause
@@ -304,3 +304,75 @@ def test_rendered_profile_is_bounded(tmp_path: Path) -> None:
         local_workspace_root=str(workspace),
     )
     assert 0 < len(lookup.prompt) <= 700
+
+
+def test_corrupt_manifest_falls_back_closed_and_can_be_replaced(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    profile_dir = tmp_path / "profiles"
+    profile = WorkspaceProjectProfile(profile_dir=profile_dir)
+    assert profile.store_profile(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+        evidence_records=_profile_records(),
+        report=REPORT,
+    )
+    manifest_path = next(profile_dir.glob("*.json.gz"))
+    manifest_path.write_bytes(b"not-a-gzip-manifest")
+
+    lookup = profile.load_profile(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+    )
+
+    assert lookup.prompt == ""
+    assert lookup.observation_count == 0
+    assert lookup.skipped_reason == "no_current_observations"
+    assert profile.store_profile(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+        evidence_records=_profile_records(),
+        report=REPORT,
+    )
+    assert (
+        profile.load_profile(
+            workspace_root=str(workspace),
+            local_workspace_root=str(workspace),
+        ).observation_count
+        == 1
+    )
+
+
+def test_prompt_truncation_does_not_reference_omitted_sources(tmp_path: Path) -> None:
+    sources = [
+        {
+            "path": f"src/module_{index}.py",
+            "purpose": f"Module {index} purpose " + ("x" * 160),
+        }
+        for index in range(4)
+    ]
+    source_paths = [str(item["path"]) for item in sources]
+    observations = [
+        {
+            "query": "Inspect modules",
+            "summary": "Prior navigation orientation.",
+            "source_paths": source_paths,
+        }
+    ]
+    full_render = _render_profile_text(sources, observations)
+    reduced_render = _render_profile_text(sources[:-1], observations)
+    assert len(full_render) > len(reduced_render) >= 500
+    profile = WorkspaceProjectProfile(
+        profile_dir=tmp_path / "profiles",
+        max_prompt_chars=len(reduced_render),
+    )
+
+    rendered = profile._render_profile(  # noqa: SLF001
+        {
+            "sources": {str(item["path"]): item for item in sources},
+            "observations": observations,
+        }
+    )
+
+    assert "current_source_paths=" in rendered
+    assert "src/module_3.py" not in rendered
+    assert "src/module_0.py, src/module_1.py, src/module_2.py" in rendered

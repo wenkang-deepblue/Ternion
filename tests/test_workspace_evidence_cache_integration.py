@@ -283,12 +283,16 @@ async def test_phase_one_five_injects_only_request_relevant_cached_ranges(
     mock_provider_manager.get_provider_for_role.assert_not_called()
 
 
-def test_mutation_results_invalidate_path_and_write_capable_shell_invalidates_workspace() -> None:
+@pytest.mark.asyncio
+async def test_mutation_invalidates_path_and_write_capable_shell_invalidates_workspace() -> None:
     from ternion.server.routes import _invalidate_workspace_evidence_after_tool_result
 
-    with patch("ternion.server.routes.workspace_evidence_cache") as cache:
+    with (
+        patch("ternion.server.routes.workspace_evidence_cache") as cache,
+        patch("ternion.server.routes.workspace_project_profile") as project_profile,
+    ):
         cache.invalidate_paths.return_value = 1
-        _invalidate_workspace_evidence_after_tool_result(
+        await _invalidate_workspace_evidence_after_tool_result(
             canonical_tool="write",
             tool_name="Write",
             tool_arguments='{"path":"src/app.py"}',
@@ -301,7 +305,7 @@ def test_mutation_results_invalidate_path_and_write_capable_shell_invalidates_wo
             paths=["src/app.py"],
         )
 
-        _invalidate_workspace_evidence_after_tool_result(
+        await _invalidate_workspace_evidence_after_tool_result(
             canonical_tool="shell",
             tool_name="Shell",
             tool_arguments='{"command":"ruff format src"}',
@@ -313,3 +317,5 @@ def test_mutation_results_invalidate_path_and_write_capable_shell_invalidates_wo
             workspace_root="/repo",
             workspace_path_style="posix",
         )
+        project_profile.invalidate_paths.assert_called_once()
+        project_profile.invalidate_workspace.assert_called_once()

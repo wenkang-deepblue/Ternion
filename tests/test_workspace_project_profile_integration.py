@@ -194,7 +194,8 @@ async def test_convergence_persists_current_profile_for_later_sessions(tmp_path:
     assert "current application entrypoint" in lookup.prompt
 
 
-def test_mutation_invalidation_covers_evidence_cache_and_project_profile() -> None:
+@pytest.mark.asyncio
+async def test_mutation_invalidation_covers_evidence_cache_and_project_profile() -> None:
     from ternion.server.routes import _invalidate_workspace_evidence_after_tool_result
 
     with (
@@ -203,7 +204,7 @@ def test_mutation_invalidation_covers_evidence_cache_and_project_profile() -> No
     ):
         evidence_cache.invalidate_paths.return_value = 1
         project_profile.invalidate_paths.return_value = 1
-        _invalidate_workspace_evidence_after_tool_result(
+        await _invalidate_workspace_evidence_after_tool_result(
             canonical_tool="write",
             tool_name="Write",
             tool_arguments='{"path":"src/app.py"}',
@@ -221,7 +222,7 @@ def test_mutation_invalidation_covers_evidence_cache_and_project_profile() -> No
             paths=["src/app.py"],
         )
 
-        _invalidate_workspace_evidence_after_tool_result(
+        await _invalidate_workspace_evidence_after_tool_result(
             canonical_tool="shell",
             tool_name="Shell",
             tool_arguments='{"command":"ruff format src"}',
@@ -237,3 +238,25 @@ def test_mutation_invalidation_covers_evidence_cache_and_project_profile() -> No
             workspace_root="/repo",
             workspace_path_style="posix",
         )
+
+        evidence_cache.reset_mock()
+        project_profile.reset_mock()
+        await _invalidate_workspace_evidence_after_tool_result(
+            canonical_tool="shell",
+            tool_name="Shell",
+            tool_arguments='{"command":"git status --short"}',
+            workspace_root="/repo",
+            workspace_path_style="posix",
+            shell_may_write=False,
+        )
+        await _invalidate_workspace_evidence_after_tool_result(
+            canonical_tool="readfile",
+            tool_name="ReadFile",
+            tool_arguments='{"path":"src/app.py"}',
+            workspace_root="/repo",
+            workspace_path_style="posix",
+        )
+        evidence_cache.invalidate_paths.assert_not_called()
+        evidence_cache.invalidate_workspace.assert_not_called()
+        project_profile.invalidate_paths.assert_not_called()
+        project_profile.invalidate_workspace.assert_not_called()

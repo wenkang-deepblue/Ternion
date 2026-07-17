@@ -1447,7 +1447,7 @@ def _extract_apply_patch_target_path(patch_text: str) -> str | None:
     return None
 
 
-def _invalidate_workspace_evidence_after_tool_result(
+async def _invalidate_workspace_evidence_after_tool_result(
     *,
     canonical_tool: str,
     tool_name: str,
@@ -1457,65 +1457,73 @@ def _invalidate_workspace_evidence_after_tool_result(
     shell_may_write: bool = False,
 ) -> None:
     """Invalidate cross-session memory after an observed write-capable tool result."""
-    if not workspace_root:
+    should_invalidate = canonical_tool in _MUTATING_TOOL_NAMES or (
+        canonical_tool == "shell" and shell_may_write
+    )
+    if not workspace_root or not should_invalidate:
         return
 
-    def _invalidate_whole_workspace() -> None:
-        if workspace_evidence_cache.invalidate_workspace(
+    def _invalidate_sync() -> tuple[str, int, int]:
+        target = (
+            _extract_mutation_target_path(tool_name, tool_arguments)
+            if canonical_tool in _MUTATING_TOOL_NAMES
+            else None
+        )
+        if target:
+            removed_evidence = workspace_evidence_cache.invalidate_paths(
+                workspace_root=workspace_root,
+                workspace_path_style=workspace_path_style,
+                paths=[target],
+            )
+            removed_profiles = workspace_project_profile.invalidate_paths(
+                workspace_root=workspace_root,
+                workspace_path_style=workspace_path_style,
+                paths=[target],
+            )
+            return "path", removed_evidence, removed_profiles
+        evidence_invalidated = workspace_evidence_cache.invalidate_workspace(
             workspace_root=workspace_root,
             workspace_path_style=workspace_path_style,
-        ):
-            log_manager.emit(
-                level="INFO",
-                category="MEMORY",
-                message="workspace_evidence_cache_invalidated | scope=workspace",
-            )
-        if workspace_project_profile.invalidate_workspace(
+        )
+        profile_invalidated = workspace_project_profile.invalidate_workspace(
             workspace_root=workspace_root,
             workspace_path_style=workspace_path_style,
-        ):
-            log_manager.emit(
-                level="INFO",
-                category="MEMORY",
-                message="workspace_project_profile_invalidated | scope=workspace",
-            )
+        )
+        return "workspace", int(evidence_invalidated), int(profile_invalidated)
 
     try:
-        if canonical_tool in _MUTATING_TOOL_NAMES:
-            target = _extract_mutation_target_path(tool_name, tool_arguments)
-            if target:
-                removed = workspace_evidence_cache.invalidate_paths(
-                    workspace_root=workspace_root,
-                    workspace_path_style=workspace_path_style,
-                    paths=[target],
+        scope, removed_evidence, removed_profiles = await asyncio.to_thread(_invalidate_sync)
+        if scope == "workspace":
+            if removed_evidence:
+                log_manager.emit(
+                    level="INFO",
+                    category="MEMORY",
+                    message="workspace_evidence_cache_invalidated | scope=workspace",
                 )
-                if removed:
-                    log_manager.emit(
-                        level="INFO",
-                        category="MEMORY",
-                        message=(
-                            f"workspace_evidence_cache_invalidated | scope=path | entries={removed}"
-                        ),
-                    )
-                removed_profiles = workspace_project_profile.invalidate_paths(
-                    workspace_root=workspace_root,
-                    workspace_path_style=workspace_path_style,
-                    paths=[target],
+            if removed_profiles:
+                log_manager.emit(
+                    level="INFO",
+                    category="MEMORY",
+                    message="workspace_project_profile_invalidated | scope=workspace",
                 )
-                if removed_profiles:
-                    log_manager.emit(
-                        level="INFO",
-                        category="MEMORY",
-                        message=(
-                            "workspace_project_profile_invalidated | "
-                            f"scope=path | observations={removed_profiles}"
-                        ),
-                    )
-                return
-            _invalidate_whole_workspace()
             return
-        if canonical_tool == "shell" and shell_may_write:
-            _invalidate_whole_workspace()
+        if removed_evidence:
+            log_manager.emit(
+                level="INFO",
+                category="MEMORY",
+                message=(
+                    f"workspace_evidence_cache_invalidated | scope=path | entries={removed_evidence}"
+                ),
+            )
+        if removed_profiles:
+            log_manager.emit(
+                level="INFO",
+                category="MEMORY",
+                message=(
+                    "workspace_project_profile_invalidated | "
+                    f"scope=path | observations={removed_profiles}"
+                ),
+            )
     except Exception as exc:
         logger.warning(
             "workspace_memory_invalidation_failed",
@@ -6523,6 +6531,7 @@ async def _execution_followup_turn(
     git_cursor_untracked = {
         p for p in (git_cursor.get("untracked") or []) if isinstance(p, str) and p.strip()
     }
+    workspace_memory_invalidations: list[tuple[str, str, str, bool]] = []
 
     history_tool_calls_by_id: dict[str, dict] = {}
     for history_msg in session.execution_messages or []:
@@ -6567,12 +6576,8 @@ async def _execution_followup_turn(
         meta["source_ref"] = tool_result_msg.tool_call_id
         canonical_tool = re.sub(r"[^a-z0-9]+", "", (tool_name or "").strip().lower())
         if canonical_tool in _MUTATING_TOOL_NAMES:
-            _invalidate_workspace_evidence_after_tool_result(
-                canonical_tool=canonical_tool,
-                tool_name=tool_name or "",
-                tool_arguments=tool_args or "{}",
-                workspace_root=workspace_root,
-                workspace_path_style=workspace_path_style,
+            workspace_memory_invalidations.append(
+                (canonical_tool, tool_name or "", tool_args or "{}", False)
             )
             target = _extract_mutation_target_path(tool_name or "", tool_args or "{}")
             normalized = _normalize_file_path(
@@ -6633,13 +6638,8 @@ async def _execution_followup_turn(
             role = "optimizer" if phase == "optimizer" else "writer"
             shell_may_write = _shell_command_may_write(shell_command)
             if shell_may_write:
-                _invalidate_workspace_evidence_after_tool_result(
-                    canonical_tool=canonical_tool,
-                    tool_name=tool_name or "",
-                    tool_arguments=tool_args or "{}",
-                    workspace_root=workspace_root,
-                    workspace_path_style=workspace_path_style,
-                    shell_may_write=True,
+                workspace_memory_invalidations.append(
+                    (canonical_tool, tool_name or "", tool_args or "{}", True)
                 )
 
             dirty_before_count = 0
@@ -6808,6 +6808,20 @@ async def _execution_followup_turn(
         request.messages,
         process_result=_process_execution_tool_result,
     )
+    for (
+        canonical_tool,
+        tool_name,
+        tool_arguments,
+        shell_may_write,
+    ) in workspace_memory_invalidations:
+        await _invalidate_workspace_evidence_after_tool_result(
+            canonical_tool=canonical_tool,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+            workspace_root=workspace_root,
+            workspace_path_style=workspace_path_style,
+            shell_may_write=shell_may_write,
+        )
 
     if isinstance(git_cursor, dict) and "repo_root" in git_cursor:
         git_cursor["modified"] = sorted(git_cursor_modified)
