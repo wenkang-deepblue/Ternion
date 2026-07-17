@@ -404,9 +404,7 @@ class WorkspaceProjectProfile:
         sources = list(manifest["sources"].values())
         observations = list(reversed(manifest["observations"]))
         while True:
-            referenced_paths = {
-                path for item in observations for path in _observation_source_paths(item)
-            }
+            referenced_paths = _referenced_source_paths(observations)
             visible_sources = [
                 item for item in sources if str(item.get("path") or "") in referenced_paths
             ]
@@ -451,9 +449,7 @@ class WorkspaceProjectProfile:
 
     @staticmethod
     def _drop_unreferenced_sources(manifest: dict[str, Any]) -> None:
-        referenced = {
-            path for item in manifest["observations"] for path in _observation_source_paths(item)
-        }
+        referenced = _referenced_source_paths(manifest["observations"])
         manifest["sources"] = {
             path: entry for path, entry in manifest["sources"].items() if path in referenced
         }
@@ -461,7 +457,7 @@ class WorkspaceProjectProfile:
     def _enforce_source_cap(self, manifest: dict[str, Any]) -> None:
         observations = manifest["observations"]
         while observations:
-            referenced = {path for item in observations for path in _observation_source_paths(item)}
+            referenced = _referenced_source_paths(observations)
             if len(referenced) <= self.max_sources:
                 return
             observations.pop(0)
@@ -516,6 +512,11 @@ def _observation_source_paths(observation: dict[str, Any]) -> list[str]:
         for path in observation.get("source_paths", [])
         if isinstance(path, str) and path.strip()
     ]
+
+
+def _referenced_source_paths(observations: list[dict[str, Any]]) -> set[str]:
+    """Collect every source path referenced by the given observations."""
+    return {path for item in observations for path in _observation_source_paths(item)}
 
 
 def _observation_id(
