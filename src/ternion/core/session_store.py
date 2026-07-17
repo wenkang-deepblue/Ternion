@@ -444,6 +444,25 @@ def _load_gzip_text(path: Path) -> str:
         return f.read()
 
 
+def _atomic_write_bytes(directory: Path, target: Path, data: bytes) -> None:
+    """Atomically write bytes to `target` via a temp file + os.replace.
+
+    The temp file is created in `directory` (same filesystem as `target`) so
+    the rename is atomic; on failure the temp file is cleaned up before the
+    error propagates. Callers supply the exact bytes to preserve each site's
+    on-disk encoding.
+    """
+    fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp_path, target)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
 class SessionStore:
     """
     Persistent session storage.
@@ -551,15 +570,9 @@ class SessionStore:
                             field=field_name,
                             recovered_as=recovery_name,
                         )
-                fd, tmp_path = tempfile.mkstemp(dir=cold_dir, suffix=".tmp")
-                try:
-                    with os.fdopen(fd, "wb") as f:
-                        f.write(gzip.compress(canonical.encode("utf-8"), compresslevel=6))
-                    os.replace(tmp_path, target)
-                except Exception:
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                    raise
+                _atomic_write_bytes(
+                    cold_dir, target, gzip.compress(canonical.encode("utf-8"), compresslevel=6)
+                )
                 self._cold_write_hashes[cache_key] = content_hash
             self._degraded_cold_stubs.pop(cache_key, None)
             payload[field_name] = {
@@ -576,15 +589,7 @@ class SessionStore:
             shared_path = shared_dir / f"{tools_hash}.json.gz"
             if not shared_path.exists():
                 shared_dir.mkdir(parents=True, exist_ok=True)
-                fd, tmp_path = tempfile.mkstemp(dir=shared_dir, suffix=".tmp")
-                try:
-                    with os.fdopen(fd, "wb") as f:
-                        f.write(_dump_gzip_json(tools))
-                    os.replace(tmp_path, shared_path)
-                except Exception:
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                    raise
+                _atomic_write_bytes(shared_dir, shared_path, _dump_gzip_json(tools))
             payload["cursor_tools"] = {
                 _SHARED_TOOLS_MARKER: tools_hash,
                 "count": len(tools),
@@ -1201,15 +1206,7 @@ class SessionStore:
             archive_dir.mkdir(parents=True, exist_ok=True)
             archive_path = archive_dir / f"{session.session_id}.json.gz"
             try:
-                fd, tmp_path = tempfile.mkstemp(dir=archive_dir, suffix=".tmp")
-                try:
-                    with os.fdopen(fd, "wb") as f:
-                        f.write(_dump_gzip_json(session.to_dict()))
-                    os.replace(tmp_path, archive_path)
-                except Exception:
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                    raise
+                _atomic_write_bytes(archive_dir, archive_path, _dump_gzip_json(session.to_dict()))
                 # The archive pass runs in a worker thread with no per-session
                 # lock: re-check the live file before deleting so a turn that
                 # wrote between snapshot and deletion is never destroyed. The

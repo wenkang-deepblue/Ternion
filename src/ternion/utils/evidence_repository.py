@@ -77,6 +77,7 @@ def build_evidence_item(
         if end >= start:
             line_range = (start, end)
     normalized_excerpt = (excerpt or "").rstrip()
+    excerpt_hash = hash_excerpt_text(normalized_excerpt)
     return EvidenceItem(
         path=path,
         lines=(lines or "").strip(),
@@ -84,8 +85,8 @@ def build_evidence_item(
         file_total_lines=file_total_lines,
         purpose=(purpose or "").strip(),
         excerpt=normalized_excerpt,
-        excerpt_hash=hash_excerpt_text(normalized_excerpt),
-        excerpt_hash_raw=hash_excerpt_text(normalized_excerpt),
+        excerpt_hash=excerpt_hash,
+        excerpt_hash_raw=excerpt_hash,
     )
 
 
@@ -575,6 +576,7 @@ def _try_merge_pair(current: EvidenceItem, candidate: EvidenceItem) -> EvidenceI
         merged_lines = cur_lines + cand_lines
 
     merged_excerpt = "\n".join(merged_lines)
+    merged_hash = hash_excerpt_text(merged_excerpt)
     return EvidenceItem(
         path=current.path,
         lines=f"{cur_start}-{cand_end}",
@@ -582,8 +584,8 @@ def _try_merge_pair(current: EvidenceItem, candidate: EvidenceItem) -> EvidenceI
         file_total_lines=merged_total,
         purpose=merged_purpose,
         excerpt=merged_excerpt,
-        excerpt_hash=hash_excerpt_text(merged_excerpt),
-        excerpt_hash_raw=hash_excerpt_text(merged_excerpt),
+        excerpt_hash=merged_hash,
+        excerpt_hash_raw=merged_hash,
     )
 
 

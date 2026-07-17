@@ -1727,6 +1727,44 @@ def _find_tool_loop_start_index(history: list[dict[str, Any]]) -> int:
     return len(history or [])
 
 
+def _history_message_to_chat(msg: dict[str, Any]) -> ChatMessage:
+    """Convert one OpenAI-compatible history dict into a ChatMessage."""
+    return ChatMessage(
+        role=MessageRole(msg["role"]),
+        content=msg.get("content"),
+        name=msg.get("name"),
+        tool_calls=msg.get("tool_calls"),
+        tool_call_id=msg.get("tool_call_id"),
+    )
+
+
+def _append_cache_friendly_history(
+    messages: list[ChatMessage],
+    history: list[dict[str, Any]],
+    stable_context_parts: list[str],
+) -> None:
+    """
+    Append the cache-friendly layout to ``messages`` in place.
+
+    Layout: leading user turns, then the stable context block, then the
+    accumulated tool loop. The stable block is inserted before the first
+    tool-loop message so the serialized prompt prefix stays byte-identical
+    across rounds (provider prompt caching); the small per-turn dynamic block
+    is appended by the caller after this suffix.
+    """
+    stable_insert_idx = _find_tool_loop_start_index(history)
+    for msg in history[:stable_insert_idx]:
+        messages.append(_history_message_to_chat(msg))
+    messages.append(
+        ChatMessage(
+            role=MessageRole.USER,
+            content="".join(stable_context_parts),
+        )
+    )
+    for msg in history[stable_insert_idx:]:
+        messages.append(_history_message_to_chat(msg))
+
+
 def _build_execution_policy_context(
     *,
     ternion_report: str,
@@ -4181,33 +4219,7 @@ async def execution_node(state: TernionState) -> TernionState:
 
     # Cache-friendly layout: leading user turns, then the stable context block,
     # then the accumulated tool loop, then the small per-turn dynamic block.
-    stable_insert_idx = _find_tool_loop_start_index(history)
-    for msg in history[:stable_insert_idx]:
-        messages.append(
-            ChatMessage(
-                role=MessageRole(msg["role"]),
-                content=msg.get("content"),
-                name=msg.get("name"),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id"),
-            )
-        )
-    messages.append(
-        ChatMessage(
-            role=MessageRole.USER,
-            content="".join(stable_context_parts),
-        )
-    )
-    for msg in history[stable_insert_idx:]:
-        messages.append(
-            ChatMessage(
-                role=MessageRole(msg["role"]),
-                content=msg.get("content"),
-                name=msg.get("name"),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id"),
-            )
-        )
+    _append_cache_friendly_history(messages, history, stable_context_parts)
     messages.append(
         ChatMessage(
             role=MessageRole.USER,
@@ -5106,33 +5118,7 @@ async def optimizer_node(state: TernionState) -> TernionState:
 
     # Cache-friendly layout: leading user turns, then the stable context block,
     # then the accumulated tool loop, then the small per-turn dynamic block.
-    stable_insert_idx = _find_tool_loop_start_index(history)
-    for msg in history[:stable_insert_idx]:
-        messages.append(
-            ChatMessage(
-                role=MessageRole(msg["role"]),
-                content=msg.get("content"),
-                name=msg.get("name"),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id"),
-            )
-        )
-    messages.append(
-        ChatMessage(
-            role=MessageRole.USER,
-            content="".join(stable_context_parts),
-        )
-    )
-    for msg in history[stable_insert_idx:]:
-        messages.append(
-            ChatMessage(
-                role=MessageRole(msg["role"]),
-                content=msg.get("content"),
-                name=msg.get("name"),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id"),
-            )
-        )
+    _append_cache_friendly_history(messages, history, stable_context_parts)
     messages.append(
         ChatMessage(
             role=MessageRole.USER,

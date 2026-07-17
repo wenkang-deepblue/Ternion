@@ -129,6 +129,7 @@ reviewer*.py
 *workflow_integration.py
 *cursor/
 *aud*.*
+*gent*.*
 
 # Development-only testing tools (not for open source)
 scripts/

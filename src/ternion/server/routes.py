@@ -4745,6 +4745,172 @@ def _tool_calls_json_response(
     )
 
 
+@dataclass
+class _ExecutionGuardrailOutcome:
+    """Result of the shared execution-stage guardrail chain."""
+
+    filtered_tool_calls: list[dict[str, Any]]
+    guardrail_events: list[dict[str, Any]]
+    blocked_message: str | None = None
+    confirmation_reason: str = ""
+
+
+def _run_execution_guardrail_chain(
+    *,
+    workflow_phase: str,
+    tool_calls: list[dict[str, Any]],
+    cursor_tools: list[dict[str, Any]],
+    conversation_history: list[Any],
+    ternion_report: str,
+    workspace_root: str,
+    workspace_path_style: str,
+    workspace_root_source: str,
+) -> _ExecutionGuardrailOutcome:
+    """
+    Run the execution-stage tool-call guardrail chain with audit events.
+
+    Applies (in order) cursor-tools name validation, execution tool policy,
+    and deliverable policy, accumulating a guardrail audit event on each
+    block. Shared by the execution follow-up and the initial-request tool-loop
+    helpers so their guardrail behavior and audit trail stay identical; the two
+    call sites differ only in the inputs they pass (cursor tools source and the
+    deliverable-policy conversation/report fallbacks), which are parameters
+    here. Persistence of the block is left to the caller.
+
+    Args:
+        workflow_phase: The phase (used for role labeling and policy scope).
+        tool_calls: Tool calls after any todo filtering.
+        cursor_tools: Cursor tools schema to validate against.
+        conversation_history: History passed to the deliverable policy.
+        ternion_report: Report text passed to the deliverable policy.
+        workspace_root: Client-declared workspace root.
+        workspace_path_style: Path style of the client workspace.
+        workspace_root_source: Provenance of the workspace root.
+
+    Returns:
+        The guardrail outcome: filtered tool calls plus the audit events, and
+        (when blocked) a client-facing message with its confirmation reason.
+    """
+    guardrail_events: list[dict[str, Any]] = []
+    role_label = "optimizer" if workflow_phase == "optimizer" else "writer"
+
+    before_cursor_validate = list(tool_calls)
+    filtered_tool_calls, cursor_tools_error = (
+        _normalize_and_validate_tool_calls_against_cursor_tools(
+            workflow_phase=workflow_phase,
+            tool_calls=list(tool_calls),
+            cursor_tools=list(cursor_tools or []),
+        )
+    )
+    rewrites = _diff_tool_call_name_rewrites(before_cursor_validate, filtered_tool_calls)
+    if rewrites:
+        guardrail_events.append(
+            {
+                "type": "tool_call_name_rewrite",
+                "role": role_label,
+                "rewrites": rewrites,
+            }
+        )
+
+    tool_policy_error = cursor_tools_error
+    if tool_policy_error:
+        available_set = set(_extract_cursor_tool_names(cursor_tools))
+        unknown_tool_names: list[str] = []
+        for tc in before_cursor_validate:
+            name, _args = _extract_tool_name_and_arguments(tc)
+            if isinstance(name, str) and name and name not in available_set:
+                unknown_tool_names.append(name)
+        guardrail_events.append(
+            {
+                "type": "tool_calls_not_in_cursor_tools",
+                "role": role_label,
+                "blocked_tools": sorted(set(unknown_tool_names)),
+                "error_preview": sanitize_for_preview(
+                    redact_secrets(tool_policy_error),
+                    max_length=240,
+                ),
+            }
+        )
+    else:
+        before_exec_policy = list(filtered_tool_calls)
+        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
+            workflow_phase=workflow_phase,
+            tool_calls=filtered_tool_calls,
+        )
+        if tool_policy_error:
+            blocked_tools, blocked_shell = _collect_execution_tool_policy_block_details(
+                before_exec_policy
+            )
+            guardrail_events.append(
+                {
+                    "type": "execution_tool_policy_blocked",
+                    "role": role_label,
+                    "blocked_tools": blocked_tools,
+                    "blocked_shell": blocked_shell,
+                    "error_preview": sanitize_for_preview(
+                        redact_secrets(tool_policy_error),
+                        max_length=240,
+                    ),
+                }
+            )
+    if tool_policy_error:
+        return _ExecutionGuardrailOutcome(
+            filtered_tool_calls=filtered_tool_calls,
+            guardrail_events=guardrail_events,
+            blocked_message=tool_policy_error,
+            confirmation_reason="tool_policy",
+        )
+
+    before_deliverable_policy = list(filtered_tool_calls)
+    filtered_tool_calls, policy_error, deliverable_type, allowed_scope = (
+        _enforce_deliverable_policy(
+            workflow_phase=workflow_phase,
+            tool_calls=filtered_tool_calls,
+            conversation_history=conversation_history,
+            ternion_report=ternion_report,
+            workspace_root=workspace_root,
+            workspace_path_style=workspace_path_style,
+            workspace_root_source=workspace_root_source,
+        )
+    )
+    if policy_error:
+        violations = (
+            _collect_deliverable_policy_violations(
+                before_deliverable_policy,
+                deliverable_type,
+                workspace_root,
+                workspace_path_style,
+                workspace_root_source,
+            )
+            if deliverable_type is not None
+            else []
+        )
+        guardrail_events.append(
+            {
+                "type": "deliverable_policy_blocked",
+                "role": role_label,
+                "deliverable_type": deliverable_type.value if deliverable_type is not None else "",
+                "allowed_scope": allowed_scope or "",
+                "violations": violations,
+                "error_preview": sanitize_for_preview(
+                    redact_secrets(policy_error),
+                    max_length=240,
+                ),
+            }
+        )
+        return _ExecutionGuardrailOutcome(
+            filtered_tool_calls=filtered_tool_calls,
+            guardrail_events=guardrail_events,
+            blocked_message=policy_error,
+            confirmation_reason="deliverable_policy",
+        )
+
+    return _ExecutionGuardrailOutcome(
+        filtered_tool_calls=filtered_tool_calls,
+        guardrail_events=guardrail_events,
+    )
+
+
 def _prepare_execution_pending_tool_calls_turn(
     *,
     session: Session,
@@ -4815,131 +4981,35 @@ def _prepare_execution_pending_tool_calls_turn(
             session,
             filtered_tool_calls,
         )
-    guardrail_events_to_append: list[dict[str, Any]] = []
-    before_cursor_validate = list(filtered_tool_calls)
-    filtered_tool_calls, cursor_tools_error = (
-        _normalize_and_validate_tool_calls_against_cursor_tools(
-            workflow_phase=workflow_phase,
-            tool_calls=filtered_tool_calls,
-            cursor_tools=list(cursor_tools or []),
-        )
+    guardrail = _run_execution_guardrail_chain(
+        workflow_phase=workflow_phase,
+        tool_calls=filtered_tool_calls,
+        cursor_tools=list(cursor_tools or []),
+        conversation_history=list(
+            final_state.get("conversation_history", [])
+            or getattr(session, "execution_messages", [])
+            or []
+        ),
+        ternion_report=str(
+            final_state.get("ternion_report", "")
+            or getattr(session, "ternion_report_raw", "")
+            or ""
+        ),
+        workspace_root=workspace_root,
+        workspace_path_style=workspace_path_style,
+        workspace_root_source=workspace_root_source,
     )
-    rewrites = _diff_tool_call_name_rewrites(before_cursor_validate, filtered_tool_calls)
-    if rewrites:
-        guardrail_events_to_append.append(
-            {
-                "type": "tool_call_name_rewrite",
-                "role": "optimizer" if workflow_phase == "optimizer" else "writer",
-                "rewrites": rewrites,
-            }
-        )
-
-    tool_policy_error = cursor_tools_error
-    role_label = "optimizer" if workflow_phase == "optimizer" else "writer"
-    if tool_policy_error:
-        available = _extract_cursor_tool_names(cursor_tools)
-        available_set = set(available)
-        unknown_tool_names: list[str] = []
-        for tc in before_cursor_validate:
-            name, _args = _extract_tool_name_and_arguments(tc)
-            if isinstance(name, str) and name and name not in available_set:
-                unknown_tool_names.append(name)
-        guardrail_events_to_append.append(
-            {
-                "type": "tool_calls_not_in_cursor_tools",
-                "role": role_label,
-                "blocked_tools": sorted(set(unknown_tool_names)),
-                "error_preview": sanitize_for_preview(
-                    redact_secrets(tool_policy_error),
-                    max_length=240,
-                ),
-            }
-        )
-    else:
-        before_exec_policy = list(filtered_tool_calls)
-        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-            workflow_phase=workflow_phase,
-            tool_calls=filtered_tool_calls,
-        )
-        if tool_policy_error:
-            blocked_tools, blocked_shell = _collect_execution_tool_policy_block_details(
-                before_exec_policy
-            )
-            guardrail_events_to_append.append(
-                {
-                    "type": "execution_tool_policy_blocked",
-                    "role": role_label,
-                    "blocked_tools": blocked_tools,
-                    "blocked_shell": blocked_shell,
-                    "error_preview": sanitize_for_preview(
-                        redact_secrets(tool_policy_error),
-                        max_length=240,
-                    ),
-                }
-            )
-    if tool_policy_error:
+    filtered_tool_calls = guardrail.filtered_tool_calls
+    guardrail_events_to_append = guardrail.guardrail_events
+    if guardrail.blocked_message is not None:
         session_store.update_session(
             session.session_id,
             stage=SessionStage.AWAITING_CONFIRMATION,
-            confirmation_reason="tool_policy",
+            confirmation_reason=guardrail.confirmation_reason,
             pending_tool_calls=[],
             append_guardrail_events=guardrail_events_to_append,
         )
-        return _PendingToolCallsTurn(blocked=True, blocked_message=tool_policy_error)
-
-    before_deliverable_policy = list(filtered_tool_calls)
-    filtered_tool_calls, policy_error, deliverable_type, allowed_scope = (
-        _enforce_deliverable_policy(
-            workflow_phase=workflow_phase,
-            tool_calls=filtered_tool_calls,
-            conversation_history=list(
-                final_state.get("conversation_history", [])
-                or getattr(session, "execution_messages", [])
-                or []
-            ),
-            ternion_report=str(
-                final_state.get("ternion_report", "")
-                or getattr(session, "ternion_report_raw", "")
-                or ""
-            ),
-            workspace_root=workspace_root,
-            workspace_path_style=workspace_path_style,
-            workspace_root_source=workspace_root_source,
-        )
-    )
-    if policy_error:
-        violations = (
-            _collect_deliverable_policy_violations(
-                before_deliverable_policy,
-                deliverable_type,
-                workspace_root,
-                workspace_path_style,
-                workspace_root_source,
-            )
-            if deliverable_type is not None
-            else []
-        )
-        guardrail_events_to_append.append(
-            {
-                "type": "deliverable_policy_blocked",
-                "role": role_label,
-                "deliverable_type": deliverable_type.value if deliverable_type is not None else "",
-                "allowed_scope": allowed_scope or "",
-                "violations": violations,
-                "error_preview": sanitize_for_preview(
-                    redact_secrets(policy_error),
-                    max_length=240,
-                ),
-            }
-        )
-        session_store.update_session(
-            session.session_id,
-            stage=SessionStage.AWAITING_CONFIRMATION,
-            confirmation_reason="deliverable_policy",
-            pending_tool_calls=[],
-            append_guardrail_events=guardrail_events_to_append,
-        )
-        return _PendingToolCallsTurn(blocked=True, blocked_message=policy_error)
+        return _PendingToolCallsTurn(blocked=True, blocked_message=guardrail.blocked_message)
 
     deferred_tool_calls: list[dict] = []
     if workflow_phase in {"execution", "optimizer"}:
@@ -5102,123 +5172,27 @@ def _create_initial_tool_loop_session(
             session,
             filtered_tool_calls,
         )
-    guardrail_events_to_append: list[dict[str, Any]] = []
-    before_cursor_validate = list(filtered_tool_calls)
-    filtered_tool_calls, cursor_tools_error = (
-        _normalize_and_validate_tool_calls_against_cursor_tools(
-            workflow_phase=workflow_phase,
-            tool_calls=filtered_tool_calls,
-            cursor_tools=list(getattr(session, "cursor_tools", []) or []),
-        )
+    guardrail = _run_execution_guardrail_chain(
+        workflow_phase=workflow_phase,
+        tool_calls=filtered_tool_calls,
+        cursor_tools=list(getattr(session, "cursor_tools", []) or []),
+        conversation_history=list(final_state.get("conversation_history", []) or []),
+        ternion_report=str(final_state.get("ternion_report", "") or ""),
+        workspace_root=workspace_root,
+        workspace_path_style=workspace_path_style,
+        workspace_root_source=workspace_root_source,
     )
-    rewrites = _diff_tool_call_name_rewrites(before_cursor_validate, filtered_tool_calls)
-    if rewrites:
-        guardrail_events_to_append.append(
-            {
-                "type": "tool_call_name_rewrite",
-                "role": "optimizer" if workflow_phase == "optimizer" else "writer",
-                "rewrites": rewrites,
-            }
-        )
-
-    tool_policy_error = cursor_tools_error
-    role_label = "optimizer" if workflow_phase == "optimizer" else "writer"
-    if tool_policy_error:
-        available = _extract_cursor_tool_names(getattr(session, "cursor_tools", []) or [])
-        available_set = set(available)
-        unknown: list[str] = []
-        for tc in before_cursor_validate:
-            name, _args = _extract_tool_name_and_arguments(tc)
-            if isinstance(name, str) and name and name not in available_set:
-                unknown.append(name)
-        guardrail_events_to_append.append(
-            {
-                "type": "tool_calls_not_in_cursor_tools",
-                "role": role_label,
-                "blocked_tools": sorted(set(unknown)),
-                "error_preview": sanitize_for_preview(
-                    redact_secrets(tool_policy_error),
-                    max_length=240,
-                ),
-            }
-        )
-    else:
-        before_exec_policy = list(filtered_tool_calls)
-        filtered_tool_calls, tool_policy_error = _enforce_execution_tool_policy(
-            workflow_phase=workflow_phase,
-            tool_calls=filtered_tool_calls,
-        )
-        if tool_policy_error:
-            blocked_tools, blocked_shell = _collect_execution_tool_policy_block_details(
-                before_exec_policy
-            )
-            guardrail_events_to_append.append(
-                {
-                    "type": "execution_tool_policy_blocked",
-                    "role": role_label,
-                    "blocked_tools": blocked_tools,
-                    "blocked_shell": blocked_shell,
-                    "error_preview": sanitize_for_preview(
-                        redact_secrets(tool_policy_error),
-                        max_length=240,
-                    ),
-                }
-            )
-    if tool_policy_error:
+    filtered_tool_calls = guardrail.filtered_tool_calls
+    guardrail_events_to_append = guardrail.guardrail_events
+    if guardrail.blocked_message is not None:
         session_store.update_session(
             session.session_id,
             stage=SessionStage.AWAITING_CONFIRMATION,
-            confirmation_reason="tool_policy",
+            confirmation_reason=guardrail.confirmation_reason,
             pending_tool_calls=[],
             append_guardrail_events=guardrail_events_to_append,
         )
-        return _PendingToolCallsTurn(blocked=True, blocked_message=tool_policy_error)
-
-    before_deliverable_policy = list(filtered_tool_calls)
-    filtered_tool_calls, policy_error, deliverable_type, allowed_scope = (
-        _enforce_deliverable_policy(
-            workflow_phase=workflow_phase,
-            tool_calls=filtered_tool_calls,
-            conversation_history=list(final_state.get("conversation_history", []) or []),
-            ternion_report=str(final_state.get("ternion_report", "") or ""),
-            workspace_root=workspace_root,
-            workspace_path_style=workspace_path_style,
-            workspace_root_source=workspace_root_source,
-        )
-    )
-    if policy_error:
-        violations = (
-            _collect_deliverable_policy_violations(
-                before_deliverable_policy,
-                deliverable_type,
-                workspace_root,
-                workspace_path_style,
-                workspace_root_source,
-            )
-            if deliverable_type is not None
-            else []
-        )
-        guardrail_events_to_append.append(
-            {
-                "type": "deliverable_policy_blocked",
-                "role": role_label,
-                "deliverable_type": deliverable_type.value if deliverable_type is not None else "",
-                "allowed_scope": allowed_scope or "",
-                "violations": violations,
-                "error_preview": sanitize_for_preview(
-                    redact_secrets(policy_error),
-                    max_length=240,
-                ),
-            }
-        )
-        session_store.update_session(
-            session.session_id,
-            stage=SessionStage.AWAITING_CONFIRMATION,
-            confirmation_reason="deliverable_policy",
-            pending_tool_calls=[],
-            append_guardrail_events=guardrail_events_to_append,
-        )
-        return _PendingToolCallsTurn(blocked=True, blocked_message=policy_error)
+        return _PendingToolCallsTurn(blocked=True, blocked_message=guardrail.blocked_message)
 
     deferred_tool_calls: list[dict] = []
     if workflow_phase in {"execution", "optimizer"}:
