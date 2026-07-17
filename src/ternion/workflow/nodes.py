@@ -1804,17 +1804,8 @@ def _cache_item_with_request_purposes(
     purposes = [part.strip() for part in item.purpose.split(" / ") if part.strip()]
     seen = set(purposes)
     for request in requests:
-        target = _cache_request_target(request)
-        if target is None:
+        if not _cache_item_matches_request(item, request):
             continue
-        target_path, requested_range = target
-        if not evidence_paths_equivalent(item.path, target_path):
-            continue
-        if requested_range is not None:
-            if item.line_range is None:
-                continue
-            if item.line_range[1] < requested_range[0] or item.line_range[0] > requested_range[1]:
-                continue
         purpose = str(request.purpose or "").strip()
         if purpose and purpose not in seen:
             purposes.append(purpose)
@@ -1837,25 +1828,27 @@ def _cache_request_target(
     return target_path, None
 
 
+def _cache_item_matches_request(item: EvidenceItem, request: EvidenceRequest) -> bool:
+    """Return whether a verified cache item satisfies a single request target."""
+    target = _cache_request_target(request)
+    if target is None:
+        return False
+    target_path, requested_range = target
+    if not evidence_paths_equivalent(item.path, target_path):
+        return False
+    if requested_range is None:
+        return True
+    if item.line_range is None:
+        return False
+    return not (item.line_range[1] < requested_range[0] or item.line_range[0] > requested_range[1])
+
+
 def _cache_item_relevant_to_requests(
     item: EvidenceItem,
     requests: list[EvidenceRequest],
 ) -> bool:
     """Return whether a verified cache item contributes to a current request."""
-    for request in requests:
-        target = _cache_request_target(request)
-        if target is None:
-            continue
-        target_path, requested_range = target
-        if not evidence_paths_equivalent(item.path, target_path):
-            continue
-        if requested_range is None:
-            return True
-        if item.line_range is None:
-            continue
-        if not (item.line_range[1] < requested_range[0] or item.line_range[0] > requested_range[1]):
-            return True
-    return False
+    return any(_cache_item_matches_request(item, request) for request in requests)
 
 
 def _find_tool_loop_start_index(history: list[dict[str, Any]]) -> int:

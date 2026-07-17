@@ -1458,6 +1458,18 @@ def _invalidate_workspace_evidence_after_tool_result(
     """Invalidate cross-session evidence after an observed write-capable tool result."""
     if not workspace_root:
         return
+
+    def _invalidate_whole_workspace() -> None:
+        if workspace_evidence_cache.invalidate_workspace(
+            workspace_root=workspace_root,
+            workspace_path_style=workspace_path_style,
+        ):
+            log_manager.emit(
+                level="INFO",
+                category="MEMORY",
+                message="workspace_evidence_cache_invalidated | scope=workspace",
+            )
+
     try:
         if canonical_tool in _MUTATING_TOOL_NAMES:
             target = _extract_mutation_target_path(tool_name, tool_arguments)
@@ -1476,28 +1488,10 @@ def _invalidate_workspace_evidence_after_tool_result(
                         ),
                     )
                 return
-            removed = workspace_evidence_cache.invalidate_workspace(
-                workspace_root=workspace_root,
-                workspace_path_style=workspace_path_style,
-            )
-            if removed:
-                log_manager.emit(
-                    level="INFO",
-                    category="MEMORY",
-                    message="workspace_evidence_cache_invalidated | scope=workspace",
-                )
+            _invalidate_whole_workspace()
             return
         if canonical_tool == "shell" and shell_may_write:
-            removed = workspace_evidence_cache.invalidate_workspace(
-                workspace_root=workspace_root,
-                workspace_path_style=workspace_path_style,
-            )
-            if removed:
-                log_manager.emit(
-                    level="INFO",
-                    category="MEMORY",
-                    message="workspace_evidence_cache_invalidated | scope=workspace",
-                )
+            _invalidate_whole_workspace()
     except Exception as exc:
         logger.warning(
             "workspace_evidence_cache_invalidation_failed",
