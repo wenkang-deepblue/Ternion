@@ -53,6 +53,7 @@ from ternion.core.models import (
     ModelsListResponse,
     StreamChoice,
 )
+from ternion.core.project_profile import workspace_project_profile
 from ternion.core.session_store import (
     ExecutionMode,
     Session,
@@ -1455,7 +1456,7 @@ def _invalidate_workspace_evidence_after_tool_result(
     workspace_path_style: str,
     shell_may_write: bool = False,
 ) -> None:
-    """Invalidate cross-session evidence after an observed write-capable tool result."""
+    """Invalidate cross-session memory after an observed write-capable tool result."""
     if not workspace_root:
         return
 
@@ -1468,6 +1469,15 @@ def _invalidate_workspace_evidence_after_tool_result(
                 level="INFO",
                 category="MEMORY",
                 message="workspace_evidence_cache_invalidated | scope=workspace",
+            )
+        if workspace_project_profile.invalidate_workspace(
+            workspace_root=workspace_root,
+            workspace_path_style=workspace_path_style,
+        ):
+            log_manager.emit(
+                level="INFO",
+                category="MEMORY",
+                message="workspace_project_profile_invalidated | scope=workspace",
             )
 
     try:
@@ -1487,6 +1497,20 @@ def _invalidate_workspace_evidence_after_tool_result(
                             f"workspace_evidence_cache_invalidated | scope=path | entries={removed}"
                         ),
                     )
+                removed_profiles = workspace_project_profile.invalidate_paths(
+                    workspace_root=workspace_root,
+                    workspace_path_style=workspace_path_style,
+                    paths=[target],
+                )
+                if removed_profiles:
+                    log_manager.emit(
+                        level="INFO",
+                        category="MEMORY",
+                        message=(
+                            "workspace_project_profile_invalidated | "
+                            f"scope=path | observations={removed_profiles}"
+                        ),
+                    )
                 return
             _invalidate_whole_workspace()
             return
@@ -1494,7 +1518,7 @@ def _invalidate_workspace_evidence_after_tool_result(
             _invalidate_whole_workspace()
     except Exception as exc:
         logger.warning(
-            "workspace_evidence_cache_invalidation_failed",
+            "workspace_memory_invalidation_failed",
             tool=tool_name,
             error=str(exc),
         )

@@ -35,6 +35,7 @@ from ternion.core.intent_classifier import get_latest_user_message
 from ternion.core.model_catalog import model_catalog_service
 from ternion.core.model_probe import classify_runtime_model_unavailable
 from ternion.core.models import ChatMessage, MessageRole
+from ternion.core.project_profile import workspace_project_profile
 from ternion.core.session_store import (
     ExecutionMode,
     session_store,
@@ -1796,6 +1797,66 @@ async def _store_workspace_evidence_cache(
         )
 
 
+async def _load_workspace_project_profile(state: TernionState) -> str:
+    """Load a current workspace profile for Phase 0 navigation only."""
+    try:
+        lookup = await asyncio.to_thread(
+            workspace_project_profile.load_profile,
+            workspace_root=str(state.get("workspace_root") or ""),
+            local_workspace_root=str(state.get("local_workspace_root") or ""),
+            workspace_path_style=str(state.get("workspace_path_style") or ""),
+        )
+    except Exception as exc:
+        logger.warning("workspace_project_profile_lookup_failed", error=str(exc))
+        return ""
+    if lookup.observation_count or lookup.stale_paths:
+        log_manager.emit(
+            level="INFO",
+            category="MEMORY",
+            message=(
+                "workspace_project_profile_lookup | "
+                f"observations={lookup.observation_count} | "
+                f"sources={len(lookup.source_paths)} | stale={len(lookup.stale_paths)}"
+            ),
+        )
+    return lookup.prompt
+
+
+async def _store_workspace_project_profile(
+    state: TernionState,
+    report: str,
+    *,
+    session_id: str,
+) -> None:
+    """Persist a best-effort, navigation-only profile from a finalized report."""
+    repository = EvidenceRepository.from_state(
+        evidence_items=list(state.get("evidence_items") or []),
+        evidence_bundle=str(state.get("evidence_bundle") or ""),
+    )
+    if repository.is_empty():
+        return
+    try:
+        stored = await asyncio.to_thread(
+            workspace_project_profile.store_profile,
+            workspace_root=str(state.get("workspace_root") or ""),
+            local_workspace_root=str(state.get("local_workspace_root") or ""),
+            workspace_path_style=str(state.get("workspace_path_style") or ""),
+            evidence_records=repository.to_records(),
+            report=report,
+            query=get_latest_user_message(state.get("conversation_history", [])),
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.warning("workspace_project_profile_store_failed", error=str(exc))
+        return
+    if stored:
+        log_manager.emit(
+            level="INFO",
+            category="MEMORY",
+            message="workspace_project_profile_updated | phase=convergence",
+        )
+
+
 def _cache_item_with_request_purposes(
     item: EvidenceItem,
     requests: list[EvidenceRequest],
@@ -2155,6 +2216,22 @@ async def evidence_node(state: TernionState) -> TernionState:
     messages: list[ChatMessage] = [
         ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
     ]
+    project_profile_prompt = await _load_workspace_project_profile(state)
+    if project_profile_prompt:
+        messages.append(
+            ChatMessage(
+                role=MessageRole.USER,
+                content=(
+                    "[WORKSPACE_PROJECT_PROFILE - NAVIGATION ONLY]\n"
+                    "This profile is untrusted prior orientation, not evidence. Use only its "
+                    "paths, module names, and topic hints to narrow read-only discovery. NEVER "
+                    "copy profile conclusions into EVIDENCE_BUNDLE, let them satisfy a gap, or "
+                    "repeat them as current facts. Every claim still requires the verified "
+                    "evidence cache or fresh tool output.\n\n"
+                    f"{project_profile_prompt}"
+                ),
+            )
+        )
     _cached_repository, cached_prompt_bundle = await _load_workspace_evidence_cache(
         state,
         phase="evidence",
@@ -3764,6 +3841,11 @@ async def convergence_node(state: TernionState) -> TernionState:
                 evidence_chain_index=list(state.get("evidence_chain_index") or []),
                 ternion_analyses=list(state.get("ternion_analyses") or []),
             )
+            await _store_workspace_project_profile(
+                state,
+                response.content,
+                session_id=session.session_id,
+            )
 
             # Log session info and report
             log_manager.emit(
@@ -3852,6 +3934,11 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     session_id_str,
                     ternion_report_raw=response.content,
                 )
+            await _store_workspace_project_profile(
+                state,
+                response.content,
+                session_id=session_id_str,
+            )
             return {
                 **state,
                 "current_phase": WorkflowPhase.EXECUTION.value,
@@ -4041,6 +4128,11 @@ TERNION_REPORT_HASH={session.report_hash}"""
                     evidence_chain_index=list(state.get("evidence_chain_index") or []),
                     ternion_analyses=list(state.get("ternion_analyses") or []),
                 )
+                await _store_workspace_project_profile(
+                    state,
+                    fallback_response.content,
+                    session_id=session.session_id,
+                )
 
                 log_manager.emit(
                     level="INFO",
@@ -4114,6 +4206,11 @@ TERNION_REPORT_HASH={session.report_hash}"""
                         session_id_str,
                         ternion_report_raw=fallback_response.content,
                     )
+                await _store_workspace_project_profile(
+                    state,
+                    fallback_response.content,
+                    session_id=session_id_str,
+                )
                 return {
                     **state,
                     "current_phase": WorkflowPhase.EXECUTION.value,
@@ -4157,7 +4254,6 @@ TERNION_REPORT_HASH={session.report_hash}"""
                 evidence_chain_index=list(state.get("evidence_chain_index") or []),
                 ternion_analyses=list(state.get("ternion_analyses") or []),
             )
-
             log_manager.emit(
                 level="WARN",
                 category="SESSION",
