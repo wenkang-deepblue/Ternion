@@ -252,6 +252,7 @@ class WorkspaceReportIndex:
         """
         identity = workspace_identity(workspace_root, workspace_path_style)
         query_text = bounded_single_line(query, 400)
+        query_normalized = _normalize_query(query_text)
         query_terms = _query_terms(query_text)
         if not identity:
             return ReportIndexLookup(skipped_reason="workspace_unresolved")
@@ -284,7 +285,11 @@ class WorkspaceReportIndex:
         for entry in entries:
             if current_session_id and entry.get("session_id") == current_session_id:
                 continue
-            similarity = _query_similarity(query_text, str(entry.get("query") or ""))
+            similarity = _query_similarity(
+                current_normalized=query_normalized,
+                current_terms=query_terms,
+                historical_query=str(entry.get("query") or ""),
+            )
             if similarity < self.similarity_threshold:
                 continue
             candidate = dict(entry)
@@ -479,13 +484,20 @@ def _query_terms(value: str) -> set[str]:
     return terms
 
 
-def _query_similarity(current_query: str, historical_query: str) -> float:
-    current_normalized = _NON_WORD_RE.sub("", current_query.casefold())
-    historical_normalized = _NON_WORD_RE.sub("", historical_query.casefold())
+def _normalize_query(value: str) -> str:
+    return _NON_WORD_RE.sub("", value.casefold())
+
+
+def _query_similarity(
+    *,
+    current_normalized: str,
+    current_terms: set[str],
+    historical_query: str,
+) -> float:
+    historical_normalized = _normalize_query(historical_query)
     if current_normalized and current_normalized == historical_normalized:
         return 1.0
 
-    current_terms = _query_terms(current_query)
     historical_terms = _query_terms(historical_query)
     if not current_terms or not historical_terms:
         return 0.0
@@ -516,8 +528,20 @@ def _render_candidates(
         if len(selected) > 1:
             selected.pop()
             continue
-        return rendered[:max_chars].rstrip(), selected
+        truncated = _truncate_at_line_boundary(rendered, max_chars)
+        if not any(line.startswith("- session_id=") for line in truncated.splitlines()):
+            return "", []
+        return truncated, selected
     return "", []
+
+
+def _truncate_at_line_boundary(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    boundary = value.rfind("\n", 0, max_chars + 1)
+    if boundary < 0:
+        return ""
+    return value[:boundary].rstrip()
 
 
 def _render_candidates_text(candidates: list[dict[str, Any]]) -> str:

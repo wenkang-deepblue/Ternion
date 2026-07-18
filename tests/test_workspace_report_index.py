@@ -7,6 +7,9 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
+import ternion.core.report_index as report_index_module
 from ternion.core.report_index import WorkspaceReportIndex
 from ternion.core.session_store import compute_report_hash
 from ternion.utils.evidence_repository import EvidenceRepository, build_evidence_item
@@ -263,6 +266,62 @@ def test_candidate_count_and_prompt_size_are_bounded(tmp_path: Path) -> None:
 
     assert 0 < lookup.candidate_count <= 2
     assert len(lookup.prompt) <= 2_500
+
+
+def test_lookup_computes_current_query_terms_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(tmp_path)
+    index = WorkspaceReportIndex(
+        index_dir=tmp_path / "report-indexes",
+        similarity_threshold=0.1,
+    )
+    assert _store(index, workspace, query="Trace request routing state variant alpha")
+    assert _store(index, workspace, query="Trace request routing state variant beta")
+
+    current_query = "Investigate request routing session behavior"
+    original_query_terms = report_index_module._query_terms
+    calls: list[str] = []
+
+    def counting_query_terms(value: str) -> set[str]:
+        calls.append(value)
+        return original_query_terms(value)
+
+    monkeypatch.setattr(report_index_module, "_query_terms", counting_query_terms)
+    lookup = index.find_similar_reports(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+        query=current_query,
+    )
+
+    assert lookup.candidate_count == 2
+    assert calls.count(current_query) == 1
+
+
+def test_single_candidate_prompt_truncates_only_at_line_boundary() -> None:
+    candidate = {
+        "session_id": "session-a",
+        "report_hash": "a" * 16,
+        "observed_at": "2026-07-18T00:00:00Z",
+        "similarity": 1.0,
+        "source_state": "stale",
+        "query": "query " * 100,
+        "root_cause": "root cause " * 150,
+        "recommendation": "recommendation " * 100,
+        "verification": "verification " * 100,
+        "source_files": [{"path": "src/" + ("a" * 900), "content_hash": "b" * 64}],
+        "stale_paths": ["src/" + ("a" * 900)],
+    }
+    full_prompt = report_index_module._render_candidates_text([candidate])
+
+    prompt, selected = report_index_module._render_candidates([candidate], max_chars=2_500)
+
+    assert len(full_prompt) > 2_500
+    assert selected == [candidate]
+    assert len(prompt) <= 2_500
+    assert full_prompt.startswith(prompt)
+    assert full_prompt[len(prompt)] == "\n"
 
 
 def test_corrupt_manifest_falls_back_closed_and_can_be_replaced(tmp_path: Path) -> None:

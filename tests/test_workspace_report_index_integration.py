@@ -130,6 +130,14 @@ async def test_divergence_receives_similar_reports_as_hypotheses_only(tmp_path: 
         system_prompt = str(messages[0].content or "")
         assert "is not evidence" in system_prompt
         assert "historical_root_cause=" not in system_prompt
+        assert (
+            "3. **EVIDENCE-FIRST (CRITICAL)**:\n"
+            "   - Treat the evidence bundle as the only source of code truth.\n"
+            "   - If you did NOT see it in the evidence bundle (or explicit logs), you MUST NOT "
+            "state it as fact.\n"
+            "   - Do NOT infer implementation details solely from filenames, file tree, or "
+            "project layout; label those as assumptions."
+        ) in system_prompt
         historical_prompt = str(messages[1].content or "")
         assert "[WORKSPACE_HISTORICAL_REPORT_CANDIDATES - HYPOTHESES ONLY]" in historical_prompt
         assert "never cite them as evidence" in historical_prompt
