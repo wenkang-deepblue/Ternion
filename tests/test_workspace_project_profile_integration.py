@@ -10,6 +10,8 @@ import pytest
 from ternion.core.config_store import RoleConfig
 from ternion.core.models import ChatMessage, MessageRole
 from ternion.core.project_profile import WorkspaceProjectProfile
+from ternion.core.report_index import WorkspaceReportIndex
+from ternion.core.session_store import compute_report_hash
 from ternion.utils.evidence_repository import EvidenceRepository, build_evidence_item
 from ternion.workflow.state import WorkflowPhase
 
@@ -65,12 +67,22 @@ async def test_phase_zero_receives_profile_as_navigation_not_evidence(tmp_path: 
 
     workspace = _workspace(tmp_path)
     profile = WorkspaceProjectProfile(profile_dir=tmp_path / "profiles")
+    report_index = WorkspaceReportIndex(index_dir=tmp_path / "report-indexes")
     assert profile.store_profile(
         workspace_root=str(workspace),
         local_workspace_root=str(workspace),
         evidence_records=_records(),
         report=REPORT,
         query="Understand request routing",
+    )
+    assert report_index.store_report(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+        evidence_records=_records(),
+        report=REPORT,
+        query="Inspect routing",
+        session_id="historical-session",
+        report_hash=compute_report_hash(REPORT),
     )
     adapter = AsyncMock()
     adapter.name = "openai"
@@ -104,6 +116,7 @@ async def test_phase_zero_receives_profile_as_navigation_not_evidence(tmp_path: 
 
     with (
         patch("ternion.workflow.nodes.workspace_project_profile", profile),
+        patch("ternion.workflow.nodes.workspace_report_index", report_index),
         patch("ternion.workflow.nodes.config_store") as mock_config_store,
         patch("ternion.workflow.nodes.provider_manager") as mock_provider_manager,
     ):
@@ -114,7 +127,19 @@ async def test_phase_zero_receives_profile_as_navigation_not_evidence(tmp_path: 
         result = await evidence_node(state)
 
     messages: list[ChatMessage] = adapter.chat_completion.call_args.kwargs["messages"]
+    assert "HISTORICAL REPORTS ARE HYPOTHESES ONLY" in str(messages[0].content or "")
     assert "PROJECT PROFILE IS NAVIGATION ONLY" in str(messages[0].content or "")
+    historical_messages = [
+        str(message.content or "")
+        for message in messages
+        if message.role == MessageRole.USER
+        and "[WORKSPACE_HISTORICAL_REPORT_CANDIDATES - HYPOTHESES ONLY]"
+        in str(message.content or "")
+    ]
+    assert len(historical_messages) == 1
+    assert "source_state=current" in historical_messages[0]
+    assert "current application entrypoint" in historical_messages[0]
+    assert "def run():" not in historical_messages[0]
     profile_messages = [
         str(message.content or "")
         for message in messages
@@ -127,6 +152,7 @@ async def test_phase_zero_receives_profile_as_navigation_not_evidence(tmp_path: 
     assert "def run():" not in profile_messages[0]
     assert result["current_phase"] == WorkflowPhase.DIVERGENCE.value
     assert "prior_orientation" not in result["evidence_bundle"]
+    assert "historical_root_cause" not in result["evidence_bundle"]
 
 
 @pytest.mark.asyncio
@@ -135,6 +161,7 @@ async def test_convergence_persists_current_profile_for_later_sessions(tmp_path:
 
     workspace = _workspace(tmp_path)
     profile = WorkspaceProjectProfile(profile_dir=tmp_path / "profiles")
+    report_index = WorkspaceReportIndex(index_dir=tmp_path / "report-indexes")
     user_config = MagicMock()
     user_config.language = "en"
     user_config.browser_language = "en"
@@ -144,7 +171,7 @@ async def test_convergence_persists_current_profile_for_later_sessions(tmp_path:
     response = MagicMock(content=REPORT, usage={})
     session = MagicMock(
         session_id="session-d2",
-        report_hash="report-hash",
+        report_hash=compute_report_hash(REPORT),
         ternion_report_raw=REPORT,
     )
     state = {
@@ -171,6 +198,7 @@ async def test_convergence_persists_current_profile_for_later_sessions(tmp_path:
 
     with (
         patch("ternion.workflow.nodes.workspace_project_profile", profile),
+        patch("ternion.workflow.nodes.workspace_report_index", report_index),
         patch("ternion.workflow.nodes._call_with_stream", new=AsyncMock(return_value=response)),
         patch("ternion.workflow.nodes.config_store") as mock_config_store,
         patch("ternion.workflow.nodes.provider_manager") as mock_provider_manager,
@@ -192,6 +220,13 @@ async def test_convergence_persists_current_profile_for_later_sessions(tmp_path:
     assert lookup.observation_count == 1
     assert "Trace request routing" in lookup.prompt
     assert "current application entrypoint" in lookup.prompt
+    report_lookup = report_index.find_similar_reports(
+        workspace_root=str(workspace),
+        local_workspace_root=str(workspace),
+        query="Trace request routing",
+    )
+    assert report_lookup.candidate_count == 1
+    assert report_lookup.candidate_session_ids == ("session-d2",)
 
 
 @pytest.mark.asyncio

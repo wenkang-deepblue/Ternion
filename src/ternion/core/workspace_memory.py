@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ternion.utils.evidence_chain import EvidenceItem
+from ternion.utils.evidence_repository import EvidenceRepository
 from ternion.utils.workspace_paths import (
     normalize_declared_workspace_path,
     normalize_local_file_path,
@@ -23,6 +24,7 @@ from ternion.utils.workspace_paths import (
 )
 
 _NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,15 @@ class CurrentWorkspaceFile:
     size: int
     mtime_ns: int
     lines: list[str]
+
+
+@dataclass(frozen=True)
+class VerifiedWorkspaceSource:
+    """A current workspace file with the evidence items verified against it."""
+
+    path: str
+    current: CurrentWorkspaceFile
+    evidence_items: tuple[EvidenceItem, ...]
 
 
 def workspace_identity(workspace_root: str, workspace_path_style: str) -> str:
@@ -160,6 +171,88 @@ def evidence_item_matches_file(item: EvidenceItem, file_lines: list[str]) -> boo
         return True
 
     return excerpt_lines == file_lines[start - 1 : end]
+
+
+def collect_verified_evidence_sources(
+    records: list[dict[str, Any]],
+    *,
+    workspace_root: str,
+    local_workspace_root: str,
+    workspace_path_style: str,
+    max_file_bytes: int,
+    max_sources: int,
+) -> list[VerifiedWorkspaceSource]:
+    """Collect bounded evidence sources that still match current workspace files.
+
+    Args:
+        records: Structured evidence records produced by the workflow.
+        workspace_root: Client-declared workspace root.
+        local_workspace_root: Server-local path for the same workspace.
+        workspace_path_style: Declared client path style.
+        max_file_bytes: Maximum number of bytes accepted per source file.
+        max_sources: Maximum number of verified source files returned.
+
+    Returns:
+        Current source snapshots with only their matching evidence items.
+    """
+    repository = EvidenceRepository.from_records(records)
+    grouped: dict[str, list[EvidenceItem]] = {}
+    for item in repository.items:
+        relative = relative_workspace_path(
+            item.path,
+            workspace_root=workspace_root,
+            workspace_path_style=workspace_path_style,
+        )
+        if relative:
+            grouped.setdefault(relative, []).append(item)
+
+    verified_sources: list[VerifiedWorkspaceSource] = []
+    for relative_path, items in grouped.items():
+        current = read_current_workspace_file(
+            relative_path,
+            workspace_root=workspace_root,
+            local_workspace_root=local_workspace_root,
+            workspace_path_style=workspace_path_style,
+            max_file_bytes=max_file_bytes,
+        )
+        if current is None:
+            continue
+        verified_items = tuple(
+            item for item in items if evidence_item_matches_file(item, current.lines)
+        )
+        if not verified_items:
+            continue
+        verified_sources.append(
+            VerifiedWorkspaceSource(
+                path=relative_path,
+                current=current,
+                evidence_items=verified_items,
+            )
+        )
+        if len(verified_sources) >= max(1, int(max_sources)):
+            break
+    return verified_sources
+
+
+def bounded_single_line(value: str, limit: int) -> str:
+    """Normalize memory text into a bounded, non-structural prompt line.
+
+    Args:
+        value: Text to normalize.
+        limit: Maximum returned character count.
+
+    Returns:
+        A single sanitized line no longer than ``limit`` characters.
+    """
+    text = str(value or "").replace("```", " ").replace("`", "")
+    text = _MARKDOWN_LINK_RE.sub(r"\1", text)
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", text)
+    text = re.sub(r"(?m)^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    bounded_limit = max(1, int(limit))
+    if len(text) <= bounded_limit:
+        return text
+    return text[: max(1, bounded_limit - 1)].rstrip() + "…"
 
 
 def load_workspace_manifest(

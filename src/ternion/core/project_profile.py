@@ -9,7 +9,6 @@ observations are removed, and the rendered profile contains no file excerpts.
 from __future__ import annotations
 
 import hashlib
-import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,8 +17,9 @@ from typing import Any
 import structlog
 
 from ternion.core.workspace_memory import (
+    bounded_single_line,
+    collect_verified_evidence_sources,
     ensure_private_directory,
-    evidence_item_matches_file,
     load_workspace_manifest,
     now_iso_z,
     read_current_workspace_file,
@@ -27,8 +27,6 @@ from ternion.core.workspace_memory import (
     save_workspace_manifest,
     workspace_identity,
 )
-from ternion.utils.evidence_chain import EvidenceItem
-from ternion.utils.evidence_repository import EvidenceRepository
 from ternion.utils.report_parser import parse_structured_report
 
 logger = structlog.get_logger(__name__)
@@ -41,7 +39,6 @@ DEFAULT_MAX_PROFILE_SOURCES = 12
 DEFAULT_MAX_PROFILE_OBSERVATIONS = 3
 DEFAULT_MAX_PROFILE_PROMPT_CHARS = 5_000
 
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _ENTRYPOINT_NAMES = {
     "__main__.py",
     "app.py",
@@ -228,10 +225,10 @@ class WorkspaceProjectProfile:
             observations.append(
                 {
                     "id": observation_id,
-                    "query": _bounded_single_line(query, 200),
+                    "query": bounded_single_line(query, 200),
                     "summary": summary,
                     "source_paths": source_paths,
-                    "source_session": _bounded_single_line(session_id, 120),
+                    "source_session": bounded_single_line(session_id, 120),
                     "observed_at": _now_iso_z(),
                 }
             )
@@ -311,38 +308,23 @@ class WorkspaceProjectProfile:
         local_workspace_root: str,
         workspace_path_style: str,
     ) -> dict[str, dict[str, Any]]:
-        repository = EvidenceRepository.from_records(evidence_records)
-        grouped: dict[str, list[EvidenceItem]] = {}
-        for item in repository.items:
-            relative = relative_workspace_path(
-                item.path,
-                workspace_root=workspace_root,
-                workspace_path_style=workspace_path_style,
-            )
-            if relative:
-                grouped.setdefault(relative, []).append(item)
-
         sources: dict[str, dict[str, Any]] = {}
-        for relative_path, items in grouped.items():
-            current = read_current_workspace_file(
-                relative_path,
-                workspace_root=workspace_root,
-                local_workspace_root=local_workspace_root,
-                workspace_path_style=workspace_path_style,
-                max_file_bytes=self.max_source_file_bytes,
-            )
-            if current is None:
-                continue
-            verified = [item for item in items if evidence_item_matches_file(item, current.lines)]
-            if not verified:
-                continue
-            purposes = _merge_purposes(item.purpose for item in verified)
-            sources[relative_path] = {
-                "path": relative_path,
-                "content_hash": current.content_hash,
-                "size": current.size,
-                "mtime_ns": current.mtime_ns,
-                "purpose": _bounded_single_line(purposes, 180),
+        verified_sources = collect_verified_evidence_sources(
+            evidence_records,
+            workspace_root=workspace_root,
+            local_workspace_root=local_workspace_root,
+            workspace_path_style=workspace_path_style,
+            max_file_bytes=self.max_source_file_bytes,
+            max_sources=self.max_sources,
+        )
+        for source in verified_sources:
+            purposes = _merge_purposes(item.purpose for item in source.evidence_items)
+            sources[source.path] = {
+                "path": source.path,
+                "content_hash": source.current.content_hash,
+                "size": source.current.size,
+                "mtime_ns": source.current.mtime_ns,
+                "purpose": bounded_single_line(purposes, 180),
                 "observed_at": _now_iso_z(),
             }
         return sources
@@ -480,18 +462,7 @@ def _summarize_report(report: str) -> str:
     parsed = parse_structured_report(report)
     if not parsed.root_cause.strip():
         return ""
-    return _bounded_single_line(parsed.root_cause, 700)
-
-
-def _bounded_single_line(value: str, limit: int) -> str:
-    text = str(value or "").replace("```", " ").replace("`", "")
-    text = _MARKDOWN_LINK_RE.sub(r"\1", text)
-    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", text)
-    text = re.sub(r"(?m)^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    if len(text) <= limit:
-        return text
-    return text[: max(1, limit - 1)].rstrip() + "…"
+    return bounded_single_line(parsed.root_cause, 700)
 
 
 def _merge_purposes(purposes: Any) -> str:
